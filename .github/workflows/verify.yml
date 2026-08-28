@@ -1,0 +1,71 @@
+name: verify
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted verifier from default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .trusted
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact candidate head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Run candidate self-tests in read-only trust context
+        working-directory: .candidate
+        env:
+          NOODLES_OFFLINE_TESTS: '1'
+        run: tests/run.sh
+
+      - name: Run trusted positive and planted-negative controls
+        env:
+          NOODLES_CANDIDATE_ROOT: ${{ github.workspace }}/.candidate
+          PYTHONPATH: ${{ github.workspace }}/.trusted
+        run: python3 -m unittest discover -s .trusted/tests -v
+
+      - name: Produce exact-head trusted receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .trusted/noodles.py github verify-pr
+          --event "$GITHUB_EVENT_PATH"
+          --candidate "$GITHUB_WORKSPACE/.candidate"
+          --receipt "$GITHUB_WORKSPACE/noodles-receipt.json"
+
+      - name: Upload receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: noodles-receipt
+          path: noodles-receipt.json
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "max_tracked_files": 32,
+  "max_root_surfaces": 9,
+  "max_file_lines": 1000,
+  "max_markdown_share": 0.58,
+  "min_normalized_entropy": 0.48,
+  "min_test_to_executable_ratio": 0.2,
+  "max_enabled_providers": 2,
+  "max_workflows": 2,
+  "required_noodle_mode": "supervised",
+  "required_paths": [
+    ".agents/skills/execute/SKILL.md",
+    ".agents/skills/schedule/SKILL.md",
+    ".github/workflows/land.yml",
+    ".github/workflows/verify.yml",
+    ".noodle.toml",
+    ".noodle/adapters/github",
+    "AGENTS.md",
+    "README.md",
+    "contracts/system-v1.md",
+    "migrations/skills-shared/ledger.json",
+    "noodles",
+    "noodles.py",
+    "policy/fitness.json",
+    "policy/github.json",
+    "policy/providers.lock.json",
+    "tests/run.sh",
+    "tests/test_noodles.py"
+  ],
+  "required_executables": [
+    "noodles",
+    "noodles.py",
+    ".noodle/adapters/github",
+    "tests/run.sh"
+  ],
+  "forbidden_path_names": [
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    "dist",
+    "build",
+    "receipts",
+    "runtime",
+    "providers"
+  ],
+  "forbidden_dependency_manifests": [
+    "requirements.txt",
+    "pyproject.toml",
+    "Pipfile",
+    "package.json",
+    "go.mod",
+    "Cargo.toml"
+  ],
+  "required_agent_phrases": [
+    "NO PROSE MIGRATION",
+    "P \u2014 probabilistic guidance",
+    "L \u2014 local deterministic gate",
+    "R \u2014 provider-enforced readback",
+    "N \u2014 non-claim",
+    "Human Verifier is not an operational state"
+  ],
+  "trusted_verify_workflow_phrases": [
+    "pull_request_target:",
+    "persist-credentials: false",
+    "permissions:",
+    "contents: read",
+    "python3 .trusted/noodles.py github verify-pr"
+  ],
+  "trusted_land_workflow_phrases": [
+    "workflow_run:",
+    "workflows: [verify]",
+    "contents: write",
+    "pull-requests: write",
+    "issues: write",
+    "python3 noodles.py github land"
+  ]
+}

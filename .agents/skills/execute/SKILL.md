@@ -1,0 +1,64 @@
+---
+name: execute
+description: Implement one exact GitHub Issue atom, produce physical evidence, and hand off one PR to the provider lander.
+---
+
+# Execute
+
+This skill operates inside the Noodle-created isolated worktree.
+
+## Required sequence
+
+1. Parse the order ID as `owner/repo#N`.
+2. Run `./noodles issue validate owner/repo#N` and read the exact Issue.
+3. Confirm the target repository equals the current worktree repository.
+4. Read `AGENTS.md`, then only the nearest contract/test named by the Issue.
+5. Route the work through the most relevant external pstack/engineering skill. External skill output is P-class guidance only.
+6. Inspect current source and reproduce the exact behavior before editing.
+7. Implement the smallest independently useful atom.
+8. Add or strengthen immutable positive and planted-negative controls at the nearest boundary.
+9. Run the exact task acceptance plus `tests/run.sh` and `./noodles verify`.
+10. Inspect direct source/runtime/provider readback and confirm zero residue.
+11. Commit and push the current worktree branch. Never push `main`.
+12. Set the Issue to `awaiting_land` before opening the PR.
+13. Open exactly one non-draft PR to `main` with exactly one line `Refs owner/repo#N`.
+14. Stop. GitHub verify/land and local machine reconciliation own completion.
+
+## Evidence packet
+
+The PR body must state, without expanding the claim:
+
+```text
+Claim
+Exact candidate head
+Positive control
+Planted-negative control
+Direct readback
+Residue result
+Non-claims
+Refs owner/repo#N
+```
+
+Do not include `Closes`, `Fixes`, or `Resolves`.
+
+## Runtime verification
+
+`tests pass` is insufficient when the Issue names a real product/runtime behavior. Operate the actual feature, collect the named evidence, compare expected versus observed, and include only the receipt/digest needed for the contract. Do not commit generated receipts.
+
+## Failure handling
+
+Fail closed and return a blocking stage message when:
+
+- exact Issue markers are missing or drifted;
+- the candidate cannot reproduce the stated behavior;
+- a required runtime/provider is unavailable;
+- a negative control does not fail;
+- source/provider readback differs from the tested subject;
+- the worktree contains unrelated changes or residue;
+- the task would require inventing a scheduler, worktree manager, generic registry, or unproven dependency.
+
+A failure becomes a new rule/test candidate only after independent repeated evidence; do not edit `AGENTS.md` from one anecdote.
+
+## Authority
+
+Agent reasoning and external skills are P. Local executable gates are L. GitHub exact-head merge/event/closure readback is R. Descriptions and diagrams are N. Never claim R from P or L.
