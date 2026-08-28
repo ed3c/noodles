@@ -22,6 +22,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from skill_contract import validate_backlog_scheduler
 
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
@@ -42,10 +43,8 @@ HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
 
-
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
-
 
 @dataclass(frozen=True)
 class Subject:
@@ -357,6 +356,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         for action in ("sync", "add", "edit", "done"):
             if not str(adapter_scripts.get(action, "")).startswith(expected_adapter + " "):
                 errors.append(f"backlog adapter action {action} must route through {expected_adapter}")
+        errors.extend(validate_backlog_scheduler(root, noodle_config))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         errors.append(f"invalid .noodle.toml: {exc}")
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
