@@ -67,6 +67,27 @@
     "contents: read",
     "python3 .trusted/noodles.py github verify-pr"
   ],
+  "candidate_self_test_job_phrases": [
+    "permissions:",
+    "contents: read",
+    "runs-on: ubuntu-latest",
+    "working-directory: .candidate",
+    "run: tests/run.sh"
+  ],
+  "candidate_self_test_job_forbidden_phrases": [
+    ": write"
+  ],
+  "trusted_verification_job_phrases": [
+    "needs: candidate-self-tests",
+    "runs-on: ubuntu-latest",
+    "python3 -m unittest discover -s .trusted/tests -v",
+    "python3 .trusted/noodles.py github verify-pr"
+  ],
+  "trusted_verification_job_forbidden_phrases": [
+    "working-directory: .candidate",
+    ".candidate/",
+    "tests/run.sh"
+  ],
   "trusted_land_workflow_phrases": [
     "workflow_run:",
     "workflows: [verify]",

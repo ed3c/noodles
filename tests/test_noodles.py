@@ -122,6 +122,36 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("trusted boundary" in item for item in result["errors"]))
 
+    def test_trusted_verify_requires_candidate_job_dependency(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".github/workflows/verify.yml"
+        workflow = path.read_text()
+        dependency = "    needs: candidate-self-tests\n"
+        self.assertIn(dependency, workflow)
+        path.write_text(workflow.replace(dependency, "", 1))
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("verify missing" in item for item in result["errors"]))
+
+    def test_trusted_verify_rejects_candidate_script_execution(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".github/workflows/verify.yml"
+        workflow = path.read_text()
+        marker = "  verify:\n"
+        self.assertIn(marker, workflow)
+        prefix, trusted_job = workflow.split(marker, 1)
+        steps = "    steps:\n"
+        self.assertIn(steps, trusted_job)
+        planted = "      - name: Planted candidate script execution\n        run: .candidate/tests/run.sh\n\n"
+        path.write_text(prefix + marker + trusted_job.replace(steps, steps + planted, 1))
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("verify forbids" in item for item in result["errors"]))
+
     def test_metrics_stay_inside_budget(self) -> None:
         metrics = noodles.repository_metrics(CANDIDATE_ROOT)
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
