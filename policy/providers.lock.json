@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "name": "cursor-pstack",
+      "source": "https://github.com/cursor/plugins.git",
+      "commit": "68836ddaf5697224520f1847d90cdb90ca8babaa",
+      "subpath": "pstack/skills",
+      "destination": ".noodle/providers/cursor-pstack",
+      "license_path": "pstack/LICENSE",
+      "enabled": true,
+      "authority": "P",
+      "purpose": "Engineering lifecycle routing; never a correctness authority."
+    },
+    {
+      "name": "matt-engineering",
+      "source": "https://github.com/mattpocock/skills.git",
+      "commit": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
+      "subpath": "skills/engineering",
+      "destination": ".noodle/providers/matt-engineering",
+      "license_path": "LICENSE",
+      "enabled": true,
+      "authority": "P",
+      "purpose": "Replaceable engineering knowledge; never a correctness authority."
+    },
+    {
+      "name": "skills-shared-compat",
+      "source": "https://github.com/ed3c/skills-shared.git",
+      "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
+      "subpath": ".",
+      "destination": ".noodle/providers/skills-shared-compat",
+      "license_path": "LICENSE",
+      "enabled": false,
+      "authority": "P",
+      "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency."
+    }
+  ]
+}

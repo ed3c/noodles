@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "repository": "ed3c/noodles",
+  "allowed_repositories": [
+    "ed3c/noodles"
+  ],
+  "default_branch": "main",
+  "required_check": "verify",
+  "merge_method": "merge",
+  "require_branch_protection": true,
+  "cross_repository_status": "HOLD_UNTIL_TARGET_INSTALLATION_AND_TOKEN_READBACK"
+}

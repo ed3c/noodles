@@ -1,0 +1,12 @@
+# Noodle runtime and externally synchronized providers.
+.noodle/*
+!.noodle/adapters/
+!.noodle/adapters/github
+
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.DS_Store
+*.tmp
+*.log

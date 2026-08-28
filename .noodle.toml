@@ -1,0 +1,37 @@
+# Supervised is a machine containment point, not a Human Verifier requirement.
+# ./noodles reconcile releases it only after GitHub exact-head merge/closure readback.
+mode = "supervised"
+
+[routing.defaults]
+provider = "codex"
+model = "gpt-5.6-pro"
+
+[concurrency]
+max_concurrency = 4
+
+[runtime.process]
+max_concurrent = 4
+
+[server]
+enabled = true
+port = 3210
+
+[skills]
+paths = [
+  ".agents/skills",
+  ".noodle/providers/cursor-pstack/pstack/skills",
+  ".noodle/providers/matt-engineering/skills/engineering"
+]
+
+[agents.codex]
+path = "~/.codex"
+args = ["--sandbox", "workspace-write", "-c", "approval_policy=\"never\""]
+
+[adapters.backlog]
+skill = "schedule"
+
+[adapters.backlog.scripts]
+sync = ".noodle/adapters/github sync"
+add = ".noodle/adapters/github add"
+edit = ".noodle/adapters/github edit"
+done = ".noodle/adapters/github done"

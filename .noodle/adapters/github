@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+import noodles  # noqa: E402
+
+try:
+    raise SystemExit(noodles.adapter_main())
+except noodles.GateError as exc:
+    print(f"adapter FAIL: {exc}", file=sys.stderr)
+    raise SystemExit(1)

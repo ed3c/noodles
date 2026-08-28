@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "source_repository": "ed3c/skills-shared",
+  "source_commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
+  "law": "NO PROSE MIGRATION",
+  "capabilities": [
+    {
+      "id": "sqlite-exact-subject-ledger",
+      "disposition": "MIGRATE",
+      "claim": "Exact repository subjects can be inserted, rebuilt, read back, and duplicate subjects refused.",
+      "physical_evidence": ["skills-shared#256 SQLite rebuild and duplicate-subject refusal"],
+      "non_claims": ["No scheduler, closure state, or generic task graph is admitted."],
+      "next_issue": "MIG-SQLITE-01"
+    },
+    {
+      "id": "tree-sitter-structural-readback",
+      "disposition": "MIGRATE",
+      "claim": "Parsed structural byte ranges can be read back directly from source.",
+      "physical_evidence": ["skills-shared#256 live parse and 21 byte-range readbacks"],
+      "non_claims": ["No versioned S-expression query bundle or context compiler was proven."],
+      "next_issue": "MIG-TREE-SITTER-01"
+    },
+    {
+      "id": "grepai-candidate-retrieval-law",
+      "disposition": "MIGRATE",
+      "claim": "Semantic retrieval may produce candidates that require exact path and source readback.",
+      "physical_evidence": ["skills-shared#256 live argv/source readback and nonsense-query nearest neighbours"],
+      "non_claims": ["A miss is not absence proof and a hit is not source truth."],
+      "next_issue": "MIG-GREPAI-01"
+    },
+    {
+      "id": "serena-symbol-navigation",
+      "disposition": "REVALIDATE",
+      "claim": "Only index and tool-surface visibility were previously observed.",
+      "physical_evidence": ["skills-shared#256 Serena index/tool surface"],
+      "non_claims": ["Symbol-to-reference navigation, bounded edit, tests, and receipts remain unproven."],
+      "next_issue": "VAL-SERENA-NAV-01"
+    },
+    {
+      "id": "isolated-worktree-scheduler",
+      "disposition": "ADAPT_EXTERNAL",
+      "claim": "Concurrent isolated worktrees were physically observed, but upstream Noodle owns this lifecycle now.",
+      "physical_evidence": ["skills-shared#256 two concurrent worktrees with HEAD readback"],
+      "non_claims": ["noodles does not implement a scheduler, worker lifecycle, or worktree manager."],
+      "external_owner": "poteto/noodle@82d2921c52370f23f29086de81ccfb600939c037"
+    },
+    {
+      "id": "forgejo-reachability",
+      "disposition": "DROP",
+      "claim": "A provider endpoint was reachable but no target repository binding was proven.",
+      "physical_evidence": ["skills-shared#256 provider identity/reachability"],
+      "non_claims": ["No Forgejo repository, merge, event, or closure authority is admitted."]
+    },
+    {
+      "id": "scip-semantic-graph",
+      "disposition": "REVALIDATE",
+      "claim": "Architecture hypothesis only; fresh exact-commit indexing and lookup evidence is required.",
+      "physical_evidence": [],
+      "non_claims": ["SCIP was absent from the historical physical run."],
+      "next_issue": "VAL-SCIP-01"
+    },
+    {
+      "id": "lancedb-retrieval-projection",
+      "disposition": "REVALIDATE",
+      "claim": "Admission requires a same-task A/B win in quality, context size, latency, or cost.",
+      "physical_evidence": [],
+      "non_claims": ["Architecture diagrams do not prove that a vector store is needed."],
+      "next_issue": "EXP-LANCEDB-01"
+    },
+    {
+      "id": "git-town-stacked-pr",
+      "disposition": "HOLD",
+      "claim": "No platform admission evidence exists in the historical receipt.",
+      "physical_evidence": [],
+      "non_claims": ["No stacked-PR dependency is added to the Golden Path."]
+    },
+    {
+      "id": "full-code-intelligence-chain",
+      "disposition": "DROP",
+      "claim": "Individual adapter observations did not prove a causal production pipeline.",
+      "physical_evidence": ["skills-shared#368 explicitly denies end-to-end chain proof"],
+      "non_claims": ["No GrepAI→SCIP→SQLite→Tree-sitter→Serena chain is migrated as a unit."]
+    }
+  ]
+}
