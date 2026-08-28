@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -67,6 +68,26 @@ class RepositoryGateTests(unittest.TestCase):
         result = self.verify(root)
         self.assertFalse(result["ok"])
         self.assertTrue(any("mode must be" in item for item in result["errors"]))
+
+    def test_codex_routing_model_is_admitted(self) -> None:
+        with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
+            config = tomllib.load(handle)
+        self.assertEqual(config["routing"]["defaults"]["model"], "gpt-5.4")
+        result = self.verify()
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_retired_codex_routing_model_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".noodle.toml"
+        config = path.read_text()
+        admitted = 'model = "gpt-5.4"'
+        self.assertIn(admitted, config)
+        path.write_text(config.replace(admitted, 'model = "gpt-5.6-pro"', 1))
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("routing model must be" in item for item in result["errors"]))
 
     def test_symlink_is_rejected(self) -> None:
         temp, root = self.mutated_copy()

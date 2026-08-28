@@ -348,10 +348,10 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     forbidden_manifests = set(policy["forbidden_dependency_manifests"])
     errors.extend(f"runtime dependency manifest forbidden: {path}" for path in sorted(paths & forbidden_manifests))
     try:
-        with (root / ".noodle.toml").open("rb") as handle:
-            noodle_config = tomllib.load(handle)
+        noodle_config = tomllib.loads((root / ".noodle.toml").read_text(encoding="utf-8"))
         if noodle_config.get("mode") != policy["required_noodle_mode"]:
             errors.append(f".noodle.toml mode must be {policy['required_noodle_mode']!r}")
+        if noodle_config.get("routing", {}).get("defaults", {}).get("model") != policy["required_codex_model"]: errors.append(f".noodle.toml routing model must be {policy['required_codex_model']!r}")
         adapter_scripts = noodle_config.get("adapters", {}).get("backlog", {}).get("scripts", {})
         expected_adapter = ".noodle/adapters/github"
         for action in ("sync", "add", "edit", "done"):
