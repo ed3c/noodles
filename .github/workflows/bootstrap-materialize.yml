@@ -1,0 +1,57 @@
+name: bootstrap-materialize
+
+on:
+  push:
+    branches: [bootstrap/clean-migration]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-clean-migration
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.repository == 'ed3c/noodles'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact bootstrap branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: bootstrap/clean-migration
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify archive and materialize exact tracked tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "bootstrap/clean-migration"
+          cat .bootstrap/part-* > "$RUNNER_TEMP/noodles.tar.xz"
+          test "$(sha256sum "$RUNNER_TEMP/noodles.tar.xz" | awk '{print $1}')" = "decf0c97dff690933bce2a682bcf85095e9efcd6cce1d6baa03059102f1a2b3d"
+          test "$(git ls-files | sort | tr '\n' ' ')" = ".bootstrap/part-00 .bootstrap/part-01 .bootstrap/part-02 .bootstrap/part-03 .github/workflows/bootstrap-materialize.yml README.md "
+          if tar -tJf "$RUNNER_TEMP/noodles.tar.xz" | grep -E '(^/|(^|/)\.\.(/|$))'; then
+            echo 'unsafe archive path' >&2
+            exit 1
+          fi
+          tar -xJf "$RUNNER_TEMP/noodles.tar.xz"
+          rm -rf .bootstrap .github/workflows/bootstrap-materialize.yml
+          test -x noodles
+          test -x noodles.py
+          test -x .noodle/adapters/github
+          test -x tests/run.sh
+          git add -A
+          NOODLES_OFFLINE_TESTS=1 tests/run.sh
+          ./noodles verify --json
+          test -z "$(git status --porcelain --untracked-files=all | grep -E '(__pycache__|\.pyc$|\.noodle/providers/)' || true)"
+
+      - name: Commit and push exact candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'noodles-bootstrap'
+          git config user.email 'noodles-bootstrap@users.noreply.github.com'
+          git commit -m 'bootstrap: establish deterministic control plane (#1)'
+          git push origin HEAD:bootstrap/clean-migration
