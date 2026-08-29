@@ -26,12 +26,13 @@ Noodle machine reconciliation
 
 ```bash
 ./noodles verify
+./noodles runtime check
 ./noodles providers sync
 ./noodles github protect apply   # one-time, requires an admin-capable gh token
 ./noodles start
 ```
 
-After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, synchronizes exact external skill commits, audits GitHub protection, starts Noodle, and reconciles completed provider landings without a Human Verifier.
+After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, and reconciles completed provider landings without a Human Verifier.
 
 ## Why Noodle stays `supervised`
 
@@ -47,6 +48,8 @@ Noodle `auto` merges a completed worktree into local `main`. That is useful orch
 | GitHub | protected branch, exact-head merge, event/closure readback | model reasoning quality |
 
 ## External skills
+
+The admitted upstream Noodle runtime is pinned in `policy/runtime.lock.json` to an exact release tag, tag commit, platform asset digest, and installed binary digest. `./noodles runtime check` reads those values back from the live `poteto/noodle` release plus the local binary that `./noodles start` will execute.
 
 Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits:
 
@@ -77,8 +80,10 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ```bash
 ./noodles verify                    # deterministic repository gate
 ./noodles metrics --json            # entropy and quality disclosure
+./noodles runtime check             # exact release/commit/asset/binary readback
+./noodles runtime discover          # prove Noodle sees every configured skill path
 ./noodles providers sync            # exact detached provider checkouts
-./noodles providers check           # HEAD/license/SKILL/clean readback
+./noodles providers check           # HEAD/tree/license/SKILL/detached/clean readback
 ./noodles issue validate REPO#N     # exact Issue contract
 ./noodles issue handoff REPO#N --pr N
 ./noodles github protect audit

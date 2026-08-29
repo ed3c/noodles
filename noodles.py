@@ -10,19 +10,23 @@ import json
 import math
 import os
 import re
-import shutil
 import signal
 import stat
 import subprocess
 import sys
-import tempfile
-import time
 import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from runtime_contract import (
+    provider_check as runtime_provider_check,
+    provider_sync as runtime_provider_sync,
+    runtime_check as runtime_binary_check,
+    skill_discovery_check,
+    validate_runtime_lock,
+)
 from skill_contract import validate_backlog_scheduler, validate_noodle_worktree_ignore
 
 SCHEMA_VERSION = 1
@@ -356,6 +360,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         errors.extend(validate_backlog_scheduler(root, noodle_config))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         errors.append(f"invalid .noodle.toml: {exc}")
+    errors.extend(validate_runtime_lock(root))
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
     errors.extend(validate_migration_ledger(root))
     for executable in policy["required_executables"]:
@@ -416,71 +421,22 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     return {"ok": not errors, "errors": errors, "metrics": metrics}
 
 
-def provider_items(root: Path) -> list[dict[str, Any]]:
-    payload = load_json(root / "policy/providers.lock.json")
-    return [item for item in payload["providers"] if item.get("enabled")]
-
-
 def provider_check(root: Path) -> list[dict[str, Any]]:
-    root = root.resolve()
-    receipts: list[dict[str, Any]] = []
-    for item in provider_items(root):
-        destination = (root / item["destination"]).resolve()
-        if root not in destination.parents:
-            raise GateError(f"unsafe provider destination: {destination}")
-        if not destination.is_dir():
-            raise GateError(f"provider {item['name']} is not installed at {item['destination']}")
-        head = git(destination, "rev-parse", "HEAD")
-        if head != item["commit"]:
-            raise GateError(f"provider {item['name']} HEAD {head} != locked {item['commit']}")
-        if git(destination, "status", "--porcelain"):
-            raise GateError(f"provider {item['name']} checkout is dirty")
-        skill_root = destination / item["subpath"]
-        skills = sorted(skill_root.rglob("SKILL.md")) if skill_root.is_dir() else []
-        license_file = destination / item["license_path"]
-        if not skills:
-            raise GateError(f"provider {item['name']} has no SKILL.md under {item['subpath']}")
-        if not license_file.is_file():
-            raise GateError(f"provider {item['name']} license path missing: {item['license_path']}")
-        receipts.append(
-            {
-                "name": item["name"],
-                "commit": head,
-                "tree": git(destination, "rev-parse", "HEAD^{tree}"),
-                "skill_count": len(skills),
-                "license_sha256": sha256_file(license_file),
-            }
-        )
-    return receipts
+    return runtime_provider_check(root, error_cls=GateError)
 
 
 def provider_sync(root: Path) -> list[dict[str, Any]]:
-    root = root.resolve()
-    provider_root = root / ".noodle/providers"
-    provider_root.mkdir(parents=True, exist_ok=True)
-    for item in provider_items(root):
-        destination = (root / item["destination"]).resolve()
-        if root not in destination.parents or provider_root.resolve() not in destination.parents:
-            raise GateError(f"unsafe provider destination: {destination}")
-        with tempfile.TemporaryDirectory(prefix="noodles-provider-", dir=str(provider_root)) as temp_name:
-            stage = Path(temp_name) / "checkout"
-            stage.mkdir()
-            git(stage, "init", "-q")
-            git(stage, "remote", "add", "origin", item["source"])
-            git(stage, "fetch", "-q", "--depth", "1", "origin", item["commit"])
-            git(stage, "checkout", "-q", "--detach", "FETCH_HEAD")
-            if git(stage, "rev-parse", "HEAD") != item["commit"]:
-                raise GateError(f"provider {item['name']} fetch readback did not reach locked commit")
-            if destination.exists():
-                shutil.rmtree(destination)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(stage, destination)
-    receipts = provider_check(root)
-    receipt_dir = root / ".noodle/receipts/providers"
-    receipt_dir.mkdir(parents=True, exist_ok=True)
-    for receipt in receipts:
-        write_json(receipt_dir / f"{receipt['name']}.json", {**receipt, "observed_at": int(time.time())})
-    return receipts
+    return runtime_provider_sync(root, error_cls=GateError)
+
+
+def runtime_check(root: Path) -> dict[str, Any]:
+    return runtime_binary_check(root, gh_api, error_cls=GateError)
+
+
+def runtime_discovery(root: Path) -> dict[str, Any]:
+    runtime_receipt = runtime_check(root)
+    discovery_receipt = skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
+    return {"runtime": runtime_receipt, "skills": discovery_receipt}
 
 
 def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, token: str | None = None) -> Any:
@@ -844,12 +800,14 @@ def start_unattended(root: Path, control_url: str, interval: float) -> int:
     verified = verify_repository(root)
     if not verified["ok"]:
         raise GateError("repository verification failed: " + "; ".join(verified["errors"]))
+    runtime_receipt = runtime_check(root)
     provider_sync(root)
+    skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
     policy = protection_policy(root)
     protection_readback(policy["repository"], policy["default_branch"], policy["required_check"])
     env = os.environ.copy()
     env.setdefault("NOODLE_NO_BROWSER", "1")
-    process = subprocess.Popen(["noodle", "start"], cwd=root, env=env)
+    process = subprocess.Popen([runtime_receipt["binary_path"], "start"], cwd=root, env=env)
 
     def stop(_signum: int, _frame: Any) -> None:
         process.terminate()
@@ -880,6 +838,8 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--json", action="store_true")
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--json", action="store_true")
+    runtime = sub.add_parser("runtime")
+    runtime.add_argument("action", choices=["check", "discover"])
     providers = sub.add_parser("providers")
     providers.add_argument("action", choices=["check", "sync"])
     issue = sub.add_parser("issue")
@@ -927,6 +887,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "metrics":
             metrics = repository_metrics(root)
             print(json.dumps(metrics, indent=2, sort_keys=True) if args.json else json.dumps(metrics, sort_keys=True))
+            return 0
+        if args.command == "runtime":
+            result = runtime_check(root) if args.action == "check" else runtime_discovery(root)
+            print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         if args.command == "providers":
             receipts = provider_sync(root) if args.action == "sync" else provider_check(root)
