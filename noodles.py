@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import github_protection
 import json
 import math
 import os
@@ -42,10 +43,8 @@ AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
-
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
-
 @dataclass(frozen=True)
 class Subject:
     repo: str
@@ -54,7 +53,6 @@ class Subject:
     @property
     def value(self) -> str:
         return f"{self.repo}#{self.number}"
-
 
 def repo_root(path: str | Path | None = None) -> Path:
     candidate = Path(path or Path(__file__).resolve().parent).resolve()
@@ -112,7 +110,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 def parse_subject(raw: str) -> Subject:
     match = SUBJECT_RE.fullmatch(raw.strip())
@@ -386,7 +383,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     for phrase in policy["trusted_verify_workflow_phrases"]:
         if phrase not in verify_workflow:
             errors.append(f"verify workflow missing trusted boundary phrase: {phrase}")
-    workflow_jobs = dict(re.findall(r"(?ms)^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", verify_workflow.partition("\njobs:\n")[2]))
+    workflow_jobs = github_protection.workflow_job_bodies(verify_workflow)
     for job_name, required_phrases in (("candidate-self-tests", policy["candidate_self_test_job_phrases"]), ("verify", policy["trusted_verification_job_phrases"])):
         for phrase in required_phrases:
             if phrase not in workflow_jobs.get(job_name, ""):
@@ -398,6 +395,8 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     for phrase in policy["trusted_land_workflow_phrases"]:
         if phrase not in land_workflow:
             errors.append(f"land workflow missing trusted boundary phrase: {phrase}")
+    workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
+    errors.extend(workflow_boundary_errors)
     metrics = repository_metrics(root)
     numeric_limits = {
         "tracked_files": ("max", policy["max_tracked_files"]),
@@ -423,6 +422,7 @@ def provider_items(root: Path) -> list[dict[str, Any]]:
 
 
 def provider_check(root: Path) -> list[dict[str, Any]]:
+    root = root.resolve()
     receipts: list[dict[str, Any]] = []
     for item in provider_items(root):
         destination = (root / item["destination"]).resolve()
@@ -455,6 +455,7 @@ def provider_check(root: Path) -> list[dict[str, Any]]:
 
 
 def provider_sync(root: Path) -> list[dict[str, Any]]:
+    root = root.resolve()
     provider_root = root / ".noodle/providers"
     provider_root.mkdir(parents=True, exist_ok=True)
     for item in provider_items(root):
@@ -482,17 +483,16 @@ def provider_sync(root: Path) -> list[dict[str, Any]]:
     return receipts
 
 
-def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None) -> Any:
-    argv = ["gh", "api", "--method", method, endpoint]
-    if payload is not None:
-        argv.extend(["--input", "-"])
-    result = run(argv, input_text=json.dumps(payload) if payload is not None else None)
-    if not result.stdout.strip():
-        return None
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise GateError(f"gh api returned non-JSON for {endpoint}: {exc}") from exc
+def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, token: str | None = None) -> Any:
+    _headers, body = github_protection.gh_api_response(
+        run,
+        GateError,
+        endpoint,
+        method=method,
+        payload=payload,
+        token=token,
+    )
+    return body
 
 
 def gh_repo_from_git(root: Path) -> str:
@@ -531,56 +531,13 @@ def protection_policy(root: Path) -> dict[str, Any]:
 
 
 def protection_readback(repo: str, branch: str, required_check: str) -> dict[str, Any]:
-    protection = gh_api(f"repos/{repo}/branches/{branch}/protection")
-    if not isinstance(protection, dict):
-        raise GateError(f"branch protection missing for {repo}:{branch}")
-    status = protection.get("required_status_checks") or {}
-    contexts = set(status.get("contexts") or [])
-    checks = status.get("checks") or []
-    contexts.update(str(item.get("context")) for item in checks if item.get("context"))
-    if not status.get("strict"):
-        raise GateError("branch protection must require strict up-to-date status checks")
-    if required_check not in contexts:
-        raise GateError(f"required check {required_check!r} absent from branch protection: {sorted(contexts)}")
-    reviews = protection.get("required_pull_request_reviews")
-    if not isinstance(reviews, dict):
-        raise GateError("branch protection must require pull requests")
-    if int(reviews.get("required_approving_review_count") or 0) != 0:
-        raise GateError("Human Verifier is forbidden: required approval count must be zero")
-    if not (protection.get("enforce_admins") or {}).get("enabled"):
-        raise GateError("branch protection must include administrators")
-    if (protection.get("allow_force_pushes") or {}).get("enabled"):
-        raise GateError("force pushes must be disabled")
-    if (protection.get("allow_deletions") or {}).get("enabled"):
-        raise GateError("branch deletion must be disabled")
-    return protection
-
-
-def protection_apply(root: Path, repo: str | None = None) -> dict[str, Any]:
-    policy = protection_policy(root)
-    repository = repo or policy["repository"]
-    branch = policy["default_branch"]
-    check = policy["required_check"]
-    payload = {
-        "required_status_checks": {"strict": True, "contexts": [check]},
-        "enforce_admins": True,
-        "required_pull_request_reviews": {
-            "dismiss_stale_reviews": False,
-            "require_code_owner_reviews": False,
-            "required_approving_review_count": 0,
-            "require_last_push_approval": False,
-        },
-        "restrictions": None,
-        "required_linear_history": False,
-        "allow_force_pushes": False,
-        "allow_deletions": False,
-        "block_creations": False,
-        "required_conversation_resolution": False,
-        "lock_branch": False,
-        "allow_fork_syncing": False,
-    }
-    gh_api(f"repos/{repository}/branches/{branch}/protection", method="PUT", payload=payload)
-    return protection_readback(repository, branch, check)
+    return github_protection.protection_readback(
+        lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
+        GateError,
+        repo,
+        branch,
+        required_check,
+    )
 
 
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
@@ -654,7 +611,25 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     policy = protection_policy(root)
     if repository not in policy["allowed_repositories"]:
         raise GateError(f"repository not admitted: {repository}")
-    protection_readback(repository, policy["default_branch"], policy["required_check"])
+    workflow_boundary_errors, workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
+    if workflow_boundary_errors:
+        raise GateError("trusted workflow boundary invalid: " + "; ".join(workflow_boundary_errors))
+    verify_source = github_protection.trusted_workflow_run_readback(
+        gh_api, GateError, repository, int(workflow.get("id") or 0), name="verify", path=".github/workflows/verify.yml", event="pull_request_target", default_branch=policy["default_branch"]
+    )
+    current_run_id = int(os.getenv("GITHUB_RUN_ID", "0") or "0")
+    land_source: dict[str, Any] | None = None
+    if current_run_id > 0:
+        land_source = github_protection.trusted_workflow_run_readback(
+            gh_api, GateError, repository, current_run_id, name="land", path=".github/workflows/land.yml", event="workflow_run", default_branch=policy["default_branch"]
+        )
+    protection_receipt = github_protection.protection_audit(
+        lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
+        GateError,
+        repository,
+        policy["default_branch"],
+        policy["required_check"],
+    )
     pr = gh_api(f"repos/{repository}/pulls/{pr_number}")
     if pr.get("state") != "open" or pr.get("merged") or pr.get("draft"):
         raise GateError("PR must be open, unmerged, and non-draft")
@@ -711,6 +686,13 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         "head_sha": head_sha,
         "merge_sha": merge_sha,
         "issue_closed": True,
+        "protection_readback": protection_receipt,
+        "trusted_workflows": {
+            "verify_run": verify_source["run"],
+            "land_run": land_source["run"] if land_source else None,
+            "provider_workflow_identity": {"verify": verify_source["workflow"], "land": land_source["workflow"] if land_source else None, "default_branch": verify_source["provider_default_branch"]},
+            "boundary": workflow_boundary,
+        },
     }
 
 
@@ -967,7 +949,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.github_action == "protect":
                 policy = protection_policy(root)
                 repository = args.repository or policy["repository"]
-                result = protection_apply(root, repository) if args.action == "apply" else protection_readback(repository, policy["default_branch"], policy["required_check"])
+                if args.action == "apply":
+                    github_protection.protection_apply(
+                        gh_api,
+                        lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
+                        GateError,
+                        repository,
+                        policy["default_branch"],
+                        policy["required_check"],
+                    )
+                result = github_protection.protection_audit(
+                    lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
+                    GateError,
+                    repository,
+                    policy["default_branch"],
+                    policy["required_check"],
+                )
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0
             if args.github_action == "verify-pr":
