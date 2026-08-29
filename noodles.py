@@ -333,6 +333,8 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     policy_root = (policy_root or root).resolve()
     policy = load_json(policy_root / "policy/fitness.json")
     errors: list[str] = []
+    routing_transition = policy.get("required_codex_routing_transition"); expected_transition = [{"model": "gpt-5.4", "codex_path": "~/.codex"}, {"model": "gpt-5.6-luna", "codex_path": ".agents/bin"}]
+    if routing_transition != expected_transition: errors.append(f"policy required_codex_routing_transition must be exactly {expected_transition!r}")
     try:
         entries = tracked_entries(root)
     except GateError as exc:
@@ -358,7 +360,9 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         noodle_config = tomllib.loads((root / ".noodle.toml").read_text(encoding="utf-8"))
         if noodle_config.get("mode") != policy["required_noodle_mode"]:
             errors.append(f".noodle.toml mode must be {policy['required_noodle_mode']!r}")
-        if noodle_config.get("routing", {}).get("defaults", {}).get("model") != policy["required_codex_model"]: errors.append(f".noodle.toml routing model must be {policy['required_codex_model']!r}")
+        configured_routing = {"model": noodle_config.get("routing", {}).get("defaults", {}).get("model"), "codex_path": noodle_config.get("agents", {}).get("codex", {}).get("path")}
+        if configured_routing not in expected_transition: errors.append(f".noodle.toml Codex routing must be one exact admitted transition state; found {configured_routing!r}")
+        if configured_routing == expected_transition[1] and {relative: mode for mode, relative in entries}.get(".agents/bin/codex") != "100755": errors.append("candidate Codex routing requires tracked executable .agents/bin/codex mode 100755")
         errors.extend(runtime_contract.validate_skill_config_paths([str(path) for path in noodle_config.get("skills", {}).get("paths", [])]))
         adapter_scripts = noodle_config.get("adapters", {}).get("backlog", {}).get("scripts", {})
         expected_adapter = ".noodle/adapters/github"
