@@ -18,9 +18,12 @@ from tests.support import (
     ENGINE_ROOT,
     cmd,
     copy_tracked,
+    current_provider_lock,
     cursor_pstack_fixture,
+    exact_provider_transition_state,
     handoff_fixture,
     provider_fixture,
+    recovery_provider_lock,
     runtime_release_reader,
     tree_digest,
     write_noodle_stub,
@@ -84,44 +87,9 @@ class RepositoryGateTests(unittest.TestCase):
 
     def test_provider_lock_pins_expected_external_skills(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/providers.lock.json").read_text())
-        self.assertEqual(
-            payload["providers"],
-            [
-                {
-                    "name": "cursor-pstack",
-                    "source": "https://github.com/cursor/plugins.git",
-                    "commit": "68836ddaf5697224520f1847d90cdb90ca8babaa",
-                    "subpath": "pstack/skills",
-                    "destination": ".noodle/providers/cursor-pstack",
-                    "license_path": "pstack/LICENSE",
-                    "enabled": True,
-                    "authority": "P",
-                    "purpose": "Engineering lifecycle routing; never a correctness authority.",
-                },
-                {
-                    "name": "matt-engineering",
-                    "source": "https://github.com/mattpocock/skills.git",
-                    "commit": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
-                    "subpath": "skills/engineering",
-                    "destination": ".noodle/providers/matt-engineering",
-                    "license_path": "LICENSE",
-                    "enabled": True,
-                    "authority": "P",
-                    "purpose": "Replaceable engineering knowledge; never a correctness authority.",
-                },
-                {
-                    "name": "skills-shared-compat",
-                    "source": "https://github.com/ed3c/skills-shared.git",
-                    "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
-                    "subpath": ".",
-                    "destination": ".noodle/providers/skills-shared-compat",
-                    "license_path": "LICENSE",
-                    "enabled": False,
-                    "authority": "P",
-                    "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
-                },
-            ],
-        )
+        transition_state = exact_provider_transition_state(CANDIDATE_ROOT)
+        expected = current_provider_lock() if transition_state == "current-matt" else recovery_provider_lock()
+        self.assertEqual(payload["providers"], expected)
 
     def test_retired_codex_routing_model_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -957,7 +925,12 @@ class RuntimePhysicalTests(unittest.TestCase):
         config = config_path.read_text(encoding="utf-8")
         addition = '  ".noodle/providers/cursor-pstack/cursor-team-kit/skills",\n'
         self.assertNotIn(addition, config)
-        config_path.write_text(config.replace('  ".noodle/providers/matt-engineering/skills/engineering"\n', addition + '  ".noodle/providers/matt-engineering/skills/engineering"\n'), encoding="utf-8")
+        external_line = next(
+            line
+            for line in config.splitlines(keepends=True)
+            if line.startswith('  ".noodle/providers/') and "cursor-pstack" not in line
+        )
+        config_path.write_text(config.replace(external_line, addition + external_line, 1), encoding="utf-8")
         with self.assertRaisesRegex(noodles.GateError, "must not expose the entire cursor-team-kit/skills root"):
             runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
 
