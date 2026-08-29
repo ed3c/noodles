@@ -115,8 +115,8 @@ class ScheduleContractTests(unittest.TestCase):
         )
 
     @unittest.skipIf(
-        os.getenv("NOODLES_OFFLINE_TESTS") == "1",
-        "pinned Noodle runtime is intentionally unavailable in offline candidate CI; live control runs before handoff",
+        os.getenv("NOODLES_OFFLINE_TESTS") == "1" or os.getenv("GITHUB_ACTIONS") == "true",
+        "pinned Noodle runtime is intentionally unavailable in hosted/offline CI; live control runs before handoff",
     )
     def test_schedule_publish_matches_runtime_promotion_path_for_compact_payloads(self) -> None:
         cases = (
