@@ -11,6 +11,28 @@ from typing import Any
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
 SCHEDULE_ACTIVE_ORDER_PHRASE = "Do not re-emit any active non-schedule order."
 SCHEDULE_PUBLISH_COMMAND = "python3 skill_contract.py publish .noodle/orders-next.candidate.json"
+EXECUTE_ENTRYPOINT_PHRASE = "Every execute task enters `poteto-mode` before any matched playbook or leaf skill."
+EXECUTE_BYPASS_PHRASE = "Do not bypass `poteto-mode` by entering a leaf skill directly."
+EXECUTE_EVIDENCE_PHRASE = "Record the selected P-class route and required physical oracle in the evidence packet."
+EXECUTE_INVESTIGATION_ROUTE = (
+    "- `investigation` -> `poteto-mode/playbooks/investigation.md`; "
+    "oracle `exact issue readback plus direct source/runtime/provider readback`"
+)
+EXECUTE_FEATURE_ROUTE = (
+    "- `function-boundary feature work` -> `architect` plus `poteto-mode/playbooks/feature.md`; "
+    "oracle `tests plus direct source/runtime readback`"
+)
+EXECUTE_MULTI_PHASE_ROUTE = (
+    "- `long multi-phase work` -> `show-me-your-work` plus "
+    "`poteto-mode/playbooks/multi-phase-plan.md`; oracle `decision trail plus direct readback`"
+)
+EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`"
+EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
+EXECUTE_UNSUPPORTED_PHRASE = (
+    "Unsupported routes fail closed: `control-ui`, Cursor `create-skill`, Cursor `/loop`, "
+    "Graphite `gt`, cloud-agent infrastructure, standalone `goal`."
+)
+EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
 
 
 def _has_scheduler_frontmatter(content: str) -> bool:
@@ -89,7 +111,23 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
             f"project task skill {skill_name!r} is not task-type resolvable: "
             f"{relative} requires non-empty top-level schedule frontmatter"
         ]
-    return []
+    required_contracts = (
+        (EXECUTE_ENTRYPOINT_PHRASE, "poteto-mode entrypoint"),
+        (EXECUTE_BYPASS_PHRASE, "direct leaf bypass refusal"),
+        (EXECUTE_EVIDENCE_PHRASE, "route evidence packet"),
+        (EXECUTE_INVESTIGATION_ROUTE, "investigation fixture"),
+        (EXECUTE_FEATURE_ROUTE, "function-boundary feature fixture"),
+        (EXECUTE_MULTI_PHASE_ROUTE, "multi-phase fixture"),
+        (EXECUTE_CONTROL_CLI_ROUTE, "CLI control fixture"),
+        (EXECUTE_DESLOP_ROUTE, "pre-commit cleanup fixture"),
+        (EXECUTE_UNSUPPORTED_PHRASE, "unsupported route refusal"),
+        (EXECUTE_RESOLUTION_PHRASE, "pinned provider resolution refusal"),
+    )
+    errors = []
+    for phrase, label in required_contracts:
+        if phrase not in content:
+            errors.append(f"project task skill {skill_name!r} missing {label} contract")
+    return errors
 
 
 def _orders(payload: Any, label: str) -> tuple[list[Any], list[str]]:
