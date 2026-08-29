@@ -29,7 +29,7 @@ The system MUST separate stable intent, intended work, execution, physical verif
 
 Enforcement descends from repository shape, to static/CI gates, to mechanical diagnostics, to soft Agent guidance. Put an invariant at the strongest available layer: the shortest local path should preserve architecture by default; invalid structural states should fail in executable gates; known invalid patterns should name the supported path; rules and Skills explain choices but grant no authority.
 
-Issue admission and completion evidence remain separate seams. Every repository mutation receives mandatory baseline acceptance. An optional specialized oracle only adds evidence at completion and never replaces the baseline. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
+Issue admission and completion evidence remain separate seams. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle only adds evidence at completion and never replaces the built-in baseline acceptance contract. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
 
 ## Agent-friendly architecture
 
