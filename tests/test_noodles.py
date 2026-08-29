@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import tomllib
 import unittest
 from unittest import mock
@@ -681,6 +682,33 @@ class ReconcileTests(unittest.TestCase):
 
         self.assertEqual(completed, [])
         self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
+
+
+class StartUnattendedTests(unittest.TestCase):
+    def test_wrapper_polls_reconcile_and_sleeps_before_clean_exit(self) -> None:
+        process = mock.Mock(returncode=0)
+        process.poll.side_effect = [None, 0, 0]
+        policy = {
+            "repository": "ed3c/noodles",
+            "default_branch": "main",
+            "required_check": "verify",
+        }
+
+        with mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+             mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
+             mock.patch.object(noodles, "provider_sync"), \
+             mock.patch.object(noodles, "skill_discovery_check"), \
+             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
+             mock.patch.object(noodles, "reconcile_once") as reconcile, \
+             mock.patch.object(time, "sleep") as sleep:
+            result = noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+
+        self.assertEqual(result, 0)
+        reconcile.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
+        sleep.assert_called_once_with(0.25)
+        process.terminate.assert_not_called()
 
 
 class ProviderPhysicalTests(unittest.TestCase):
