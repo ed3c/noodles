@@ -60,6 +60,60 @@ def write_noodle_stub(path: Path, version: str) -> None:
     path.chmod(0o755)
 
 
+def write_handoff_noodle_stub(path: Path, version: str, blocking: bool = True) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import pathlib\n"
+        "import sys\n"
+        "args = sys.argv[1:]\n"
+        f"if args == ['--version']:\n    print({version!r})\n"
+        "elif len(args) == 9 and args[0] == '--project-dir' and args[2:5] == ['event', 'emit', 'stage_message']:\n"
+        "    root = pathlib.Path(args[1])\n"
+        "    session = args[6]\n"
+        "    payload = json.loads(args[8])\n"
+        f"    payload['blocking'] = {blocking!r}\n"
+        "    event = {'type': 'stage_message', 'payload': payload, 'timestamp': '2026-08-29T00:00:00Z', 'session_id': session}\n"
+        "    target = root / '.noodle' / 'sessions' / session / 'events.ndjson'\n"
+        "    with target.open('a', encoding='utf-8') as handle:\n"
+        "        handle.write(json.dumps(event) + '\\n')\n"
+        "else:\n"
+        "    raise SystemExit(f'unexpected args: {args}')\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def handoff_fixture(
+    source: Path,
+    subject: str = "ed3c/noodles#33",
+    *,
+    blocking: bool = True,
+) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
+    temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
+    root = Path(temp.name) / "repo"
+    copy_tracked(source, root)
+    cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
+    binary = Path(temp.name) / "noodle"
+    write_handoff_noodle_stub(binary, "v0.1.5", blocking)
+    lock_path = root / "policy/runtime.lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["runtime"]["command"] = str(binary)
+    lock["runtime"]["platforms"]["darwin_arm64"]["binary_sha256"] = runtime_contract.sha256_file(binary)
+    lock_path.write_text(json.dumps(lock))
+    session_id = "ed3c-noodles-33-0-execute-fixture"
+    session = root / ".noodle" / "sessions" / session_id
+    session.mkdir(parents=True)
+    (session / "spawn.json").write_text(json.dumps({"worktree_path": str(root)}))
+    (session / "events.ndjson").write_text(json.dumps({
+        "type": "action",
+        "payload": {"message": f"[order:{subject}] fixture"},
+        "timestamp": "2026-08-29T00:00:00Z",
+        "session_id": session_id,
+    }) + "\n")
+    return temp, root, binary, session_id
+
+
 def provider_fixture(subpath: str = "skills/engineering", license_path: str = "LICENSE") -> tuple[tempfile.TemporaryDirectory[str], Path]:
     temp = tempfile.TemporaryDirectory(prefix="noodles-provider-test-")
     base = Path(temp.name)
@@ -499,7 +553,9 @@ class ContractParserTests(unittest.TestCase):
             noodles.parse_issue_contract(self.BODY.replace("noodles-target: ed3c/noodles", "noodles-target: ed3c/other"))
 
     def test_pr_reference_is_exact_and_non_closing(self) -> None:
-        self.assertEqual(noodles.parse_pr_reference("Claim\nRefs ed3c/noodles#7\n"), "ed3c/noodles#7")
+        self.assertEqual(noodles.parse_pr_reference("Refs ed3c/noodles#7\n"), "ed3c/noodles#7")
+        with self.assertRaises(noodles.GateError):
+            noodles.parse_pr_reference("Claim\nRefs ed3c/noodles#7\n")
         with self.assertRaises(noodles.GateError):
             noodles.parse_pr_reference("Refs ed3c/noodles#7\nRefs ed3c/noodles#8\n")
         with self.assertRaises(noodles.GateError):
@@ -508,6 +564,123 @@ class ContractParserTests(unittest.TestCase):
     def test_state_marker_replacement_is_single(self) -> None:
         changed = noodles.replace_marker(self.BODY, "state", "awaiting_land")
         self.assertEqual(noodles.parse_issue_contract(changed)["state"], "awaiting_land")
+
+
+class ExecuteHandoffTests(unittest.TestCase):
+    SUBJECT = "ed3c/noodles#33"
+
+    def setUp(self) -> None:
+        self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT)
+        self.addCleanup(self.temp.cleanup)
+        self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+
+    def pr(self, **overrides: object) -> dict:
+        payload = {
+            "state": "open",
+            "draft": False,
+            "body": f"Refs {self.SUBJECT}",
+            "head": {"sha": self.head},
+            "base": {"ref": "main"},
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_positive_handoff_emits_one_blocking_message_for_exact_session(self) -> None:
+        pr = self.pr()
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"):
+            receipt = noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
+
+        self.assertEqual(receipt["session_id"], self.session_id)
+        self.assertEqual(receipt["head"], self.head)
+        events_path = self.root / ".noodle" / "sessions" / self.session_id / "events.ndjson"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        handoffs = [item for item in events if item["type"] == "stage_message"]
+        self.assertEqual(len(handoffs), 1)
+        self.assertIs(handoffs[0]["payload"]["blocking"], True)
+        self.assertIn(self.SUBJECT, handoffs[0]["payload"]["message"])
+
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"):
+            noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        self.assertEqual(sum(item["type"] == "stage_message" for item in events), 1)
+
+    def test_wrong_session_id_fails_before_emission(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": "wrong-session"}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state") as set_state:
+            with self.assertRaisesRegex(noodles.GateError, "session"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+        set_state.assert_not_called()
+
+    def test_non_blocking_runtime_event_fails_direct_readback(self) -> None:
+        self.temp.cleanup()
+        self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT, blocking=False)
+        self.addCleanup(self.temp.cleanup)
+        self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"):
+            with self.assertRaisesRegex(noodles.GateError, "blocking"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+
+    def test_wrong_pr_body_or_head_fails_closed(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"):
+            with self.assertRaises(noodles.GateError):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(body="Claim\nRefs ed3c/noodles#33"))
+            with self.assertRaisesRegex(noodles.GateError, "head"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": "f" * 40}))
+
+    def test_missing_pr_fails_before_issue_or_session_mutation(self) -> None:
+        with mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("missing PR")), \
+             mock.patch.object(noodles, "issue_set_state") as set_state:
+            self.assertEqual(noodles.main(["--root", str(self.root), "issue", "handoff", self.SUBJECT, "--pr", "404"]), 1)
+        set_state.assert_not_called()
+
+
+class ReconcileTests(unittest.TestCase):
+    def test_provider_landed_sends_exact_merge_control_and_accepts_status_ack(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        def fake_http(url: str, *, payload: object | None = None) -> dict:
+            calls.append((url, payload))
+            if payload is None:
+                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
+            return {"id": payload["id"], "action": "merge", "status": "ok"}
+
+        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "git", return_value=""):
+            completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+        self.assertEqual(completed, ["ed3c/noodles#33"])
+        self.assertEqual(calls[1][1]["action"], "merge")
+        self.assertEqual(calls[1][1]["order_id"], "ed3c/noodles#33")
+
+    def test_machine_merge_rejects_control_ack_drift(self) -> None:
+        responses = [
+            {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]},
+            {"id": "wrong", "action": "merge", "status": "ok"},
+        ]
+        with mock.patch.object(noodles, "http_json", side_effect=responses), \
+             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "git", return_value=""):
+            with self.assertRaisesRegex(noodles.GateError, "rejected machine reconciliation"):
+                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+    def test_preland_reconcile_sends_no_control(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        def fake_http(url: str, *, payload: object | None = None) -> dict:
+            calls.append((url, payload))
+            return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
+
+        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "provider_landed", side_effect=noodles.GateError("not landed")):
+            completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+        self.assertEqual(completed, [])
+        self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
 
 
 class ProviderPhysicalTests(unittest.TestCase):
