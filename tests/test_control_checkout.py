@@ -33,6 +33,7 @@ class ControlCheckoutAdmissionTests(unittest.TestCase):
         self.assertEqual(receipt["branch"], "main")
         self.assertEqual(receipt["local_head"], cmd(["git", "rev-parse", "HEAD"], self.root))
         self.assertEqual(receipt["provider_head"], cmd(["git", "rev-parse", "HEAD"], self.provider))
+        self.assertEqual(receipt["relation"], "equal")
         self.assertEqual(receipt["porcelain"], [])
         self.assertEqual(receipt["ignored"], [])
         self.assertTrue(receipt["clean"])
@@ -52,21 +53,47 @@ class ControlCheckoutAdmissionTests(unittest.TestCase):
         self.assertTrue(any(".worktrees" in line for line in receipt["ignored"]))
         self.assertTrue(receipt["clean"])
 
+    def test_reconcile_clean_default_branch_at_provider_head_passes_with_readback(self) -> None:
+        receipt = noodles.reconcile_checkout_admission(self.root)
+        self.assertEqual(receipt["branch"], "main")
+        self.assertEqual(receipt["local_head"], cmd(["git", "rev-parse", "HEAD"], self.root))
+        self.assertEqual(receipt["provider_head"], cmd(["git", "rev-parse", "HEAD"], self.provider))
+        self.assertEqual(receipt["relation"], "equal")
+        self.assertEqual(receipt["porcelain"], [])
+        self.assertEqual(receipt["ignored"], [])
+        self.assertTrue(receipt["clean"])
+
     def test_tracked_dirty_checkout_fails_closed(self) -> None:
         path = self.root / "README.md"
         path.write_text(path.read_text(encoding="utf-8") + "\ntracked dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(noodles.GateError, "non-ignored changes"):
             noodles.control_checkout_admission(self.root)
 
+    def test_reconcile_tracked_dirty_checkout_fails_closed(self) -> None:
+        path = self.root / "README.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\ntracked dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(noodles.GateError, "non-ignored changes"):
+            noodles.reconcile_checkout_admission(self.root)
+
     def test_untracked_nonignored_checkout_fails_closed(self) -> None:
         (self.root / "scratch.txt").write_text("dirty\n", encoding="utf-8")
         with self.assertRaisesRegex(noodles.GateError, "non-ignored changes"):
             noodles.control_checkout_admission(self.root)
 
+    def test_reconcile_untracked_nonignored_checkout_fails_closed(self) -> None:
+        (self.root / "scratch.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(noodles.GateError, "non-ignored changes"):
+            noodles.reconcile_checkout_admission(self.root)
+
     def test_wrong_branch_fails_closed(self) -> None:
         cmd(["git", "checkout", "-q", "-b", "topic"], self.root)
         with self.assertRaisesRegex(noodles.GateError, "default branch main"):
             noodles.control_checkout_admission(self.root)
+
+    def test_reconcile_wrong_branch_fails_closed(self) -> None:
+        cmd(["git", "checkout", "-q", "-b", "topic"], self.root)
+        with self.assertRaisesRegex(noodles.GateError, "default branch main"):
+            noodles.reconcile_checkout_admission(self.root)
 
     def test_behind_checkout_fails_closed(self) -> None:
         provider_head = self.provider_commit("behind.txt", "provider ahead\n", "provider ahead")
@@ -74,10 +101,26 @@ class ControlCheckoutAdmissionTests(unittest.TestCase):
             noodles.control_checkout_admission(self.root)
         self.assertEqual(provider_head, cmd(["git", "rev-parse", "HEAD"], self.provider))
 
+    def test_reconcile_behind_checkout_passes_with_readback(self) -> None:
+        local_head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        provider_head = self.provider_commit("behind.txt", "provider ahead\n", "provider ahead")
+        receipt = noodles.reconcile_checkout_admission(self.root)
+        self.assertEqual(receipt["branch"], "main")
+        self.assertEqual(receipt["local_head"], local_head)
+        self.assertEqual(receipt["provider_head"], provider_head)
+        self.assertEqual(receipt["relation"], "behind")
+        self.assertTrue(receipt["clean"])
+
     def test_ahead_checkout_fails_closed(self) -> None:
         local_head = self.control_commit("ahead.txt", "local ahead\n", "local ahead")
         with self.assertRaisesRegex(noodles.GateError, "ahead"):
             noodles.control_checkout_admission(self.root)
+        self.assertEqual(local_head, cmd(["git", "rev-parse", "HEAD"], self.root))
+
+    def test_reconcile_ahead_checkout_fails_closed(self) -> None:
+        local_head = self.control_commit("ahead.txt", "local ahead\n", "local ahead")
+        with self.assertRaisesRegex(noodles.GateError, "ahead"):
+            noodles.reconcile_checkout_admission(self.root)
         self.assertEqual(local_head, cmd(["git", "rev-parse", "HEAD"], self.root))
 
     def test_diverged_checkout_fails_closed(self) -> None:
@@ -85,3 +128,9 @@ class ControlCheckoutAdmissionTests(unittest.TestCase):
         self.provider_commit("provider-only.txt", "provider only\n", "provider only")
         with self.assertRaisesRegex(noodles.GateError, "diverged"):
             noodles.control_checkout_admission(self.root)
+
+    def test_reconcile_diverged_checkout_fails_closed(self) -> None:
+        self.control_commit("local-only.txt", "local only\n", "local only")
+        self.provider_commit("provider-only.txt", "provider only\n", "provider only")
+        with self.assertRaisesRegex(noodles.GateError, "diverged"):
+            noodles.reconcile_checkout_admission(self.root)

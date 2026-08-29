@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import noodles
-from tests.support import CANDIDATE_ROOT, cmd, handoff_fixture
+from tests.support import CANDIDATE_ROOT, cmd, control_checkout_fixture, handoff_fixture
 
 
 class ContractParserTests(unittest.TestCase):
@@ -114,8 +114,8 @@ class ExecuteHandoffTests(unittest.TestCase):
 
 
 class ReconcileTests(unittest.TestCase):
-    def test_control_checkout_admission_fails_before_snapshot_or_merge(self) -> None:
-        with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
+    def test_reconcile_checkout_admission_fails_before_snapshot_or_merge(self) -> None:
+        with mock.patch.object(noodles, "reconcile_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
              mock.patch.object(noodles, "http_json") as http_json, \
              mock.patch.object(noodles, "git") as git_cmd:
             with self.assertRaisesRegex(noodles.GateError, "dirty"):
@@ -133,10 +133,21 @@ class ReconcileTests(unittest.TestCase):
                 return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
             return {"id": payload["id"], "action": "merge", "status": "ok"}
 
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+        def fake_git(_root: Path, *args: str, check: bool = True) -> str:
+            if args == ("fetch", "--quiet", "origin", "main"):
+                return ""
+            if args == ("merge", "--ff-only", "origin/main"):
+                return ""
+            if args == ("rev-parse", "refs/remotes/origin/main"):
+                return "b" * 40
+            if args == ("rev-parse", "HEAD"):
+                return "b" * 40
+            raise AssertionError(f"unexpected git args: {args}")
+
+        with mock.patch.object(noodles, "reconcile_checkout_admission", return_value={"branch": "main"}), \
              mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value="") as git_cmd:
+             mock.patch.object(noodles, "git", side_effect=fake_git) as git_cmd:
             completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
 
         self.assertEqual(completed, ["ed3c/noodles#33"])
@@ -144,6 +155,8 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(calls[1][1]["order_id"], "ed3c/noodles#33")
         git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "main")
         git_cmd.assert_any_call(CANDIDATE_ROOT, "merge", "--ff-only", "origin/main")
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "rev-parse", "refs/remotes/origin/main")
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "rev-parse", "HEAD")
 
     def test_reconcile_uses_admitted_default_branch_for_fetch_and_merge(self) -> None:
         def fake_http(url: str, *, payload: object | None = None) -> dict:
@@ -151,10 +164,21 @@ class ReconcileTests(unittest.TestCase):
                 return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
             return {"id": payload["id"], "action": "merge", "status": "ok"}
 
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "trunk"}), \
+        def fake_git(_root: Path, *args: str, check: bool = True) -> str:
+            if args == ("fetch", "--quiet", "origin", "trunk"):
+                return ""
+            if args == ("merge", "--ff-only", "origin/trunk"):
+                return ""
+            if args == ("rev-parse", "refs/remotes/origin/trunk"):
+                return "b" * 40
+            if args == ("rev-parse", "HEAD"):
+                return "b" * 40
+            raise AssertionError(f"unexpected git args: {args}")
+
+        with mock.patch.object(noodles, "reconcile_checkout_admission", return_value={"branch": "trunk"}), \
              mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value="") as git_cmd:
+             mock.patch.object(noodles, "git", side_effect=fake_git) as git_cmd:
             noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
 
         git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "trunk")
@@ -165,12 +189,52 @@ class ReconcileTests(unittest.TestCase):
             {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]},
             {"id": "wrong", "action": "merge", "status": "ok"},
         ]
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+        def fake_git(_root: Path, *args: str, check: bool = True) -> str:
+            if args == ("fetch", "--quiet", "origin", "main"):
+                return ""
+            if args == ("merge", "--ff-only", "origin/main"):
+                return ""
+            if args == ("rev-parse", "refs/remotes/origin/main"):
+                return "b" * 40
+            if args == ("rev-parse", "HEAD"):
+                return "b" * 40
+            raise AssertionError(f"unexpected git args: {args}")
+
+        with mock.patch.object(noodles, "reconcile_checkout_admission", return_value={"branch": "main"}), \
              mock.patch.object(noodles, "http_json", side_effect=responses), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value=""):
+             mock.patch.object(noodles, "git", side_effect=fake_git):
             with self.assertRaisesRegex(noodles.GateError, "rejected machine reconciliation"):
                 noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+    def test_reconcile_rejects_post_merge_head_drift_before_control_ack(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        def fake_http(url: str, *, payload: object | None = None) -> dict:
+            calls.append((url, payload))
+            if payload is None:
+                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
+            return {"id": payload["id"], "action": "merge", "status": "ok"}
+
+        def fake_git(_root: Path, *args: str, check: bool = True) -> str:
+            if args == ("fetch", "--quiet", "origin", "main"):
+                return ""
+            if args == ("merge", "--ff-only", "origin/main"):
+                return ""
+            if args == ("rev-parse", "refs/remotes/origin/main"):
+                return "b" * 40
+            if args == ("rev-parse", "HEAD"):
+                return "c" * 40
+            raise AssertionError(f"unexpected git args: {args}")
+
+        with mock.patch.object(noodles, "reconcile_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "git", side_effect=fake_git):
+            with self.assertRaisesRegex(noodles.GateError, "readback drift"):
+                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+        self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
 
     def test_preland_reconcile_sends_no_control(self) -> None:
         calls: list[tuple[str, object]] = []
@@ -179,10 +243,45 @@ class ReconcileTests(unittest.TestCase):
             calls.append((url, payload))
             return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
 
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+        with mock.patch.object(noodles, "reconcile_checkout_admission", return_value={"branch": "main"}), \
              mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", side_effect=noodles.GateError("not landed")):
             completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
 
         self.assertEqual(completed, [])
         self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
+
+    def test_physical_behind_checkout_fast_forwards_cleanly_before_control_ack(self) -> None:
+        temp, root, provider = control_checkout_fixture()
+        self.addCleanup(temp.cleanup)
+        local_before = cmd(["git", "rev-parse", "HEAD"], root)
+        path = provider / "behind.txt"
+        path.write_text("provider ahead\n", encoding="utf-8")
+        cmd(["git", "add", "behind.txt"], provider)
+        cmd(["git", "commit", "-q", "-m", "provider ahead"], provider)
+        provider_head = cmd(["git", "rev-parse", "HEAD"], provider)
+        command_log: list[tuple[str, ...]] = []
+        real_git = noodles.git
+
+        def logging_git(repo_root: Path, *args: str, check: bool = True) -> str:
+            command_log.append(args)
+            return real_git(repo_root, *args, check=check)
+
+        def fake_http(_url: str, *, payload: object | None = None) -> dict:
+            if payload is None:
+                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
+            self.assertEqual(cmd(["git", "rev-parse", "HEAD"], root), provider_head)
+            return {"id": payload["id"], "action": "merge", "status": "ok"}
+
+        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "git", side_effect=logging_git):
+            completed = noodles.reconcile_once(root, "http://noodle.test")
+
+        self.assertEqual(completed, ["ed3c/noodles#33"])
+        self.assertEqual(cmd(["git", "rev-parse", "HEAD"], root), provider_head)
+        self.assertEqual(cmd(["git", "status", "--porcelain=v1", "--untracked-files=all"], root), "")
+        self.assertNotEqual(local_before, provider_head)
+        self.assertTrue(any(args == ("fetch", "--quiet", "origin", "main") for args in command_log))
+        self.assertTrue(any(args == ("merge", "--ff-only", "origin/main") for args in command_log))
+        self.assertFalse(any(args and args[0] in {"checkout", "reset"} for args in command_log))

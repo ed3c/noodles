@@ -236,16 +236,12 @@ def gh_repo_from_git(root: Path, *, error_cls: type[Exception]) -> str:
     return match.group(1)
 
 
-def control_checkout_admission(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+def _control_checkout_readback(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
     branch = git(root, "branch", "--show-current", error_cls=error_cls)
     if branch != default_branch:
         observed = branch or "<detached>"
         raise error_cls(f"control checkout branch {observed} != default branch {default_branch}")
-    status_output = run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
-        cwd=root,
-        error_cls=error_cls,
-    ).stdout.splitlines()
+    status_output = run(["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], cwd=root, error_cls=error_cls).stdout.splitlines()
     ignored = [line for line in status_output if line.startswith("!! ")]
     porcelain = [line for line in status_output if not line.startswith("!! ")]
     if porcelain:
@@ -254,18 +250,37 @@ def control_checkout_admission(root: Path, default_branch: str, *, error_cls: ty
     git(root, "fetch", "--quiet", "--no-tags", "origin", f"refs/heads/{default_branch}:{remote_ref}", error_cls=error_cls)
     local_head = git(root, "rev-parse", "HEAD", error_cls=error_cls)
     provider_head = git(root, "rev-parse", remote_ref, error_cls=error_cls)
-    if local_head != provider_head:
+    ahead_count = behind_count = 0
+    if local_head == provider_head:
+        relation = "equal"
+    else:
         ahead_count, behind_count = (int(value) for value in git(root, "rev-list", "--left-right", "--count", f"HEAD...{remote_ref}", error_cls=error_cls).split())
         relation = "diverged" if ahead_count and behind_count else "ahead" if ahead_count else "behind" if behind_count else "stale"
-        raise error_cls(f"control checkout is provider-stale ({relation}): branch {branch} local {local_head} provider {provider_head}")
     return {
         "branch": branch,
         "local_head": local_head,
         "provider_head": provider_head,
+        "relation": relation,
+        "ahead_count": ahead_count,
+        "behind_count": behind_count,
         "porcelain": porcelain,
         "ignored": ignored,
         "clean": True,
     }
+
+
+def control_checkout_admission(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+    receipt = _control_checkout_readback(root, default_branch, error_cls=error_cls)
+    if receipt["relation"] != "equal":
+        raise error_cls(f"control checkout is provider-stale ({receipt['relation']}): branch {receipt['branch']} local {receipt['local_head']} provider {receipt['provider_head']}")
+    return receipt
+
+
+def reconcile_checkout_admission(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+    receipt = _control_checkout_readback(root, default_branch, error_cls=error_cls)
+    if receipt["relation"] not in {"equal", "behind"}:
+        raise error_cls(f"control checkout is provider-stale ({receipt['relation']}): branch {receipt['branch']} local {receipt['local_head']} provider {receipt['provider_head']}")
+    return receipt
 
 
 def load_json(path: Path, *, error_cls: type[Exception]) -> Any:
