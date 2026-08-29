@@ -33,6 +33,9 @@ EXECUTE_UNSUPPORTED_PHRASE = (
     "Graphite `gt`, cloud-agent infrastructure, standalone `goal`."
 )
 EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
+COMPACT_ORDER_TOP_LEVEL_FIELDS = frozenset({"orders", "action_needed"})
+COMPACT_ORDER_FIELDS = frozenset({"id", "plan", "rationale", "stages", "title"})
+COMPACT_STAGE_FIELDS = frozenset({"do", "extra", "extra_prompt", "group", "model", "prompt", "runtime", "with"})
 
 
 def _has_scheduler_frontmatter(content: str) -> bool:
@@ -160,10 +163,35 @@ def _orders(payload: Any, label: str) -> tuple[list[Any], list[str]]:
     return orders, []
 
 
+def _unknown_fields(payload: dict[str, Any], allowed: frozenset[str], label: str) -> list[str]:
+    allowed_fields = ", ".join(sorted(allowed))
+    return [
+        f"{label} has unknown field {field!r}; allowed fields: {allowed_fields}"
+        for field in sorted(payload)
+        if field not in allowed
+    ]
+
+
+def _validate_action_needed(payload: dict[str, Any]) -> list[str]:
+    if "action_needed" not in payload:
+        return []
+    action_needed = payload["action_needed"]
+    if not isinstance(action_needed, list):
+        return ["scheduler output action_needed must be an array of strings"]
+    errors = []
+    for index, item in enumerate(action_needed):
+        if not isinstance(item, str):
+            errors.append(f"scheduler output action_needed[{index}] must be a string")
+    return errors
+
+
 def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
     current_orders, errors = _orders(current, "current orders")
     proposed_orders, proposed_errors = _orders(proposed, "scheduler output")
     errors.extend(proposed_errors)
+    if isinstance(proposed, dict):
+        errors.extend(_unknown_fields(proposed, COMPACT_ORDER_TOP_LEVEL_FIELDS, "scheduler output"))
+        errors.extend(_validate_action_needed(proposed))
     if errors:
         return errors
 
@@ -178,6 +206,7 @@ def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
         if not isinstance(order, dict):
             errors.append(f"scheduler output order[{index}] must be a JSON object")
             continue
+        errors.extend(_unknown_fields(order, COMPACT_ORDER_FIELDS, f"scheduler output order[{index}]"))
         raw_id = order.get("id")
         if not isinstance(raw_id, str) or not raw_id.strip():
             errors.append(f"scheduler output order[{index}] requires a non-empty string id")
@@ -206,6 +235,7 @@ def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
         if not isinstance(stage, dict):
             errors.append(f"scheduler output order {order_id!r} stage[0] must be a JSON object")
             continue
+        errors.extend(_unknown_fields(stage, COMPACT_STAGE_FIELDS, f"scheduler output order {order_id!r} stage[0]"))
         raw_do = stage.get("do")
         if not isinstance(raw_do, str) or not raw_do.strip():
             errors.append(
