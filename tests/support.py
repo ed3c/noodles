@@ -156,6 +156,8 @@ def provider_fixture(subpath: str = "skills/engineering", license_path: str = "L
         }
     ]
     lock_path.write_text(json.dumps(lock))
+    cmd(["git", "add", "-A"], candidate)
+    cmd(["git", "commit", "-q", "-m", "lock fixture"], candidate)
     return temp, candidate
 
 
@@ -196,6 +198,8 @@ def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
     providers[0]["commit"] = commit
     providers[0]["destination"] = runtime_contract.CURSOR_PSTACK_DESTINATION
     lock_path.write_text(json.dumps(lock))
+    cmd(["git", "add", "-A"], candidate)
+    cmd(["git", "commit", "-q", "-m", "lock fixture"], candidate)
     return temp, candidate
 
 
@@ -205,9 +209,8 @@ def write_skill_discovery_fixture(
     compat_skills: tuple[str, ...] = runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS,
     playbooks: tuple[str, ...] = ("investigation.md", "feature.md", "multi-phase-plan.md"),
 ) -> str:
-    project_skill = (candidate / ".agents/skills/execute").resolve()
+    project_root = (candidate / runtime_contract.PROJECT_SKILLS_ROOT).resolve()
     cursor_root = (candidate / runtime_contract.CURSOR_PSTACK_NATIVE_ROOT).resolve()
-    compat_root = (candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT).resolve()
     compat_source_root = (
         candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
     ).resolve()
@@ -221,7 +224,10 @@ def write_skill_discovery_fixture(
     for name in playbooks:
         (playbook_root / name).write_text(f"# {name}\n")
 
-    output_lines = [f"execute\t{project_skill.parent}\ttrue\t{project_skill}"]
+    output_lines = []
+    for skill in runtime_contract.PROJECT_REQUIRED_SKILLS:
+        project_skill = (candidate / runtime_contract.PROJECT_SKILLS_ROOT / skill).resolve()
+        output_lines.append(f"{skill}\t{project_root}\ttrue\t{project_skill}")
     for skill in runtime_contract.CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS:
         skill_dir = cursor_root / skill
         skill_dir.mkdir(parents=True, exist_ok=True)
@@ -230,15 +236,15 @@ def write_skill_discovery_fixture(
             skill_file.write_text(f"# {skill}\n")
         output_lines.append(f"{skill}\t{cursor_root}\ttrue\t{skill_dir}")
 
-    compat_root.mkdir(parents=True, exist_ok=True)
     for skill in compat_skills:
         source_dir = compat_source_root / skill
         source_dir.mkdir(parents=True, exist_ok=True)
         (source_dir / "SKILL.md").write_text(f"# {skill}\n")
-        mapped_dir = compat_root / skill
+        mapped_dir = project_root / skill
         mapped_dir.mkdir(exist_ok=True)
-        os.symlink(Path("..") / ".." / "cursor-pstack" / "cursor-team-kit/skills" / skill / "SKILL.md", mapped_dir / "SKILL.md")
-        output_lines.append(f"{skill}\t{compat_root}\ttrue\t{mapped_dir}")
+        target = source_dir / "SKILL.md"
+        os.symlink(os.path.relpath(target, start=mapped_dir), mapped_dir / "SKILL.md")
+        output_lines.append(f"{skill}\t{project_root}\ttrue\t{mapped_dir}")
 
     matt_skill.mkdir(parents=True, exist_ok=True)
     (matt_skill / "SKILL.md").write_text("# Ask Matt\n")

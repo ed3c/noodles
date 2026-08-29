@@ -192,17 +192,35 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
 
-    def test_execute_skill_without_poteto_entrypoint_contract_is_rejected(self) -> None:
-        temp, root = self.mutated_copy()
-        self.addCleanup(temp.cleanup)
-        path = root / ".agents/skills/execute/SKILL.md"
-        content = path.read_text()
-        entrypoint = skill_contract.EXECUTE_ENTRYPOINT_PHRASE
-        self.assertIn(entrypoint, content)
-        path.write_text(content.replace(entrypoint, "Execute may route directly to a leaf skill.", 1))
-        result = self.verify(root)
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("poteto-mode entrypoint" in item for item in result["errors"]))
+    def test_execute_skill_without_required_p_contract_is_rejected(self) -> None:
+        cases = (
+            (
+                skill_contract.EXECUTE_ENTRYPOINT_PHRASE,
+                "Execute may route directly to a leaf skill.",
+                "poteto-mode entrypoint",
+            ),
+            (
+                skill_contract.EXECUTE_BYPASS_PHRASE,
+                "Leaf skill routing is permitted when it seems faster.",
+                "direct leaf bypass refusal",
+            ),
+            (
+                skill_contract.EXECUTE_UNSUPPORTED_PHRASE,
+                "Unsupported routes may proceed best-effort.",
+                "unsupported route refusal",
+            ),
+        )
+        for phrase, replacement, label in cases:
+            with self.subTest(contract=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / ".agents/skills/execute/SKILL.md"
+                content = path.read_text()
+                self.assertIn(phrase, content)
+                path.write_text(content.replace(phrase, replacement, 1))
+                result = self.verify(root)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any(label in item for item in result["errors"]))
 
     def test_schedule_skill_without_self_order_ownership_contract_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -678,7 +696,8 @@ class ProviderPhysicalTests(unittest.TestCase):
             receipts = noodles.provider_sync(candidate)
         cursor = next(item for item in receipts if item["name"] == runtime_contract.CURSOR_PSTACK_PROVIDER)
         compat_root = Path(cursor["compatibility_root"])
-        self.assertEqual(sorted(path.name for path in compat_root.iterdir()), list(runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS))
+        self.assertTrue((compat_root / "execute" / "SKILL.md").is_file())
+        self.assertTrue((compat_root / "schedule" / "SKILL.md").is_file())
         for skill in runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS:
             mapped_root = compat_root / skill
             self.assertTrue(mapped_root.is_dir())
@@ -689,43 +708,36 @@ class ProviderPhysicalTests(unittest.TestCase):
                 skill_file.resolve(),
                 (candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT / skill / "SKILL.md").resolve(),
             )
+        self.assertEqual(cmd(["git", "status", "--short"], candidate), "")
 
-    def test_provider_check_rejects_broadened_cursor_team_kit_root(self) -> None:
-        temp, candidate = cursor_pstack_fixture()
-        self.addCleanup(temp.cleanup)
-        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
-            noodles.provider_sync(candidate)
-            compat_root = candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT
-            runtime_contract._remove_path(compat_root)
-            os.symlink(
-                "cursor-pstack/cursor-team-kit/skills",
-                compat_root,
-                target_is_directory=True,
-            )
-            with self.assertRaisesRegex(noodles.GateError, "must not expose the entire cursor-team-kit/skills root"):
-                noodles.provider_check(candidate)
-
-    def test_provider_sync_replaces_broadened_cursor_team_kit_symlink_without_touching_provider_source(self) -> None:
+    def test_provider_check_rejects_missing_mapped_cursor_skill_file(self) -> None:
         temp, candidate = cursor_pstack_fixture()
         self.addCleanup(temp.cleanup)
         provider_source_root = candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
-        compat_root = candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT
         with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
             noodles.provider_sync(candidate)
             expected_digest = tree_digest(provider_source_root)
-            runtime_contract._remove_path(compat_root)
-            os.symlink("cursor-pstack/cursor-team-kit/skills", compat_root, target_is_directory=True)
-            receipts = noodles.provider_sync(candidate)
+            (candidate / runtime_contract.PROJECT_SKILLS_ROOT / "control-cli" / "SKILL.md").unlink()
+            with self.assertRaisesRegex(noodles.GateError, "control-cli missing mapped entry SKILL.md"):
+                noodles.provider_check(candidate)
+        self.assertEqual(tree_digest(provider_source_root), expected_digest)
+        self.assertTrue((provider_source_root / "deslop" / "SKILL.md").is_file())
+
+    def test_provider_check_rejects_dangling_mapped_cursor_skill_file(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        provider_source_root = candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            noodles.provider_sync(candidate)
+            expected_digest = tree_digest(provider_source_root)
+            mapped_skill = candidate / runtime_contract.PROJECT_SKILLS_ROOT / "control-cli" / "SKILL.md"
+            mapped_skill.unlink()
+            os.symlink("../missing/SKILL.md", mapped_skill)
+            with self.assertRaisesRegex(noodles.GateError, "control-cli entry SKILL.md does not resolve to pinned provider bytes"):
+                noodles.provider_check(candidate)
         self.assertEqual(tree_digest(provider_source_root), expected_digest)
         self.assertTrue((provider_source_root / "control-ui/SKILL.md").is_file())
         self.assertTrue((provider_source_root / "review-and-ship/SKILL.md").is_file())
-        self.assertFalse(compat_root.is_symlink())
-        self.assertEqual(sorted(path.name for path in compat_root.iterdir()), list(runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS))
-        for skill in runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS:
-            self.assertTrue((compat_root / skill / "SKILL.md").is_symlink())
-        self.assertFalse((compat_root / "control-ui").exists())
-        cursor = next(item for item in receipts if item["name"] == runtime_contract.CURSOR_PSTACK_PROVIDER)
-        self.assertEqual(cursor["compatibility_source_root"], str(provider_source_root.resolve()))
 
 
 class RuntimePhysicalTests(unittest.TestCase):
@@ -801,16 +813,15 @@ class RuntimePhysicalTests(unittest.TestCase):
         temp, candidate, binary, _platform_key = self.runtime_candidate()
         self.addCleanup(temp.cleanup)
         output = write_skill_discovery_fixture(candidate)
-        compat_root = (candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT).resolve()
         compat_source_root = (candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT).resolve()
         cursor_root = (candidate / runtime_contract.CURSOR_PSTACK_NATIVE_ROOT).resolve()
-        project_skill = (candidate / ".agents/skills/execute").resolve()
+        project_root = (candidate / runtime_contract.PROJECT_SKILLS_ROOT).resolve()
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             receipt = runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
         self.assertEqual(receipt["required_skill_paths"]["control-cli"]["resolved_path"], str((compat_source_root / "control-cli/SKILL.md").resolve()))
         self.assertEqual(receipt["required_skill_paths"]["poteto-mode"]["resolved_path"], str((cursor_root / "poteto-mode/SKILL.md").resolve()))
-        self.assertEqual(receipt["skills_by_path"][str(compat_root)], 2)
-        self.assertEqual(receipt["skills_by_path"][str(project_skill.parent)], 1)
+        self.assertEqual(receipt["required_skill_paths"]["schedule"]["resolved_path"], str((candidate / runtime_contract.PROJECT_SKILLS_ROOT / "schedule" / "SKILL.md").resolve()))
+        self.assertEqual(receipt["skills_by_path"][str(project_root)], 4)
         self.assertTrue((candidate / ".noodle/receipts/runtime/skills.json").exists())
 
     def test_skill_discovery_rejects_missing_configured_path(self) -> None:
@@ -829,6 +840,17 @@ class RuntimePhysicalTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "compatibility discovery must expose exactly control-cli, deslop"):
                 runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
+
+    def test_skill_discovery_rejects_configured_cursor_team_kit_root(self) -> None:
+        temp, candidate, binary, _platform_key = self.runtime_candidate()
+        self.addCleanup(temp.cleanup)
+        config_path = candidate / ".noodle.toml"
+        config = config_path.read_text(encoding="utf-8")
+        addition = '  ".noodle/providers/cursor-pstack/cursor-team-kit/skills",\n'
+        self.assertNotIn(addition, config)
+        config_path.write_text(config.replace('  ".noodle/providers/matt-engineering/skills/engineering"\n', addition + '  ".noodle/providers/matt-engineering/skills/engineering"\n'), encoding="utf-8")
+        with self.assertRaisesRegex(noodles.GateError, "must not expose the entire cursor-team-kit/skills root"):
+            runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
 
     def test_skill_discovery_rejects_missing_poteto_playbook(self) -> None:
         temp, candidate, binary, _platform_key = self.runtime_candidate()

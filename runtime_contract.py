@@ -15,10 +15,11 @@ from typing import Any, Callable, Sequence
 
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+PROJECT_SKILLS_ROOT = ".agents/skills"
+PROJECT_REQUIRED_SKILLS = ("execute", "schedule")
 CURSOR_PSTACK_PROVIDER = "cursor-pstack"
 CURSOR_PSTACK_DESTINATION = ".noodle/providers/cursor-pstack"
 CURSOR_PSTACK_NATIVE_ROOT = ".noodle/providers/cursor-pstack/pstack/skills"
-CURSOR_PSTACK_COMPAT_ROOT = ".noodle/providers/cursor-pstack-compat"
 CURSOR_PSTACK_COMPAT_SOURCE_ROOT = "cursor-team-kit/skills"
 CURSOR_PSTACK_COMPAT_SKILLS = ("control-cli", "deslop")
 CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS = (
@@ -57,6 +58,10 @@ def _cursor_provider_destination(root: Path, providers: list[dict[str, Any]]) ->
     return None
 
 
+def _compat_skill_root(root: Path, skill: str) -> Path:
+    return root / PROJECT_SKILLS_ROOT / skill
+
+
 def materialize_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> dict[str, Any] | None:
     destination = _cursor_provider_destination(root, providers)
     if destination is None:
@@ -66,10 +71,8 @@ def materialize_cursor_compat_root(root: Path, providers: list[dict[str, Any]], 
         raise error_cls(
             f"provider {CURSOR_PSTACK_PROVIDER} missing compatibility source root {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
         )
-    compat_root = root / CURSOR_PSTACK_COMPAT_ROOT
-    if compat_root.exists() or compat_root.is_symlink():
-        _remove_path(compat_root)
-    compat_root.mkdir(parents=True)
+    compat_root = root / PROJECT_SKILLS_ROOT
+    compat_root.mkdir(parents=True, exist_ok=True)
     mapped_skills: dict[str, str] = {}
     for skill in CURSOR_PSTACK_COMPAT_SKILLS:
         source = source_root / skill
@@ -78,7 +81,9 @@ def materialize_cursor_compat_root(root: Path, providers: list[dict[str, Any]], 
             raise error_cls(
                 f"provider {CURSOR_PSTACK_PROVIDER} missing mapped skill bytes for {skill} under {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
             )
-        mapped_root = compat_root / skill
+        mapped_root = _compat_skill_root(root, skill)
+        if mapped_root.exists() or mapped_root.is_symlink():
+            _remove_path(mapped_root)
         mapped_root.mkdir()
         for child in sorted(source.iterdir(), key=lambda item: item.name):
             _symlink_exact_bytes(child, mapped_root / child.name)
@@ -95,7 +100,7 @@ def validate_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, 
     if destination is None:
         return None
     source_root = destination / CURSOR_PSTACK_COMPAT_SOURCE_ROOT
-    compat_root = root / CURSOR_PSTACK_COMPAT_ROOT
+    compat_root = root / PROJECT_SKILLS_ROOT
     if not source_root.is_dir():
         raise error_cls(
             f"provider {CURSOR_PSTACK_PROVIDER} missing compatibility source root {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
@@ -104,29 +109,28 @@ def validate_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, 
         raise error_cls(f"provider {CURSOR_PSTACK_PROVIDER} compatibility root missing: {compat_root.resolve()}")
     if compat_root.resolve() == source_root.resolve():
         raise error_cls("cursor-team-kit compatibility root must not expose the entire cursor-team-kit/skills root")
-    entries = sorted(path.name for path in compat_root.iterdir())
-    expected = sorted(CURSOR_PSTACK_COMPAT_SKILLS)
-    if entries != expected:
-        raise error_cls(
-            "cursor-team-kit compatibility root must expose exactly "
-            f"{', '.join(expected)}; got {', '.join(entries) or '<empty>'}"
-        )
     mapped_skills: dict[str, str] = {}
     for skill in CURSOR_PSTACK_COMPAT_SKILLS:
-        link = compat_root / skill
+        link = _compat_skill_root(root, skill)
         target = source_root / skill
+        if not target.is_dir():
+            raise error_cls(
+                f"provider {CURSOR_PSTACK_PROVIDER} missing mapped skill bytes for {skill} under {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
+            )
         if not link.is_dir() or link.is_symlink():
             raise error_cls(f"cursor-team-kit compatibility skill {skill} must materialize as a real directory")
-        target_entries = sorted(path.name for path in target.iterdir())
-        link_entries = sorted(path.name for path in link.iterdir())
-        if link_entries != target_entries:
+        target_entries = {path.name: path for path in target.iterdir()}
+        link_entries = {path.name: path for path in link.iterdir()}
+        extra_entries = sorted(name for name in link_entries if name not in target_entries)
+        if extra_entries:
             raise error_cls(
                 f"cursor-team-kit compatibility skill {skill} must expose exact provider entries; "
-                f"expected {', '.join(target_entries) or '<empty>'}, got {', '.join(link_entries) or '<empty>'}"
+                f"unexpected {', '.join(extra_entries)}"
             )
-        for name in target_entries:
+        for name, target_entry in sorted(target_entries.items()):
             compat_entry = link / name
-            target_entry = target / name
+            if not compat_entry.exists() and not compat_entry.is_symlink():
+                raise error_cls(f"cursor-team-kit compatibility skill {skill} missing mapped entry {name}")
             if not compat_entry.is_symlink():
                 raise error_cls(
                     f"cursor-team-kit compatibility skill {skill} entry {name} must stay a symlink to pinned provider bytes"
@@ -150,8 +154,8 @@ def validate_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, 
 
 def _required_skill_roots(root: Path) -> tuple[str, str]:
     native_root = str((root / CURSOR_PSTACK_NATIVE_ROOT).resolve())
-    compat_root = str((root / CURSOR_PSTACK_COMPAT_ROOT).resolve())
-    return native_root, compat_root
+    project_root = str((root / PROJECT_SKILLS_ROOT).resolve())
+    return native_root, project_root
 
 
 def _validate_execute_route_files(root: Path, required_skill_paths: dict[str, dict[str, str]], *, error_cls: type[Exception]) -> None:
@@ -581,11 +585,15 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
     root = root.resolve()
     config = tomllib.loads((root / ".noodle.toml").read_text(encoding="utf-8"))
     configured_paths: list[str] = []
+    compat_source_root = str((root / CURSOR_PSTACK_DESTINATION / CURSOR_PSTACK_COMPAT_SOURCE_ROOT).resolve())
     for raw_path in config.get("skills", {}).get("paths", []):
         candidate = Path(os.path.expanduser(str(raw_path)))
         if not candidate.is_absolute():
             candidate = root / candidate
-        configured_paths.append(str(candidate.resolve()))
+        resolved = str(candidate.resolve())
+        if resolved == compat_source_root:
+            raise error_cls("configured skill path must not expose the entire cursor-team-kit/skills root")
+        configured_paths.append(resolved)
     output = run(
         [str(noodle_binary), "--project-dir", str(root), "skills", "list"],
         cwd=root,
@@ -614,7 +622,7 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
     missing = [path for path in configured_paths if not skills_by_root.get(path)]
     if missing:
         raise error_cls(f"noodle skill discovery missing configured paths: {', '.join(missing)}")
-    native_root, compat_root = _required_skill_roots(root)
+    native_root, project_root = _required_skill_roots(root)
     required_skill_paths: dict[str, dict[str, str]] = {}
     native_skills = skills_by_root.get(native_root, {})
     for skill in CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS:
@@ -625,7 +633,20 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
         if info["resolved_path"] != expected_path:
             raise error_cls(f"native skill {skill!r} resolved path {info['resolved_path']} != {expected_path}")
         required_skill_paths[skill] = {"root": native_root, **info}
-    compat_skills = skills_by_root.get(compat_root, {})
+    project_skills = skills_by_root.get(project_root, {})
+    for skill in PROJECT_REQUIRED_SKILLS:
+        info = project_skills.get(skill)
+        if info is None:
+            raise error_cls(f"noodle skill discovery missing required project skill {skill!r} from {project_root}")
+        expected_path = str((root / PROJECT_SKILLS_ROOT / skill / "SKILL.md").resolve())
+        if info["resolved_path"] != expected_path:
+            raise error_cls(f"project skill {skill!r} resolved path {info['resolved_path']} != {expected_path}")
+        required_skill_paths[skill] = {"root": project_root, **info}
+    compat_skills = {
+        skill: info
+        for skill, info in project_skills.items()
+        if Path(info["resolved_path"]).is_relative_to(Path(compat_source_root))
+    }
     if sorted(compat_skills) != list(CURSOR_PSTACK_COMPAT_SKILLS):
         raise error_cls(
             "cursor-team-kit compatibility discovery must expose exactly "
@@ -636,7 +657,7 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
         expected_path = str((root / CURSOR_PSTACK_DESTINATION / CURSOR_PSTACK_COMPAT_SOURCE_ROOT / skill / "SKILL.md").resolve())
         if info["resolved_path"] != expected_path:
             raise error_cls(f"mapped skill {skill!r} resolved path {info['resolved_path']} != {expected_path}")
-        required_skill_paths[skill] = {"root": compat_root, **info}
+        required_skill_paths[skill] = {"root": project_root, **info}
     _validate_execute_route_files(root, required_skill_paths, error_cls=error_cls)
     receipt = {
         "configured_paths": configured_paths,

@@ -20,7 +20,6 @@ port = 3210
 paths = [
   ".agents/skills",
   ".noodle/providers/cursor-pstack/pstack/skills",
-  ".noodle/providers/cursor-pstack-compat",
   ".noodle/providers/matt-engineering/skills/engineering"
 ]
 
