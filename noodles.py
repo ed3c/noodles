@@ -6,6 +6,7 @@ import codex_isolation
 import feature_contract
 import hashlib
 import github_protection
+import issue_contract
 import json
 import math
 import os
@@ -47,13 +48,15 @@ from skill_contract import (
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
 ALLOWED_ISSUE_STATES = {"ready", "in_progress", "awaiting_land", "landed", "blocked"}
-SUBJECT_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
+SUBJECT_RE = issue_contract.SUBJECT_RE
 MARKER_PATTERNS = {
     "role": re.compile(r"<!--\s*noodles-role:\s*([^>]+?)\s*-->", re.I),
     "target": re.compile(r"<!--\s*noodles-target:\s*([^>]+?)\s*-->", re.I),
     "subject": re.compile(r"<!--\s*noodles-subject:\s*([^>]+?)\s*-->", re.I),
     "state": re.compile(r"<!--\s*noodles-state:\s*([^>]+?)\s*-->", re.I),
     "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
+    "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
+    "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
     "head": re.compile(r"<!--\s*noodles-head:\s*([0-9a-f]{40})\s*-->", re.I),
     "merge": re.compile(r"<!--\s*noodles-merge:\s*([0-9a-f]{40})\s*-->", re.I),
@@ -141,7 +144,7 @@ def one_marker(body: str, name: str, required: bool = True) -> str | None:
     if len(matches) != 1:
         raise GateError(f"expected one noodles-{name.replace('_', '-')} marker, found {len(matches)}")
     return matches[0].strip()
-def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict[str, str]:
+def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict[str, Any]:
     role = one_marker(body, "role")
     target = one_marker(body, "target")
     subject_value = one_marker(body, "subject")
@@ -159,7 +162,18 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     offending = N_CLASS_EVIDENCE_RE.search(body or "")
     if offending:
         raise GateError(f"{offending.group(1).lower()} field must cite a machine artifact, not N-class prose: {offending.group(2)}")
-    return {"role": role, "target": target or "", "subject": subject.value, "state": state_value or "", "feature": feature_value or ""}
+    declared = one_marker(body, "depends_on", required=False)
+    dependencies = None if declared is None else list(issue_contract.parse_dependencies(declared, subject.value, error_cls=GateError))
+    blocker = issue_contract.parse_blocker(one_marker(body, "blocker", required=False), state_value or "", error_cls=GateError)
+    return {
+        "role": role,
+        "target": target or "",
+        "subject": subject.value,
+        "state": state_value or "",
+        "feature": feature_value or "",
+        "dependencies": dependencies,
+        "blocker": blocker,
+    }
 
 
 def replace_marker(body: str, name: str, value: str) -> str:
@@ -483,6 +497,8 @@ def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
         raise GateError(f"unsupported issue state: {new_state}")
     subject = parse_subject(subject_value)
     issue = issue_read(subject_value)
+    if new_state == "blocked" and not one_marker(issue.get("body") or "", "blocker", required=False):
+        raise GateError(f"{subject_value} cannot become blocked without a noodles-blocker owner/reason; dependency waiting is derived from provider readback")
     body = replace_marker(issue.get("body") or "", "state", new_state)
     gh_api(f"repos/{subject.repo}/issues/{subject.number}", method="PATCH", payload={"body": body})
     readback = issue_read(subject_value)
@@ -490,6 +506,48 @@ def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
     if contract["state"] != new_state:
         raise GateError(f"issue state readback failed for {subject_value}")
     return readback
+
+
+def dependency_readback(subject_value: str) -> dict[str, Any]:
+    """Read one predecessor's own provider truth; a failed read never reads as satisfied."""
+    try:
+        issue = issue_read(subject_value)
+        contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
+    except GateError as exc:
+        return {"subject": subject_value, "provider_state": None, "state": None, "error": str(exc)}
+    return {"subject": subject_value, "provider_state": issue.get("state"), "state": contract["state"], "error": None}
+
+
+def issue_contract_readback(subject_value: str, dependency_cache: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Read-only typed Issue contract with dependency eligibility derived from provider readback."""
+    return issue_contract_payload(issue_read(subject_value), subject_value, dependency_cache)
+
+
+def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dependency_cache: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    body = issue.get("body") or ""
+    contract = parse_issue_contract(body, expected_subject=subject_value)
+    cache = dependency_cache if dependency_cache is not None else {}
+    observed = {}
+    for dependency in contract["dependencies"] or ():
+        observed[dependency] = cache.setdefault(dependency, dependency_readback(dependency))
+    body_sections = issue_contract.sections(body)
+    derived = issue_contract.derive_schedulability(contract, str(issue.get("state") or ""), observed, body_sections)
+    return {
+        "subject": contract["subject"],
+        "target": contract["target"],
+        "feature": contract["feature"],
+        "state": contract["state"],
+        "provider_state": issue.get("state"),
+        "url": issue.get("html_url"),
+        "body_sha256": issue_contract.body_digest(body),
+        "dependencies": contract["dependencies"],
+        "dependency_states": observed,
+        "blocker": contract["blocker"],
+        "goal": body_sections.get("goal", ""),
+        "physical_acceptance": body_sections.get("physical_acceptance", ""),
+        "non_claims": body_sections.get("non_claims", ""),
+        **derived,
+    }
 
 
 def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str, Any]) -> dict[str, Any]:
@@ -780,13 +838,14 @@ def adapter_sync() -> int:
     if not repositories:
         repositories = [runtime_gh_repo_from_git(repo_root(), error_cls=GateError)]
     output: list[dict[str, Any]] = []
+    dependency_cache: dict[str, dict[str, Any]] = {}
     for repository in repositories:
         issues = gh_api(f"repos/{repository}/issues?state=open&per_page=100")
         for issue in issues:
             if "pull_request" in issue:
                 continue
             try:
-                contract = parse_issue_contract(issue.get("body") or "")
+                contract = issue_contract_payload(issue, None, dependency_cache)
             except GateError as exc:
                 number = issue.get("number")
                 output.append(
@@ -805,6 +864,13 @@ def adapter_sync() -> int:
                     "title": issue.get("title") or contract["subject"],
                     "status": contract["state"],
                     "url": issue.get("html_url"),
+                    "target": contract["target"],
+                    "feature": contract["feature"],
+                    "dependencies": contract["dependencies"],
+                    "blocker": contract["blocker"],
+                    "body_sha256": contract["body_sha256"],
+                    "schedulable": contract["schedulable"],
+                    "reasons": contract["reasons"],
                 }
             )
     for item in output:
@@ -913,6 +979,8 @@ def build_parser() -> argparse.ArgumentParser:
     issue_sub = issue.add_subparsers(dest="issue_action", required=True)
     issue_validate = issue_sub.add_parser("validate")
     issue_validate.add_argument("subject")
+    issue_contract_command = issue_sub.add_parser("contract")
+    issue_contract_command.add_argument("subject")
     issue_handoff = issue_sub.add_parser("handoff")
     issue_handoff.add_argument("subject")
     issue_handoff.add_argument("--pr", type=int, required=True)
@@ -978,6 +1046,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.issue_action == "validate":
                 issue = issue_read(args.subject)
                 print(json.dumps(parse_issue_contract(issue.get("body") or "", args.subject), indent=2, sort_keys=True))
+                return 0
+            if args.issue_action == "contract":
+                print(json.dumps(issue_contract_readback(args.subject), indent=2, sort_keys=True))
                 return 0
             if args.issue_action == "handoff":
                 subject = parse_subject(args.subject)

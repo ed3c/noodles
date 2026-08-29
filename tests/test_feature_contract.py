@@ -15,6 +15,7 @@ import skill_contract
 from tests.support import (
     CANDIDATE_ROOT,
     FEATURE,
+    ISSUE_DEPENDS_ON_MARKER,
     ISSUE_FEATURE_MARKER,
     acceptance_evidence,
     cmd,
@@ -31,6 +32,7 @@ ISSUE_BODY = (
     f"<!-- noodles-subject: {SUBJECT} -->\n"
     "<!-- noodles-state: ready -->\n"
     f"{ISSUE_FEATURE_MARKER}\n"
+    f"{ISSUE_DEPENDS_ON_MARKER}\n"
 )
 
 

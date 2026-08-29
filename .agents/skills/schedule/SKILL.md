@@ -10,7 +10,9 @@ Use this skill only for scheduling. Do not implement code here.
 
 ## Inputs
 
-Read the backlog adapter output. Each valid item has an exact ID `owner/repo#N` and a provider-backed state.
+Read the backlog adapter output. Each valid item has an exact ID `owner/repo#N`, a provider-backed state, its declared `dependencies`, a derived `schedulable` flag with exact `reasons`, and the provider `body_sha256`.
+
+Read `./noodles issue contract owner/repo#N` for the typed goal, physical acceptance, and non-claims of an item you intend to schedule. Never invent a `gh` command and never re-derive dependency waiting by hand.
 
 ## Admission
 
@@ -20,10 +22,10 @@ Schedule an item only when all are true:
 2. `./noodles issue validate owner/repo#N` passes.
 3. Issue state is `ready`.
 4. The target repository is admitted by `policy/github.json`.
-5. Every declared predecessor has provider state `landed` and is closed.
+5. The adapter reports `schedulable: true`, which means every declared predecessor read back closed and `landed`.
 6. The Issue describes one repository-mutating atom or one evidence-only audit atom.
 
-Reject or mark `blocked` when the target, subject, dependency, acceptance evidence, or non-claims are ambiguous.
+Do not schedule an item whose `reasons` are non-empty, and never patch an Issue marker to represent dependency waiting: eligibility is re-derived from provider truth on every sync. Reject when the target, subject, acceptance evidence, or non-claims are ambiguous. Reserve `blocked` for a real blocker with an explicit `<!-- noodles-blocker: owner: reason -->`.
 
 ## Ownership boundary
 

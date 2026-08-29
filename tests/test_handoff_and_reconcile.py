@@ -10,6 +10,7 @@ import noodles
 from tests.support import (
     CANDIDATE_ROOT,
     FEATURE,
+    ISSUE_DEPENDS_ON_MARKER,
     ISSUE_FEATURE_MARKER,
     cmd,
     control_checkout_fixture,
@@ -24,6 +25,7 @@ class ContractParserTests(unittest.TestCase):
 <!-- noodles-subject: ed3c/noodles#7 -->
 <!-- noodles-state: ready -->
 {ISSUE_FEATURE_MARKER}
+{ISSUE_DEPENDS_ON_MARKER}
 """
 
     def test_issue_contract_positive(self) -> None:
@@ -160,7 +162,8 @@ class ExecuteHandoffTests(unittest.TestCase):
             "<!-- noodles-target: ed3c/noodles -->\n"
             f"<!-- noodles-subject: {self.SUBJECT} -->\n"
             "<!-- noodles-state: ready -->\n"
-            "<!-- noodles-feature: verification-skill-oracle -->\n\n"
+            "<!-- noodles-feature: verification-skill-oracle -->\n"
+            f"{ISSUE_DEPENDS_ON_MARKER}\n\n"
             "- Evidence: docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md\n"
         )
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
