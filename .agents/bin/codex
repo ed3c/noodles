@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Apply the repository's exact task-model effort before invoking Codex."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+EXPECTED_PROFILES = {
+    "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+    "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
+}
+
+
+def fail(message: str) -> None:
+    print(f"codex task carrier rejected launch: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def policy_profiles() -> dict[str, dict[str, str]]:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        policy = json.loads((root / "policy/fitness.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read fitness policy: {exc}")
+    profiles = policy.get("required_codex_task_profiles")
+    if profiles != EXPECTED_PROFILES:
+        fail(f"task profiles must be exactly {EXPECTED_PROFILES!r}")
+    return profiles
+
+
+def option_values(argv: list[str], short: str, long: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            break
+        if argument in {short, long}:
+            if index + 1 >= len(argv):
+                fail(f"{long} requires a value")
+            values.append(argv[index + 1])
+            index += 2
+            continue
+        if argument.startswith(f"{long}="):
+            values.append(argument.split("=", 1)[1])
+        elif argument.startswith(short) and len(argument) > len(short):
+            values.append(argument[len(short):].removeprefix("="))
+        index += 1
+    return values
+
+
+def requested_model(argv: list[str]) -> str:
+    models = option_values(argv, "-m", "--model")
+    if len(models) != 1 or not models[0]:
+        fail(f"expected exactly one non-empty --model; found {len(models)}")
+    return models[0]
+
+
+def reject_reasoning_override(argv: list[str]) -> None:
+    for config in option_values(argv, "-c", "--config"):
+        if config.split("=", 1)[0].strip() == "model_reasoning_effort":
+            fail("model_reasoning_effort must come only from the task profile")
+
+
+def real_codex() -> str:
+    carrier_dir = Path(__file__).resolve().parent
+    search_path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and Path(entry).resolve() != carrier_dir
+    )
+    resolved = shutil.which("codex", path=search_path)
+    if resolved is None:
+        fail("real codex executable not found outside carrier directory")
+    return resolved
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    reject_reasoning_override(argv)
+    model = requested_model(argv)
+    profiles = policy_profiles()
+    matching = [profile for profile in profiles.values() if profile["model"] == model]
+    if len(matching) != 1:
+        fail(f"model {model!r} is not an exact admitted task model")
+    effort = matching[0]["reasoning_effort"]
+    injection = ["-c", f'model_reasoning_effort="{effort}"']
+    insert_at = 1 if argv and argv[0] == "exec" else 0
+    os.execv(real_codex(), [real_codex(), *argv[:insert_at], *injection, *argv[insert_at:]])
+
+
+if __name__ == "__main__":
+    main()

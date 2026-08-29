@@ -30,6 +30,7 @@ from tests.support import (
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
+TASK_PROFILES = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_task_profiles"]
 
 class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
@@ -83,18 +84,15 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("mode must be" in item for item in result["errors"]))
 
-    def test_codex_routing_transition_states_are_exact(self) -> None:
+    def test_codex_task_profiles_are_exact(self) -> None:
         with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
             config = tomllib.load(handle)
-        candidate_state = {"model": config["routing"]["defaults"]["model"], "codex_path": config["agents"]["codex"]["path"]}; expected = [{"model": "gpt-5.4", "codex_path": "~/.codex"}, {"model": "gpt-5.6-luna", "codex_path": ".agents/bin"}]; self.assertIn(candidate_state, expected)
+        expected = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
+        self.assertEqual(TASK_PROFILES, expected)
+        self.assertEqual(config["routing"]["defaults"]["model"], expected["schedule"]["model"])
+        self.assertEqual(config["agents"]["codex"]["path"], ".agents/bin")
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
-        self.assertEqual(json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_routing_transition"], expected)
-        for state in [item for item in expected if item != candidate_state] + [{"model": model, "codex_path": path} for model, path in (("gpt-5.6-luna", "~/.codex"), ("gpt-5.6-pro", ".agents/bin"), ("gpt-5.6", ".agents/bin"), ("claude-opus-4-1", ".agents/bin"), ("gpt-5.6-luna", "./other"))]:
-            with self.subTest(state=state):
-                temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / ".noodle.toml"; content = path.read_text(); content = content.replace(f'model = "{candidate_state["model"]}"', f'model = "{state["model"]}"', 1).replace(f'path = "{candidate_state["codex_path"]}"', f'path = "{state["codex_path"]}"', 1); carrier = root / ".agents/bin/codex"; (carrier.parent.mkdir(parents=True, exist_ok=True), carrier.write_text("#!/bin/sh\nexit 0\n"), carrier.chmod(0o755)) if state["codex_path"] == ".agents/bin" else None
-                path.write_text(content); self.commit(root); result = self.verify(root); self.assertEqual(result["ok"], state in expected, result["errors"])
-        temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / "policy/fitness.json"; policy = json.loads(path.read_text()); policy["required_codex_routing_transition"] = None; path.write_text(json.dumps(policy)); self.commit(root); result = noodles.verify_repository(root, root); self.assertFalse(result["ok"], result)
 
     def test_runtime_lock_pins_expected_release(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/runtime.lock.json").read_text())
@@ -176,7 +174,7 @@ class RepositoryGateTests(unittest.TestCase):
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
-        self.assertTrue(any("Codex routing must be" in item for item in result["errors"]))
+        self.assertTrue(any("routing model must be schedule model" in item for item in result["errors"]))
 
     def test_scheduler_frontmatter_positive_fixture_passes(self) -> None:
         temp, root = self.mutated_copy()
@@ -300,10 +298,10 @@ class RepositoryGateTests(unittest.TestCase):
         proposed = {
             "orders": [{
                 "id": "ed3c/noodles#31",
-                "stages": [{"do": "execute", "prompt": "next"}],
+                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
             }]
         }
-        self.assertEqual(skill_contract.validate_schedule_output(current, proposed), [])
+        self.assertEqual(skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES), [])
 
     def test_schedule_output_rejects_stage_without_do(self) -> None:
         proposed = {
@@ -313,7 +311,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
             ["scheduler output order 'ed3c/noodles#37' stage[0] requires canonical non-empty do"],
         )
 
@@ -325,7 +323,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
             [
                 "scheduler output order 'ed3c/noodles#37' stage[0] has unresolved do 'review'; "
                 "expected 'execute'"
@@ -343,7 +341,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
             ["scheduler output order 'ed3c/noodles#37' must contain exactly one stage; found 2"],
         )
 
@@ -355,13 +353,14 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
             ["scheduler output order 'ed3c/noodles#37' must not contain a schedule stage"],
         )
 
     def test_planted_negative_schedule_self_order_fixture_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-") as temp_name:
             root = Path(temp_name)
+            shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
             runtime = root / ".noodle"
             runtime.mkdir()
             (runtime / "orders.json").write_text('{"orders": []}')
@@ -396,7 +395,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "stages": [{"do": "execute", "prompt": "rewritten"}],
             }]
         }
-        errors = skill_contract.validate_schedule_output(current, proposed)
+        errors = skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES)
         self.assertEqual(
             errors,
             [
@@ -408,6 +407,7 @@ class RepositoryGateTests(unittest.TestCase):
     def test_schedule_publish_is_atomic_and_does_not_mutate_active_orders(self) -> None:
         with tempfile.TemporaryDirectory(prefix="noodles-schedule-contract-") as temp_name:
             root = Path(temp_name)
+            shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
             runtime = root / ".noodle"
             runtime.mkdir()
             current = {

@@ -9,16 +9,16 @@
   "max_enabled_providers": 2,
   "max_workflows": 2,
   "required_noodle_mode": "supervised",
-  "required_codex_routing_transition": [
-    {
-      "model": "gpt-5.4",
-      "codex_path": "~/.codex"
-    },
-    {
+  "required_codex_task_profiles": {
+    "schedule": {
       "model": "gpt-5.6-luna",
-      "codex_path": ".agents/bin"
+      "reasoning_effort": "max"
+    },
+    "execute": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "high"
     }
-  ],
+  },
   "max_agent_document_hops": 3,
   "agent_document_route": [
     "AGENTS.md",
@@ -26,6 +26,7 @@
     "issue-named executable contract/test"
   ],
   "required_paths": [
+    ".agents/bin/codex",
     ".agents/skills/execute/SKILL.md",
     ".agents/skills/schedule/SKILL.md",
     ".github/workflows/land.yml",
@@ -47,6 +48,7 @@
     "tests/test_noodles.py"
   ],
   "required_executables": [
+    ".agents/bin/codex",
     "noodles",
     "noodles.py",
     ".noodle/adapters/github",

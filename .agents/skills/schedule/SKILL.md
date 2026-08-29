@@ -45,6 +45,8 @@ Create one order per Issue. Use the exact Issue subject as `order_id`.
 
 The order must have exactly one `execute` stage. Do not create generic planning, review, shipping, or human-approval stages. pstack performs engineering lifecycle routing inside the execute stage.
 
+Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model on the order's only `execute` stage. The repository-owned Codex carrier applies the paired reasoning effort from the same profile. Do not infer a model alias, substitute another supported model, add a reasoning field that pinned Noodle cannot parse, or rely on the routing default: the schedule carrier and execute carrier are intentionally distinct task types.
+
 Pass this context verbatim:
 
 ```text

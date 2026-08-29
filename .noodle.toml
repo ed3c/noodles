@@ -4,7 +4,7 @@ mode = "supervised"
 
 [routing.defaults]
 provider = "codex"
-model = "gpt-5.4"
+model = "gpt-5.6-luna"
 
 [concurrency]
 max_concurrency = 4
@@ -24,7 +24,7 @@ paths = [
 ]
 
 [agents.codex]
-path = "~/.codex"
+path = ".agents/bin"
 args = ["--sandbox", "workspace-write", "-c", "approval_policy=\"never\""]
 
 [adapters.backlog]
