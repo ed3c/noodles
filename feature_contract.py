@@ -101,9 +101,66 @@ METRICS_CLI_FEATURE = FeatureContract(
     ),
     observed_check=_metrics_observed_check,
 )
+def _independent_workflow_count(root: Path, head: str, *, error_cls: type[Exception]) -> int:
+    """Recompute the real .github/workflows/ regular-file count straight from the git object
+    database at the exact candidate head, independent of verify_repository's own tracked-entries
+    walk. A wrong workflow_count reported by the CLI cannot fool both paths at once."""
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", head], cwd=str(root), text=True, capture_output=True, check=False
+    )
+    if listing.returncode != 0:
+        raise error_cls(f"cannot read back source-tree listing at {head}: {listing.stderr.strip()}")
+    count = 0
+    for record in listing.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if mode in {"100644", "100755"} and path.startswith(".github/workflows/"):
+            count += 1
+    return count
+
+
+def _repo_infra_observed_check(
+    root: Path, contract: "FeatureContract", observed_raw: Any, head: str, *, error_cls: type[Exception]
+) -> dict[str, Any]:
+    if not isinstance(observed_raw, dict):
+        raise error_cls(f"feature {contract.feature_id} operation produced malformed output: not a JSON object")
+    if observed_raw.get("ok") is not True or observed_raw.get("errors"):
+        raise error_cls(f"feature {contract.feature_id} oracle rejected observed operation state")
+    metrics = observed_raw.get("metrics")
+    if not isinstance(metrics, dict):
+        raise error_cls(f"feature {contract.feature_id} operation produced malformed output: missing metrics object")
+    reported = metrics.get("workflow_count")
+    expected = _independent_workflow_count(root, head, error_cls=error_cls)
+    if reported != expected:
+        raise error_cls(
+            f"feature {contract.feature_id} oracle rejected planted wrong metric: "
+            f"metrics.workflow_count={reported!r} source-tree(head {head})={expected!r}"
+        )
+    return {"returncode": 0, "ok": True, "errors": [], "oracle_metric": "workflow_count", "oracle_metric_value": expected}
+
+
+REPO_INFRA_VERIFY_FEATURE = FeatureContract(
+    feature_id="repo-infra-verify-oracle",
+    code_surface="noodles.py",
+    operation=("./noodles", "verify", "--json"),
+    oracle_phrases=(
+        "def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:",
+        "workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)",
+    ),
+    oracle=(
+        "code-surface digest and required verify_repository/workflow-boundary routing bytes, exit-zero "
+        "declared operation reporting ok with zero errors, plus an independently recomputed "
+        ".github/workflows/ tracked-file count (git ls-tree at the exact candidate head) that must equal "
+        "the reported metrics.workflow_count"
+    ),
+    observed_check=_repo_infra_observed_check,
+)
 ADMITTED_FEATURES = {
     VERIFICATION_SKILL_FEATURE.feature_id: VERIFICATION_SKILL_FEATURE,
     METRICS_CLI_FEATURE.feature_id: METRICS_CLI_FEATURE,
+    REPO_INFRA_VERIFY_FEATURE.feature_id: REPO_INFRA_VERIFY_FEATURE,
 }
 
 
