@@ -146,8 +146,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     target = one_marker(body, "target")
     subject_value = one_marker(body, "subject")
     state_value = one_marker(body, "state")
-    feature_value = one_marker(body, "feature")
-    feature_contract.resolve_feature(feature_value, error_cls=GateError)
+    feature_value = one_marker(body, "feature", required=False)
     if role != "repository-mutating-atom":
         raise GateError(f"unsupported noodles-role: {role}")
     subject = parse_subject(subject_value or "")
@@ -511,10 +510,20 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
     resolve_locked_runtime_binary(root, error_cls=GateError)
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
-    evidence = feature_contract.admit_feature_evidence(root, contract["feature"], head, error_cls=GateError)
+    evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
     issue_set_state(subject_value, "awaiting_land")
     receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
-    return {"subject": subject_value, "pr": pr_number, "state": "awaiting_land", "feature": evidence["feature_id"], "feature_code_surface_sha256": evidence["code_surface_sha256"], **receipt}
+    specialized = evidence["specialized"]
+    return {
+        "subject": subject_value,
+        "pr": pr_number,
+        "state": "awaiting_land",
+        "acceptance": feature_contract.BASELINE_CONTRACT_ID,
+        "tree": evidence["tree"],
+        "feature": specialized["feature_id"] if specialized else None,
+        "feature_code_surface_sha256": specialized["code_surface_sha256"] if specialized else None,
+        **receipt,
+    }
 def protection_policy(root: Path) -> dict[str, Any]:
     return load_json(root / "policy/github.json")
 def protection_readback(repo: str, branch: str, required_check: str) -> dict[str, Any]:
@@ -757,7 +766,6 @@ def issue_template(repo: str, number: int, title: str) -> str:
         f"<!-- noodles-target: {repo} -->\n"
         f"<!-- noodles-subject: {subject} -->\n"
         "<!-- noodles-state: ready -->\n"
-        f"<!-- noodles-feature: {feature_contract.VERIFICATION_SKILL_FEATURE.feature_id} -->\n"
         "<!-- noodles-depends-on: none -->\n\n"
         f"## Goal\n\n{title}\n\n"
         "## Physical acceptance\n\n- Exact-subject positive and planted-negative controls pass.\n"
@@ -779,7 +787,17 @@ def adapter_sync() -> int:
                 continue
             try:
                 contract = parse_issue_contract(issue.get("body") or "")
-            except GateError:
+            except GateError as exc:
+                number = issue.get("number")
+                output.append(
+                    {
+                        "id": f"{repository}#{number}",
+                        "title": issue.get("title") or f"{repository}#{number}",
+                        "status": "blocked",
+                        "url": issue.get("html_url"),
+                        "diagnostic": f"issue contract invalid: {exc}",
+                    }
+                )
                 continue
             output.append(
                 {
@@ -901,6 +919,9 @@ def build_parser() -> argparse.ArgumentParser:
     feature = sub.add_parser("feature")
     feature.add_argument("action", choices=["verify"])
     feature.add_argument("feature_id")
+    acceptance = sub.add_parser("acceptance")
+    acceptance.add_argument("action", choices=["verify"])
+    acceptance.add_argument("--feature")
     eval_sub = sub.add_parser("eval").add_subparsers(dest="eval_action", required=True)
     eval_gh = eval_sub.add_parser("gh-boundary")
     eval_gh.add_argument("--tool", action="append", default=[]); eval_gh.add_argument("child_command", nargs=argparse.REMAINDER)
@@ -966,6 +987,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "feature":
             evidence = feature_contract.verify_feature(root, args.feature_id, error_cls=GateError)
             write_json(root / feature_contract.EVIDENCE_PATH, evidence)
+            print(json.dumps(evidence, indent=2, sort_keys=True))
+            return 0
+        if args.command == "acceptance":
+            evidence = feature_contract.verify_acceptance(root, args.feature, error_cls=GateError)
+            write_json(root / feature_contract.ACCEPTANCE_EVIDENCE_PATH, evidence)
             print(json.dumps(evidence, indent=2, sort_keys=True))
             return 0
         if args.command == "eval":
