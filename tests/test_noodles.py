@@ -580,7 +580,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "max",
                 policy["max_tracked_files"] + 1,
                 policy["max_tracked_files"],
-                "architecture warning tracked_files=36 exceeds 35",
+                "architecture warning tracked_files=38 exceeds 37",
             ),
             ("root_surfaces", "max_root_surfaces", "max", policy["max_root_surfaces"] + 1, policy["max_root_surfaces"], "architecture warning root_surfaces=10 exceeds 9"),
         )
