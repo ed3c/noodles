@@ -36,7 +36,9 @@ class AgentFriendlyArchitectureTests(unittest.TestCase):
 
         system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
         agents = (CANDIDATE_ROOT / "AGENTS.md").read_text()
-        self.assertIn("## 2. Agent-friendly architecture", system_contract)
+        self.assertIn("## Agent-friendly architecture", system_contract)
+        self.assertIn("## Enforcement hierarchy", system_contract)
+        self.assertIn("issue-named executable contract/test", system_contract)
         self.assertIn("Predictable local Agent behavior", system_contract)
         self.assertIn("local-obvious → globally-correct", system_contract)
         self.assertIn("### Durable owner and writer map", system_contract)
