@@ -57,6 +57,11 @@ MARKER_PATTERNS = {
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+N_CLASS_PREFIXES = ("docs/research/", "docs/design/")
+N_CLASS_EVIDENCE_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+][ \t]+)?\*{0,2}(claim|acceptance|evidence)\*{0,2}[ \t]*:[^\n]*?"
+    + r"((?:" + "|".join(prefix.rstrip("/") for prefix in N_CLASS_PREFIXES) + r")/[^\s`)\]]*)"
+)
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
 class GateError(RuntimeError):
@@ -145,6 +150,9 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         raise GateError(f"issue subject {subject.value} does not match expected {expected_subject}")
     if state_value not in ALLOWED_ISSUE_STATES:
         raise GateError(f"unsupported noodles-state: {state_value}")
+    offending = N_CLASS_EVIDENCE_RE.search(body or "")
+    if offending:
+        raise GateError(f"{offending.group(1).lower()} field must cite a machine artifact, not N-class prose: {offending.group(2)}")
     return {"role": role, "target": target or "", "subject": subject.value, "state": state_value or ""}
 
 

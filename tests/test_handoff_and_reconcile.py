@@ -39,6 +39,36 @@ class ContractParserTests(unittest.TestCase):
         self.assertEqual(noodles.parse_issue_contract(changed)["state"], "awaiting_land")
 
 
+class NonClaimEvidenceTests(unittest.TestCase):
+    BODY = ContractParserTests.BODY
+
+    def test_n_class_is_a_path_prefix_property_without_per_file_marker(self) -> None:
+        self.assertEqual(noodles.N_CLASS_PREFIXES, ("docs/research/", "docs/design/"))
+        study = CANDIDATE_ROOT / "docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md"
+        text = study.read_text(encoding="utf-8")
+        self.assertNotIn("<!-- noodles-", text)
+        self.assertIn("#64", text)
+        self.assertIn("#86", text)
+
+    def test_evidence_field_citing_n_class_path_fails_closed_naming_the_reference(self) -> None:
+        for line in (
+            "- Evidence: docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md",
+            "Claim: see `docs/design/handoff-shape.md` for the proof",
+            "**Acceptance**: docs/research/study.md",
+        ):
+            with self.assertRaises(noodles.GateError) as raised:
+                noodles.parse_issue_contract(f"{self.BODY}\n{line}\n", "ed3c/noodles#7")
+            self.assertIn("docs/", str(raised.exception))
+
+    def test_machine_artifact_evidence_and_plain_prose_mentions_pass(self) -> None:
+        body = (
+            f"{self.BODY}\n"
+            "- The study is landed at `docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md`.\n"
+            "- Evidence: tests/run.sh exit 0 and receipt sha256 digest readback.\n"
+        )
+        self.assertEqual(noodles.parse_issue_contract(body, "ed3c/noodles#7")["state"], "ready")
+
+
 class ExecuteHandoffTests(unittest.TestCase):
     SUBJECT = "ed3c/noodles#33"
 
@@ -105,6 +135,23 @@ class ExecuteHandoffTests(unittest.TestCase):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": "f" * 40}))
             with self.assertRaisesRegex(noodles.GateError, "base"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(base={"ref": "dependent-feature"}))
+
+    def test_handoff_citing_n_class_path_as_evidence_fails_before_emission(self) -> None:
+        body = (
+            "<!-- noodles-role: repository-mutating-atom -->\n"
+            "<!-- noodles-target: ed3c/noodles -->\n"
+            f"<!-- noodles-subject: {self.SUBJECT} -->\n"
+            "<!-- noodles-state: ready -->\n\n"
+            "- Evidence: docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md\n"
+        )
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "gh_api", return_value={"state": "open", "body": body}) as api:
+            with self.assertRaisesRegex(noodles.GateError, "docs/research/"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+        self.assertTrue(all(call.kwargs.get("method", "GET") == "GET" for call in api.call_args_list))
+        events_path = self.root / ".noodle" / "sessions" / self.session_id / "events.ndjson"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        self.assertEqual([item for item in events if item["type"] == "stage_message"], [])
 
     def test_missing_pr_fails_before_issue_or_session_mutation(self) -> None:
         with mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("missing PR")), \
