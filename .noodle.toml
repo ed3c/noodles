@@ -1,5 +1,5 @@
-# Supervised is a machine containment point, not a Human Verifier requirement.
-# ./noodles reconcile releases it only after GitHub exact-head merge/closure readback.
+# constraint: Supervised is a machine containment point, not a Human Verifier requirement.
+# constraint: ./noodles reconcile releases it only after GitHub exact-head merge/closure readback.
 mode = "supervised"
 
 [routing.defaults]
