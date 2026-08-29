@@ -18,12 +18,9 @@ from tests.support import (
     ENGINE_ROOT,
     cmd,
     copy_tracked,
-    current_provider_lock,
     cursor_pstack_fixture,
-    exact_provider_transition_state,
     handoff_fixture,
     provider_fixture,
-    recovery_provider_lock,
     runtime_release_reader,
     tree_digest,
     write_noodle_stub,
@@ -87,9 +84,53 @@ class RepositoryGateTests(unittest.TestCase):
 
     def test_provider_lock_pins_expected_external_skills(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/providers.lock.json").read_text())
-        transition_state = exact_provider_transition_state(CANDIDATE_ROOT)
-        expected = current_provider_lock() if transition_state == "current-matt" else recovery_provider_lock()
-        self.assertEqual(payload["providers"], expected)
+        self.assertEqual(
+            payload["providers"],
+            [
+                {
+                    "name": "cursor-pstack",
+                    "source": "https://github.com/cursor/plugins.git",
+                    "commit": "68836ddaf5697224520f1847d90cdb90ca8babaa",
+                    "subpath": "pstack/skills",
+                    "destination": ".noodle/providers/cursor-pstack",
+                    "license_path": "pstack/LICENSE",
+                    "enabled": True,
+                    "authority": "P",
+                    "purpose": "Engineering lifecycle routing; never a correctness authority.",
+                },
+                {
+                    "name": "skill-concerns",
+                    "source": "https://github.com/ed3c/skill-concerns.git",
+                    "commit": "c91dbd04d1997b2e0f77907c9c2a40f55b787107",
+                    "subpath": "skills/control-noodle",
+                    "destination": ".noodle/providers/skill-concerns",
+                    "license_path": "LICENSE",
+                    "admission": {
+                        "path": "admissions/control-noodle.json",
+                        "sha256": "4e20f09502ba16db920a89b945ebbb9ac206946a7906ceea92090ecb2c93e42d",
+                        "skill": "control-noodle",
+                        "skill_tree_sha256": "969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581",
+                        "subject_files": {
+                            "skills/control-noodle/SKILL.md": "efa5a1d2e9166af47f9078bdc5924fb6520ae0171a0a068472f7abab02b00a1a",
+                        },
+                    },
+                    "enabled": True,
+                    "authority": "P",
+                    "purpose": "Replaceable engineering knowledge; never a correctness authority.",
+                },
+                {
+                    "name": "skills-shared-compat",
+                    "source": "https://github.com/ed3c/skills-shared.git",
+                    "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
+                    "subpath": ".",
+                    "destination": ".noodle/providers/skills-shared-compat",
+                    "license_path": "LICENSE",
+                    "enabled": False,
+                    "authority": "P",
+                    "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
+                },
+            ],
+        )
 
     def test_retired_codex_routing_model_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -685,10 +726,20 @@ class ProviderPhysicalTests(unittest.TestCase):
         os.environ["NOODLES_TEST_ALLOW_LOCAL_PROVIDER"] = "1"
         try:
             receipts = noodles.provider_sync(candidate)
-            self.assertEqual(receipts[0]["commit"], json.loads((candidate / "policy/providers.lock.json").read_text())["providers"][0]["commit"])
-            self.assertEqual(receipts[0]["skill_count"], 1)
-            self.assertEqual(receipts[0]["skill_path"], "skills/engineering")
-            self.assertEqual(receipts[0]["license_path"], "LICENSE")
+            lock = json.loads((candidate / "policy/providers.lock.json").read_text())["providers"][0]
+            self.assertEqual(receipts[0]["license_blob"], cmd(["git", "rev-parse", "HEAD:LICENSE"], candidate / ".noodle/providers/fixture"))
+            expected = {
+                "commit": lock["commit"],
+                "skill_count": 1,
+                "skill_path": "skills/control-noodle",
+                "license_path": "LICENSE",
+                "admission_path": lock["admission"]["path"],
+                "admission_sha256": lock["admission"]["sha256"],
+                "admission_skill": lock["admission"]["skill"],
+                "admission_skill_tree_sha256": lock["admission"]["skill_tree_sha256"],
+                "subject_file_sha256": lock["admission"]["subject_files"],
+            }
+            for key, value in expected.items(): self.assertEqual(receipts[0][key], value)
             self.assertTrue(receipts[0]["detached"])
             self.assertTrue(receipts[0]["clean"])
             self.assertEqual(noodles.provider_check(candidate)[0]["commit"], receipts[0]["commit"])
@@ -702,19 +753,15 @@ class ProviderPhysicalTests(unittest.TestCase):
                 os.environ["NOODLES_TEST_ALLOW_LOCAL_PROVIDER"] = old
 
     def test_provider_check_rejects_missing_locked_skill_subpath(self) -> None:
-        temp, candidate = provider_fixture(subpath="skills/missing")
-        self.addCleanup(temp.cleanup)
+        temp, candidate = provider_fixture(subpath="skills/missing"); self.addCleanup(temp.cleanup)
         with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "has no SKILL.md"):
                 noodles.provider_sync(candidate)
-
     def test_provider_check_rejects_missing_locked_license_path(self) -> None:
-        temp, candidate = provider_fixture(license_path="NOTICE")
-        self.addCleanup(temp.cleanup)
+        temp, candidate = provider_fixture(license_path="NOTICE"); self.addCleanup(temp.cleanup)
         with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "license path missing"):
                 noodles.provider_sync(candidate)
-
     def test_provider_sync_materializes_exact_cursor_team_kit_mapping(self) -> None:
         temp, candidate = cursor_pstack_fixture()
         self.addCleanup(temp.cleanup)
@@ -895,10 +942,14 @@ class RuntimePhysicalTests(unittest.TestCase):
         project_root = (candidate / runtime_contract.PROJECT_SKILLS_ROOT).resolve()
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             receipt = runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
-        self.assertEqual(receipt["required_skill_paths"]["control-cli"]["resolved_path"], str((compat_source_root / "control-cli/SKILL.md").resolve()))
-        self.assertEqual(receipt["required_skill_paths"]["poteto-mode"]["resolved_path"], str((cursor_root / "poteto-mode/SKILL.md").resolve()))
-        self.assertEqual(receipt["required_skill_paths"]["schedule"]["resolved_path"], str((candidate / runtime_contract.PROJECT_SKILLS_ROOT / "schedule" / "SKILL.md").resolve()))
-        self.assertEqual(receipt["skills_by_path"][str(project_root)], 4)
+        expected_paths = {
+            "control-noodle": str((candidate / runtime_contract.CONTROL_NOODLE_DISCOVERY_ROOT / "SKILL.md").resolve()),
+            "control-cli": str((compat_source_root / "control-cli/SKILL.md").resolve()),
+            "poteto-mode": str((cursor_root / "poteto-mode/SKILL.md").resolve()),
+            "schedule": str((candidate / runtime_contract.PROJECT_SKILLS_ROOT / "schedule" / "SKILL.md").resolve()),
+        }
+        for skill, path in expected_paths.items(): self.assertEqual(receipt["required_skill_paths"][skill]["resolved_path"], path)
+        self.assertEqual(receipt["skills_by_path"][str(project_root)], 5)
         self.assertTrue((candidate / ".noodle/receipts/runtime/skills.json").exists())
 
     def test_skill_discovery_rejects_missing_configured_path(self) -> None:
@@ -925,12 +976,8 @@ class RuntimePhysicalTests(unittest.TestCase):
         config = config_path.read_text(encoding="utf-8")
         addition = '  ".noodle/providers/cursor-pstack/cursor-team-kit/skills",\n'
         self.assertNotIn(addition, config)
-        external_line = next(
-            line
-            for line in config.splitlines(keepends=True)
-            if line.startswith('  ".noodle/providers/') and "cursor-pstack" not in line
-        )
-        config_path.write_text(config.replace(external_line, addition + external_line, 1), encoding="utf-8")
+        current = '  ".noodle/providers/skill-concerns/skills/control-noodle"\n'
+        config_path.write_text(config.replace(current, addition + current), encoding="utf-8")
         with self.assertRaisesRegex(noodles.GateError, "must not expose the entire cursor-team-kit/skills root"):
             runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
 
@@ -941,7 +988,5 @@ class RuntimePhysicalTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "missing pinned playbook bytes"):
                 runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
-
-
 if __name__ == "__main__":
     unittest.main()

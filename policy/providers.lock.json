@@ -13,12 +13,21 @@
       "purpose": "Engineering lifecycle routing; never a correctness authority."
     },
     {
-      "name": "matt-engineering",
-      "source": "https://github.com/mattpocock/skills.git",
-      "commit": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
-      "subpath": "skills/engineering",
-      "destination": ".noodle/providers/matt-engineering",
+      "name": "skill-concerns",
+      "source": "https://github.com/ed3c/skill-concerns.git",
+      "commit": "c91dbd04d1997b2e0f77907c9c2a40f55b787107",
+      "subpath": "skills/control-noodle",
+      "destination": ".noodle/providers/skill-concerns",
       "license_path": "LICENSE",
+      "admission": {
+        "path": "admissions/control-noodle.json",
+        "sha256": "4e20f09502ba16db920a89b945ebbb9ac206946a7906ceea92090ecb2c93e42d",
+        "skill": "control-noodle",
+        "skill_tree_sha256": "969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581",
+        "subject_files": {
+          "skills/control-noodle/SKILL.md": "efa5a1d2e9166af47f9078bdc5924fb6520ae0171a0a068472f7abab02b00a1a"
+        }
+      },
       "enabled": true,
       "authority": "P",
       "purpose": "Replaceable engineering knowledge; never a correctness authority."

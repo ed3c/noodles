@@ -13,6 +13,19 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from provider_contract import (
+    CONTROL_NOODLE_DESTINATION,
+    CONTROL_NOODLE_DISCOVERY_ROOT,
+    CONTROL_NOODLE_PROVIDER,
+    CONTROL_NOODLE_SKILL,
+    RETIRED_PROVIDER,
+    RETIRED_PROVIDER_DESTINATION,
+    RETIRED_PROVIDER_DISCOVERY_ROOT,
+    validate_admission_policy,
+    validate_enabled_provider_names as validate_provider_names,
+    validate_skill_config_paths,
+)
+
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 PROJECT_SKILLS_ROOT = ".agents/skills"
@@ -62,6 +75,36 @@ def _compat_skill_root(root: Path, skill: str) -> Path:
     return root / PROJECT_SKILLS_ROOT / skill
 
 
+def _materialize_exact_skill_root(source: Path, mapped_root: Path, *, label: str, error_cls: type[Exception]) -> None:
+    if not (source / "SKILL.md").is_file():
+        raise error_cls(f"{label} missing mapped skill bytes at {source}")
+    if mapped_root.exists() or mapped_root.is_symlink():
+        _remove_path(mapped_root)
+    mapped_root.mkdir()
+    for child in sorted(source.iterdir(), key=lambda item: item.name):
+        _symlink_exact_bytes(child, mapped_root / child.name)
+
+
+def _validate_exact_skill_root(source: Path, mapped_root: Path, *, label: str, error_cls: type[Exception]) -> str:
+    if not mapped_root.is_dir() or mapped_root.is_symlink():
+        raise error_cls(f"{label} must materialize as a real directory")
+    source_entries = {path.name: path for path in source.iterdir()}
+    mapped_entries = {path.name: path for path in mapped_root.iterdir()}
+    extra_entries = sorted(name for name in mapped_entries if name not in source_entries)
+    if extra_entries:
+        raise error_cls(f"{label} must expose exact provider entries; unexpected {', '.join(extra_entries)}")
+    for name, source_entry in sorted(source_entries.items()):
+        mapped_entry = mapped_root / name
+        if not mapped_entry.exists() and not mapped_entry.is_symlink():
+            raise error_cls(f"{label} missing mapped entry {name}")
+        if not mapped_entry.is_symlink() or mapped_entry.resolve() != source_entry.resolve():
+            raise error_cls(f"{label} entry {name} does not resolve to pinned provider bytes")
+    skill_file = mapped_root / "SKILL.md"
+    if not skill_file.is_file() or skill_file.resolve() != (source / "SKILL.md").resolve():
+        raise error_cls(f"{label} does not resolve exact SKILL.md bytes")
+    return str(skill_file.resolve())
+
+
 def materialize_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> dict[str, Any] | None:
     destination = _cursor_provider_destination(root, providers)
     if destination is None:
@@ -76,17 +119,8 @@ def materialize_cursor_compat_root(root: Path, providers: list[dict[str, Any]], 
     mapped_skills: dict[str, str] = {}
     for skill in CURSOR_PSTACK_COMPAT_SKILLS:
         source = source_root / skill
-        skill_file = source / "SKILL.md"
-        if not skill_file.is_file():
-            raise error_cls(
-                f"provider {CURSOR_PSTACK_PROVIDER} missing mapped skill bytes for {skill} under {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
-            )
         mapped_root = _compat_skill_root(root, skill)
-        if mapped_root.exists() or mapped_root.is_symlink():
-            _remove_path(mapped_root)
-        mapped_root.mkdir()
-        for child in sorted(source.iterdir(), key=lambda item: item.name):
-            _symlink_exact_bytes(child, mapped_root / child.name)
+        _materialize_exact_skill_root(source, mapped_root, label=f"cursor-team-kit compatibility skill {skill}", error_cls=error_cls)
         mapped_skills[skill] = str((mapped_root / "SKILL.md").resolve())
     return {
         "compatibility_root": str(compat_root.resolve()),
@@ -117,34 +151,7 @@ def validate_cursor_compat_root(root: Path, providers: list[dict[str, Any]], *, 
             raise error_cls(
                 f"provider {CURSOR_PSTACK_PROVIDER} missing mapped skill bytes for {skill} under {CURSOR_PSTACK_COMPAT_SOURCE_ROOT}"
             )
-        if not link.is_dir() or link.is_symlink():
-            raise error_cls(f"cursor-team-kit compatibility skill {skill} must materialize as a real directory")
-        target_entries = {path.name: path for path in target.iterdir()}
-        link_entries = {path.name: path for path in link.iterdir()}
-        extra_entries = sorted(name for name in link_entries if name not in target_entries)
-        if extra_entries:
-            raise error_cls(
-                f"cursor-team-kit compatibility skill {skill} must expose exact provider entries; "
-                f"unexpected {', '.join(extra_entries)}"
-            )
-        for name, target_entry in sorted(target_entries.items()):
-            compat_entry = link / name
-            if not compat_entry.exists() and not compat_entry.is_symlink():
-                raise error_cls(f"cursor-team-kit compatibility skill {skill} missing mapped entry {name}")
-            if not compat_entry.is_symlink():
-                raise error_cls(
-                    f"cursor-team-kit compatibility skill {skill} entry {name} must stay a symlink to pinned provider bytes"
-                )
-            if compat_entry.resolve() != target_entry.resolve():
-                raise error_cls(
-                    f"cursor-team-kit compatibility skill {skill} entry {name} does not resolve to pinned provider bytes"
-                )
-        skill_file = link / "SKILL.md"
-        if not skill_file.is_file():
-            raise error_cls(f"cursor-team-kit compatibility skill {skill} missing SKILL.md")
-        if skill_file.resolve() != (target / "SKILL.md").resolve():
-            raise error_cls(f"cursor-team-kit compatibility skill {skill} does not resolve exact SKILL.md bytes")
-        mapped_skills[skill] = str(skill_file.resolve())
+        mapped_skills[skill] = _validate_exact_skill_root(target, link, label=f"cursor-team-kit compatibility skill {skill}", error_cls=error_cls)
     return {
         "compatibility_root": str(compat_root.resolve()),
         "compatibility_source_root": str(source_root.resolve()),
@@ -156,6 +163,29 @@ def _required_skill_roots(root: Path) -> tuple[str, str]:
     native_root = str((root / CURSOR_PSTACK_NATIVE_ROOT).resolve())
     project_root = str((root / PROJECT_SKILLS_ROOT).resolve())
     return native_root, project_root
+
+
+def _control_noodle_source_root(root: Path, providers: list[dict[str, Any]]) -> Path | None:
+    for item in providers:
+        if str(item.get("name")) == CONTROL_NOODLE_PROVIDER:
+            return (root / str(item["destination"]) / "skills/control-noodle").resolve()
+    return None
+
+
+def materialize_control_noodle_root(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> str | None:
+    source_root = _control_noodle_source_root(root, providers)
+    if source_root is None:
+        return None
+    mapped_root = _compat_skill_root(root, CONTROL_NOODLE_SKILL)
+    _materialize_exact_skill_root(source_root, mapped_root, label=CONTROL_NOODLE_SKILL, error_cls=error_cls)
+    return str((mapped_root / "SKILL.md").resolve())
+
+
+def validate_control_noodle_root(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> str | None:
+    source_root = _control_noodle_source_root(root, providers)
+    if source_root is None:
+        return None
+    return _validate_exact_skill_root(source_root, _compat_skill_root(root, CONTROL_NOODLE_SKILL), label=CONTROL_NOODLE_SKILL, error_cls=error_cls)
 
 
 def _validate_execute_route_files(root: Path, required_skill_paths: dict[str, dict[str, str]], *, error_cls: type[Exception]) -> None:
@@ -258,6 +288,108 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _safe_relative_path(value: str, *, field: str, provider_name: str, error_cls: type[Exception]) -> Path:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise error_cls(f"provider {provider_name} has unsafe {field}")
+    return path
+
+
+def validate_enabled_provider_names(enabled_names: set[str]) -> list[str]:
+    return validate_provider_names(enabled_names, CURSOR_PSTACK_PROVIDER)
+
+
+def _load_subject_file_digests(subject_files: Any, *, provider_name: str, error_cls: type[Exception]) -> dict[str, str]:
+    if not isinstance(subject_files, list):
+        raise error_cls(f"provider {provider_name} admission subject_files must be a list")
+    digests: dict[str, str] = {}
+    for item in subject_files:
+        if not isinstance(item, Mapping):
+            raise error_cls(f"provider {provider_name} admission subject_files entry must be an object")
+        path = str(item.get("path") or "")
+        sha256 = str(item.get("sha256") or "")
+        if not path:
+            raise error_cls(f"provider {provider_name} admission subject_files entry missing path")
+        if not HEX64_RE.fullmatch(sha256):
+            raise error_cls(f"provider {provider_name} admission subject file {path} has invalid sha256")
+        digests[path] = sha256
+    return digests
+
+
+def _provider_admission_receipt(
+    destination: Path,
+    provider: Mapping[str, Any],
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    provider_name = str(provider["name"])
+    policy = provider.get("admission")
+    if not isinstance(policy, Mapping):
+        return {}
+    path = _safe_relative_path(str(policy["path"]), field="admission path", provider_name=provider_name, error_cls=error_cls)
+    admission_file = destination / path
+    if not admission_file.is_file():
+        raise error_cls(f"provider {provider_name} admission path missing: {path}")
+    expected_admission_sha256 = str(policy["sha256"])
+    observed_admission_sha256 = sha256_file(admission_file)
+    if observed_admission_sha256 != expected_admission_sha256:
+        raise error_cls(
+            f"provider {provider_name} admission digest {observed_admission_sha256} != locked {expected_admission_sha256}"
+        )
+    payload = load_json(admission_file, error_cls=error_cls)
+    expected_skill = str(policy["skill"])
+    observed_skill = str(payload.get("skill") or "")
+    if observed_skill != expected_skill:
+        raise error_cls(f"provider {provider_name} admission skill {observed_skill!r} != locked {expected_skill!r}")
+    if str(payload.get("status") or "") != "ADMITTED":
+        raise error_cls(f"provider {provider_name} admission status must be 'ADMITTED'")
+    expected_skill_tree_sha256 = str(policy["skill_tree_sha256"])
+    observed_skill_tree_sha256 = str(payload.get("skill_tree_sha256") or "")
+    if observed_skill_tree_sha256 != expected_skill_tree_sha256:
+        raise error_cls(
+            "provider "
+            f"{provider_name} admission skill-tree digest {observed_skill_tree_sha256} != locked {expected_skill_tree_sha256}"
+        )
+    observed_subject_digests = _load_subject_file_digests(
+        payload.get("subject_files"),
+        provider_name=provider_name,
+        error_cls=error_cls,
+    )
+    locked_subject_files = policy.get("subject_files")
+    if not isinstance(locked_subject_files, Mapping) or not locked_subject_files:
+        raise error_cls(f"provider {provider_name} admission subject_files must be an object")
+    subject_receipt: dict[str, str] = {}
+    for raw_path, raw_sha256 in locked_subject_files.items():
+        subject_path = str(raw_path)
+        expected_subject_sha256 = str(raw_sha256)
+        _safe_relative_path(subject_path, field="admission subject path", provider_name=provider_name, error_cls=error_cls)
+        if not HEX64_RE.fullmatch(expected_subject_sha256):
+            raise error_cls(f"provider {provider_name} admission subject file {subject_path} has invalid locked sha256")
+        observed_subject_sha256 = observed_subject_digests.get(subject_path)
+        if observed_subject_sha256 != expected_subject_sha256:
+            raise error_cls(
+                "provider "
+                f"{provider_name} admission subject file {subject_path} sha256 {observed_subject_sha256} != locked {expected_subject_sha256}"
+            )
+        subject_file = destination / subject_path
+        if not subject_file.is_file():
+            raise error_cls(f"provider {provider_name} admission subject file missing: {subject_path}")
+        installed_subject_sha256 = sha256_file(subject_file)
+        if installed_subject_sha256 != expected_subject_sha256:
+            raise error_cls(
+                "provider "
+                f"{provider_name} installed subject file {subject_path} sha256 {installed_subject_sha256} != admitted {expected_subject_sha256}"
+            )
+        subject_receipt[subject_path] = installed_subject_sha256
+    return {
+        "admission_path": str(path),
+        "admission_sha256": observed_admission_sha256,
+        "admission_skill": observed_skill,
+        "admission_skill_tree_sha256": observed_skill_tree_sha256,
+        "subject_file_sha256": subject_receipt,
+    }
 
 
 def resolve_platform_key(*, error_cls: type[Exception], system_name: str | None = None, machine_name: str | None = None) -> str:
@@ -655,6 +787,9 @@ def provider_check(root: Path, *, error_cls: type[Exception]) -> list[dict[str, 
     root = root.resolve()
     providers = provider_items(root, error_cls=error_cls)
     receipts: list[dict[str, Any]] = []
+    retired_destination = (root / RETIRED_PROVIDER_DESTINATION).resolve()
+    if retired_destination.exists():
+        raise error_cls(f"retired provider checkout still present: {RETIRED_PROVIDER_DESTINATION}")
     for item in providers:
         destination = (root / str(item["destination"])).resolve()
         if root not in destination.parents:
@@ -684,9 +819,11 @@ def provider_check(root: Path, *, error_cls: type[Exception]) -> list[dict[str, 
                 "skill_path": str(item["subpath"]),
                 "skill_count": len(skills),
                 "license_path": str(item["license_path"]),
+                "license_blob": git(destination, "rev-parse", f"HEAD:{item['license_path']}", error_cls=error_cls),
                 "license_sha256": sha256_file(license_file),
                 "detached": True,
                 "clean": True,
+                **_provider_admission_receipt(destination, item, error_cls=error_cls),
             }
         )
     compat_receipt = validate_cursor_compat_root(root, providers, error_cls=error_cls)
@@ -694,6 +831,12 @@ def provider_check(root: Path, *, error_cls: type[Exception]) -> list[dict[str, 
         for receipt in receipts:
             if receipt["name"] == CURSOR_PSTACK_PROVIDER:
                 receipt.update(compat_receipt)
+                break
+    mapped_control_noodle = validate_control_noodle_root(root, providers, error_cls=error_cls)
+    if mapped_control_noodle is not None:
+        for receipt in receipts:
+            if receipt["name"] == CONTROL_NOODLE_PROVIDER:
+                receipt["mapped_skill"] = mapped_control_noodle
                 break
     return receipts
 
@@ -720,7 +863,11 @@ def provider_sync(root: Path, *, error_cls: type[Exception]) -> list[dict[str, A
                 shutil.rmtree(destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, destination)
+    retired_destination = root / RETIRED_PROVIDER_DESTINATION
+    if retired_destination.exists():
+        shutil.rmtree(retired_destination)
     materialize_cursor_compat_root(root, providers, error_cls=error_cls)
+    materialize_control_noodle_root(root, providers, error_cls=error_cls)
     receipts = provider_check(root, error_cls=error_cls)
     receipt_dir = root / ".noodle/receipts/providers"
     receipt_dir.mkdir(parents=True, exist_ok=True)
@@ -734,6 +881,8 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
     config = tomllib.loads((root / ".noodle.toml").read_text(encoding="utf-8"))
     configured_paths: list[str] = []
     compat_source_root = str((root / CURSOR_PSTACK_DESTINATION / CURSOR_PSTACK_COMPAT_SOURCE_ROOT).resolve())
+    required_control_noodle_root = str((root / CONTROL_NOODLE_DISCOVERY_ROOT).resolve())
+    retired_matt_root = str((root / RETIRED_PROVIDER_DISCOVERY_ROOT).resolve())
     for raw_path in config.get("skills", {}).get("paths", []):
         candidate = Path(os.path.expanduser(str(raw_path)))
         if not candidate.is_absolute():
@@ -742,6 +891,10 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
         if resolved == compat_source_root:
             raise error_cls("configured skill path must not expose the entire cursor-team-kit/skills root")
         configured_paths.append(resolved)
+    if required_control_noodle_root not in configured_paths:
+        raise error_cls(f"configured skill paths must include {required_control_noodle_root}")
+    if retired_matt_root in configured_paths:
+        raise error_cls("configured skill paths must not retain retired matt-engineering discovery")
     output = run(
         [str(noodle_binary), "--project-dir", str(root), "skills", "list"],
         cwd=root,
@@ -767,7 +920,9 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
             "declared_path": _skill_path,
             "resolved_path": resolved_skill_path,
         }
-    missing = [path for path in configured_paths if not skills_by_root.get(path)]
+    if retired_matt_root in skills_by_root:
+        raise error_cls("noodle skill discovery must not expose retired matt-engineering skills")
+    missing = [path for path in configured_paths if path != required_control_noodle_root and not skills_by_root.get(path)]
     if missing:
         raise error_cls(f"noodle skill discovery missing configured paths: {', '.join(missing)}")
     native_root, project_root = _required_skill_roots(root)
@@ -790,6 +945,17 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
         if info["resolved_path"] != expected_path:
             raise error_cls(f"project skill {skill!r} resolved path {info['resolved_path']} != {expected_path}")
         required_skill_paths[skill] = {"root": project_root, **info}
+    control_noodle_skills = skills_by_root.get(project_root, {})
+    control_noodle_info = control_noodle_skills.get(CONTROL_NOODLE_SKILL)
+    if control_noodle_info is None:
+        raise error_cls(f"noodle skill discovery missing required external skill {CONTROL_NOODLE_SKILL!r} from {project_root}")
+    expected_control_noodle_path = str((root / CONTROL_NOODLE_DISCOVERY_ROOT / "SKILL.md").resolve())
+    if control_noodle_info["resolved_path"] != expected_control_noodle_path:
+        raise error_cls(
+            "external skill "
+            f"{CONTROL_NOODLE_SKILL!r} resolved path {control_noodle_info['resolved_path']} != {expected_control_noodle_path}"
+        )
+    required_skill_paths[CONTROL_NOODLE_SKILL] = {"root": project_root, **control_noodle_info}
     compat_skills = {
         skill: info
         for skill, info in project_skills.items()

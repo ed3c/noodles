@@ -20,7 +20,7 @@ port = 3210
 paths = [
   ".agents/skills",
   ".noodle/providers/cursor-pstack/pstack/skills",
-  ".noodle/providers/matt-engineering/skills/engineering"
+  ".noodle/providers/skill-concerns/skills/control-noodle"
 ]
 
 [agents.codex]

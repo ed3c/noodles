@@ -54,7 +54,7 @@ The admitted upstream Noodle runtime is pinned in `policy/runtime.lock.json` to 
 Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits:
 
 - Cursor pstack: `cursor/plugins@68836ddaf5697224520f1847d90cdb90ca8babaa`, `pstack/skills`;
-- Matt Pocock engineering skills: `mattpocock/skills@6654f6b60cd9d5be8b54c6fafe44346dabeb3b76`, `skills/engineering`.
+- skill-concerns control-noodle: `ed3c/skill-concerns@c91dbd04d1997b2e0f77907c9c2a40f55b787107`, `skills/control-noodle`, admission tree digest `969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581`.
 
 `ed3c/skills-shared` remains unchanged and is a disabled compatibility source, not a Golden Path dependency.
 
@@ -83,7 +83,7 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ./noodles runtime check             # exact release/commit/asset/binary readback
 ./noodles runtime discover          # prove Noodle sees every configured skill path
 ./noodles providers sync            # exact detached provider checkouts
-./noodles providers check           # HEAD/tree/license/SKILL/detached/clean readback
+./noodles providers check           # HEAD/tree/license/blob/admission/SKILL/detached/clean readback
 ./noodles issue validate REPO#N     # exact Issue contract
 ./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
 ./noodles github protect audit

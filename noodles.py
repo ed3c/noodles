@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import runtime_contract
 import signal
 import stat
 import subprocess
@@ -94,8 +95,6 @@ def run(
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
         raise GateError(f"command failed: {command}: {detail}")
     return result
-
-
 def git(root: Path, *args: str, check: bool = True) -> str:
     return run(["git", *args], cwd=root, check=check).stdout.strip()
 
@@ -105,8 +104,6 @@ def load_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise GateError(f"cannot read JSON {path}: {exc}") from exc
-
-
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -137,8 +134,6 @@ def one_marker(body: str, name: str, required: bool = True) -> str | None:
     if len(matches) != 1:
         raise GateError(f"expected one noodles-{name.replace('_', '-')} marker, found {len(matches)}")
     return matches[0].strip()
-
-
 def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict[str, str]:
     role = one_marker(body, "role")
     target = one_marker(body, "target")
@@ -166,8 +161,6 @@ def replace_marker(body: str, name: str, value: str) -> str:
         return pattern.sub(replacement, body, count=1)
     prefix = body.rstrip()
     return f"{prefix}\n{replacement}\n" if prefix else replacement + "\n"
-
-
 def parse_pr_reference(body: str) -> str:
     if AUTO_CLOSE_RE.search(body or ""):
         raise GateError("auto-close keywords are forbidden; provider lander closes the issue")
@@ -272,6 +265,7 @@ def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:
         return [f"invalid provider lock: {exc}"]
     names: set[str] = set()
     enabled = 0
+    enabled_names: set[str] = set()
     for item in providers:
         try:
             name = str(item["name"])
@@ -283,6 +277,8 @@ def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:
         except (KeyError, TypeError) as exc:
             errors.append(f"provider entry missing field: {exc}")
             continue
+        if name == runtime_contract.RETIRED_PROVIDER:
+            errors.append(f"provider {name} is retired and must not remain in the lock")
         if name in names:
             errors.append(f"duplicate provider name: {name}")
         names.add(name)
@@ -296,13 +292,15 @@ def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:
             errors.append(f"provider {name} destination must stay under .noodle/providers")
         if Path(license_path).is_absolute() or ".." in Path(license_path).parts:
             errors.append(f"provider {name} has unsafe license path")
+        admission = item.get("admission")
+        if admission is not None:
+            errors.extend(runtime_contract.validate_admission_policy(name, admission))
         if item.get("enabled"):
             enabled += 1
+            enabled_names.add(name)
     if enabled > max_enabled:
         errors.append(f"enabled providers {enabled} exceed limit {max_enabled}")
-    return errors
-
-
+    errors.extend(runtime_contract.validate_enabled_provider_names(enabled_names)); return errors
 def validate_migration_ledger(root: Path) -> list[str]:
     path = root / "migrations/skills-shared/ledger.json"
     if not path.exists():
@@ -361,6 +359,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if noodle_config.get("mode") != policy["required_noodle_mode"]:
             errors.append(f".noodle.toml mode must be {policy['required_noodle_mode']!r}")
         if noodle_config.get("routing", {}).get("defaults", {}).get("model") != policy["required_codex_model"]: errors.append(f".noodle.toml routing model must be {policy['required_codex_model']!r}")
+        errors.extend(runtime_contract.validate_skill_config_paths([str(path) for path in noodle_config.get("skills", {}).get("paths", [])]))
         adapter_scripts = noodle_config.get("adapters", {}).get("backlog", {}).get("scripts", {})
         expected_adapter = ".noodle/adapters/github"
         for action in ("sync", "add", "edit", "done"):

@@ -12,4 +12,5 @@ __pycache__/
 *.tmp
 *.log
 .agents/skills/control-cli/
+.agents/skills/control-noodle/
 .agents/skills/deslop/
