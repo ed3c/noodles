@@ -28,6 +28,7 @@ from runtime_contract import (
     gh_repo_from_git as runtime_gh_repo_from_git,
     provider_check as runtime_provider_check,
     provider_sync as runtime_provider_sync,
+    reconcile_checkout_admission as runtime_reconcile_checkout_admission,
     resolve_locked_runtime_binary,
     runtime_check as runtime_binary_check,
     skill_discovery_check,
@@ -109,8 +110,6 @@ def write_json(path: Path, value: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
-
-
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -123,8 +122,6 @@ def parse_subject(raw: str) -> Subject:
     if not match:
         raise GateError(f"invalid exact subject: {raw!r}")
     return Subject(match.group("repo"), int(match.group("number")))
-
-
 def one_marker(body: str, name: str, required: bool = True) -> str | None:
     matches = MARKER_PATTERNS[name].findall(body or "")
     if not matches:
@@ -169,8 +166,6 @@ def parse_pr_reference(body: str) -> str:
     if len(lines) != 1 or len(refs) != 1 or lines[0] != f"Refs {refs[0]}":
         raise GateError("PR body must be exactly one 'Refs owner/repo#N' line")
     return parse_subject(refs[0]).value
-
-
 def tracked_entries(root: Path) -> list[tuple[str, str]]:
     raw = run(["git", "ls-files", "-z", "--stage"], cwd=root).stdout
     entries: list[tuple[str, str]] = []
@@ -191,8 +186,6 @@ def text_line_count(path: Path) -> int:
     if not text:
         return 0
     return len(text.splitlines())
-
-
 def repository_metrics(root: Path) -> dict[str, Any]:
     entries = tracked_entries(root)
     regular = [(mode, path) for mode, path in entries if mode in {"100644", "100755"}]
@@ -432,26 +425,16 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         "warning_readback": metrics_result["warning_readback"],
         "metrics": metrics,
     }
-
-
 def provider_check(root: Path) -> list[dict[str, Any]]:
     return runtime_provider_check(root, error_cls=GateError)
-
-
 def provider_sync(root: Path) -> list[dict[str, Any]]:
     return runtime_provider_sync(root, error_cls=GateError)
-
-
 def runtime_check(root: Path) -> dict[str, Any]:
     return runtime_binary_check(root, gh_api, error_cls=GateError)
-
-
 def runtime_discovery(root: Path) -> dict[str, Any]:
     runtime_receipt = runtime_check(root)
     discovery_receipt = skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
     return {"runtime": runtime_receipt, "skills": discovery_receipt}
-
-
 def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, token: str | None = None) -> Any:
     _headers, body = github_protection.gh_api_response(
         run,
@@ -471,8 +454,6 @@ def issue_read(subject_value: str) -> dict[str, Any]:
         raise GateError(f"subject does not resolve to an issue: {subject_value}")
     parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
     return issue
-
-
 def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
     if new_state not in ALLOWED_ISSUE_STATES:
         raise GateError(f"unsupported issue state: {new_state}")
@@ -507,12 +488,8 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     issue_set_state(subject_value, "awaiting_land")
     receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
     return {"subject": subject_value, "pr": pr_number, "state": "awaiting_land", **receipt}
-
-
 def protection_policy(root: Path) -> dict[str, Any]:
     return load_json(root / "policy/github.json")
-
-
 def protection_readback(repo: str, branch: str, required_check: str) -> dict[str, Any]:
     return github_protection.protection_readback(
         lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
@@ -525,6 +502,8 @@ def protection_readback(repo: str, branch: str, required_check: str) -> dict[str
 
 def control_checkout_admission(root: Path) -> dict[str, Any]:
     return runtime_control_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
+def reconcile_checkout_admission(root: Path) -> dict[str, Any]:
+    return runtime_reconcile_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
 
 
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
@@ -717,7 +696,7 @@ def provider_landed(subject_value: str) -> tuple[int, str, str]:
 
 
 def reconcile_once(root: Path, control_url: str) -> list[str]:
-    branch = str(control_checkout_admission(root)["branch"])
+    branch = str(reconcile_checkout_admission(root)["branch"])
     snapshot = http_json(control_url.rstrip("/") + "/api/snapshot")
     completed: list[str] = []
     for review in snapshot.get("pending_reviews") or []:
@@ -729,6 +708,10 @@ def reconcile_once(root: Path, control_url: str) -> list[str]:
             continue
         git(root, "fetch", "--quiet", "origin", branch)
         git(root, "merge", "--ff-only", f"origin/{branch}")
+        provider_head = git(root, "rev-parse", f"refs/remotes/origin/{branch}")
+        local_after = git(root, "rev-parse", "HEAD")
+        if local_after != provider_head:
+            raise GateError(f"reconcile fast-forward readback drift: branch {branch} local {local_after} provider {provider_head}")
         command_id = f"noodles-reconcile-{hashlib.sha256(order_id.encode()).hexdigest()[:12]}"
         ack = http_json(
             control_url.rstrip("/") + "/api/control",
