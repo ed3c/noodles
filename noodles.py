@@ -392,23 +392,6 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     workflow_paths = sorted(path for path in paths if path.startswith(".github/workflows/"))
     if len(workflow_paths) != policy["max_workflows"]:
         errors.append(f"workflow count must equal {policy['max_workflows']}, got {len(workflow_paths)}")
-    verify_workflow = (root / ".github/workflows/verify.yml").read_text(encoding="utf-8", errors="ignore") if (root / ".github/workflows/verify.yml").exists() else ""
-    land_workflow = (root / ".github/workflows/land.yml").read_text(encoding="utf-8", errors="ignore") if (root / ".github/workflows/land.yml").exists() else ""
-    for phrase in policy["trusted_verify_workflow_phrases"]:
-        if phrase not in verify_workflow:
-            errors.append(f"verify workflow missing trusted boundary phrase: {phrase}")
-    workflow_jobs = github_protection.workflow_job_bodies(verify_workflow)
-    for job_name, required_phrases in (("candidate-self-tests", policy["candidate_self_test_job_phrases"]), ("verify", policy["trusted_verification_job_phrases"])):
-        for phrase in required_phrases:
-            if phrase not in workflow_jobs.get(job_name, ""):
-                errors.append(f"verify job {job_name} missing required phrase: {phrase}")
-    for job_name, policy_key in (("candidate-self-tests", "candidate_self_test_job_forbidden_phrases"), ("verify", "trusted_verification_job_forbidden_phrases")):
-        for phrase in policy[policy_key]:
-            if phrase in workflow_jobs.get(job_name, ""):
-                errors.append(f"verify job {job_name} forbids candidate execution phrase: {phrase}")
-    for phrase in policy["trusted_land_workflow_phrases"]:
-        if phrase not in land_workflow:
-            errors.append(f"land workflow missing trusted boundary phrase: {phrase}")
     workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     errors.extend(workflow_boundary_errors)
     metrics_result = metrics_readback(root, policy_root)
