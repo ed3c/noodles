@@ -2,18 +2,18 @@
 
 This file is the canonical, low-change owner for system-level intent, invariants, authority boundaries, and stable requirement definitions in noodles. It is a constitution, not a project wiki, mutable status store, execution transcript, or correctness oracle.
 
-Executable authority remains in the nearest executable contract/test, trusted workflows, Git, and provider readback. Mutable Issue, PR, branch, commit, workflow-run, receipt, and runtime state stays with its owning provider surface and MUST NOT be copied here as current truth.
+Executable authority remains in the nearest executable contract/test, trusted workflows, Git, and GitHub readback. Mutable Issue, PR, branch, commit, workflow-run, receipt, and runtime state stays with its owning provider surface and MUST NOT be copied here as current truth.
 
-The repository document route is exactly:
+The repository document route is `AGENTS.md` → this file → `issue-named executable contract/test`, with three nodes maximum. Concretely:
 
 ```text
 AGENTS.md
   → contracts/system-v1.md when the exact Issue names a system requirement
-  → exact Issue / nearest executable contract or test
+  → issue-named executable contract/test
   → stop document traversal
 ```
 
-A fourth architecture-document hop is not part of the Golden Path.
+The exact Issue selects that final executable boundary. A fourth architecture-document hop is not part of the Golden Path.
 
 ## 1. Purpose and non-goals
 
@@ -25,7 +25,13 @@ noodles is not a second Agent OS. It does not replace Noodle scheduling/worktree
 
 The system MUST separate stable intent, intended work, execution, physical verification, and landed provider reality so that no layer can silently impersonate another authority.
 
-## 2. Agent-friendly architecture
+## Enforcement hierarchy
+
+Enforcement descends from repository shape, to static/CI gates, to mechanical diagnostics, to soft Agent guidance. Put an invariant at the strongest available layer: the shortest local path should preserve architecture by default; invalid structural states should fail in executable gates; known invalid patterns should name the supported path; rules and Skills explain choices but grant no authority.
+
+Issue admission and completion evidence remain separate seams. Every repository mutation receives mandatory baseline acceptance. An optional specialized oracle only adds evidence at completion and never replaces the baseline. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
+
+## Agent-friendly architecture
 
 Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow requested implementation details even when wider invariants are not visible. Noodles responds by shaping ownership, paths, diagnostics, and gates so the least surprising local action is also the system-correct action.
 
