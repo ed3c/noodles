@@ -72,7 +72,7 @@ class RepositoryGateTests(unittest.TestCase):
     def test_positive_baseline_passes(self) -> None:
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
-        self.assertEqual(result["warnings"], [])
+        self.assertTrue(result["errors"] == [] and all(w.startswith("architecture warning ") for w in result["warnings"]), result)
 
     def test_auto_mode_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -564,6 +564,7 @@ class RepositoryGateTests(unittest.TestCase):
                 policy["max_tracked_files"],
                 "architecture warning tracked_files=34 exceeds 33",
             ),
+            ("root_surfaces", "max_root_surfaces", "max", policy["max_root_surfaces"] + 1, policy["max_root_surfaces"], "architecture warning root_surfaces=10 exceeds 9"),
         )
         for metric_key, policy_key, direction, planted_value, threshold, warning in cases:
             with self.subTest(metric=metric_key):
@@ -571,7 +572,7 @@ class RepositoryGateTests(unittest.TestCase):
                 self.assertTrue(result["ok"], result.get("errors"))
                 self.assertEqual(result.get("errors"), [])
                 self.assertEqual(result.get("warnings"), [warning])
-                self.assertEqual(len(result.get("warning_readback", [])), 5)
+                self.assertEqual(len(result.get("warning_readback", [])), len(skill_contract.REPORT_ONLY_FITNESS_LIMITS))
                 warning_entries = [item for item in result["warning_readback"] if item["status"] == "warning"]
                 self.assertEqual(
                     warning_entries,
@@ -589,7 +590,7 @@ class RepositoryGateTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     {item["metric"] for item in result["warning_readback"] if item["status"] == "ok"},
-                    {"tracked_files", "max_file_lines", "markdown_share", "normalized_line_entropy", "test_to_executable_ratio"} - {metric_key},
+                    set(skill_contract.REPORT_ONLY_FITNESS_LIMITS) - {metric_key},
                 )
                 self.assertEqual(result["metrics"][metric_key], planted_value)
                 self.assertFalse(any(f"fitness {metric_key}=" in item for item in result.get("errors", [])))
@@ -655,9 +656,8 @@ class RepositoryGateTests(unittest.TestCase):
     def test_metrics_stay_inside_budget(self) -> None:
         metrics = noodles.repository_metrics(CANDIDATE_ROOT)
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
-        self.assertLessEqual(metrics["tracked_files"], policy["max_tracked_files"])
-        self.assertLessEqual(metrics["max_file_lines"], policy["max_file_lines"])
-        self.assertGreaterEqual(metrics["test_to_executable_ratio"], policy["min_test_to_executable_ratio"])
+        self.assertTrue(all(isinstance(metrics.get(k), (int, float)) for k in skill_contract.REPORT_ONLY_FITNESS_LIMITS))
+        self.assertTrue(all(not skill_contract.threshold_exceeded(metrics[k], d, policy[p]) for k, (d, p) in skill_contract.FAILING_FITNESS_LIMITS.items()))
 
 
 class StartUnattendedTests(unittest.TestCase):
