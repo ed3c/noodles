@@ -709,8 +709,7 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
              mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
              mock.patch.object(noodles, "provider_sync"), \
-             mock.patch.object(noodles, "skill_discovery_check"), \
-             mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
+             mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
              mock.patch.object(noodles, "protection_policy", return_value=policy), \
              mock.patch.object(noodles, "protection_readback"), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \

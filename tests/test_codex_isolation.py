@@ -12,8 +12,6 @@ import codex_isolation
 import noodles
 from tests.support import CANDIDATE_ROOT, copy_tracked, write_fake_codex_stub
 
-_write_fake_codex = write_fake_codex_stub
-
 
 class CodexIsolationTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
@@ -46,7 +44,7 @@ class CodexIsolationTests(unittest.TestCase):
         fake_bin = Path(temp.name) / "fake-bin"
         fake_bin.mkdir()
         fake_codex = fake_bin / "codex"
-        _write_fake_codex(fake_codex)
+        write_fake_codex_stub(fake_codex)
         user_home = Path(temp.name) / "user-home"
         (user_home / ".codex").mkdir(parents=True)
         (user_home / ".codex" / "auth.json").write_text('{"token":"fixture"}\n', encoding="utf-8")
@@ -92,7 +90,7 @@ class CodexIsolationTests(unittest.TestCase):
             (skill_root / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
         fake_bin = Path(temp.name) / "fake-bin"
         fake_bin.mkdir()
-        _write_fake_codex(fake_bin / "codex")
+        write_fake_codex_stub(fake_bin / "codex")
         user_home = Path(temp.name) / "user-home"
         (user_home / ".codex").mkdir(parents=True)
         (user_home / ".codex" / "auth.json").write_text('{"token":"fixture"}\n', encoding="utf-8")
