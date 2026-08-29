@@ -170,7 +170,7 @@ class RepositoryGateTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = root / ".noodle.toml"
         config = path.read_text()
-        admitted = 'model = "gpt-5.4"'
+        admitted = f'model = "{tomllib.loads(config)["routing"]["defaults"]["model"]}"'
         self.assertIn(admitted, config)
         path.write_text(config.replace(admitted, 'model = "gpt-5.6-pro"', 1))
         self.commit(root)
