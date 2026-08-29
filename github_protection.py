@@ -305,6 +305,14 @@ def _model_eval_parent_snapshot() -> dict[str, Any]:
     }
 
 
+def _model_eval_parent_gh_binary() -> Path | None:
+    gh_path = shutil.which("gh")
+    if not gh_path:
+        return None
+    resolved = Path(gh_path).resolve()
+    return resolved if resolved.exists() else None
+
+
 def _model_eval_resolve_program(root: Path, value: str, *, error_cls: type[Exception]) -> Path:
     candidate = Path(value)
     if candidate.is_absolute():
@@ -321,6 +329,40 @@ def _model_eval_resolve_program(root: Path, value: str, *, error_cls: type[Excep
     return resolved
 
 
+def _model_eval_reject_real_gh_route(
+    root: Path,
+    value: str,
+    *,
+    route_name: str,
+    allow_shim_name: bool,
+    error_cls: type[Exception],
+) -> None:
+    route = value.strip()
+    if not route:
+        raise error_cls(f"model eval {route_name} is required")
+    if allow_shim_name and route == "gh":
+        return
+    real_gh = _model_eval_parent_gh_binary()
+    if real_gh is None:
+        return
+    resolved = _model_eval_resolve_program(root, route, error_cls=error_cls)
+    if resolved == real_gh:
+        raise error_cls(f"unsupported real-gh executable route via {route_name}: {route} -> {resolved}")
+
+
+def _model_eval_validate_gh_command(command: Sequence[str], *, error_cls: type[Exception]) -> None:
+    if command[:1] != ["gh"]:
+        return
+    if tuple(command[1:]) == MODEL_EVAL_GH_FIXTURE_ARGV:
+        return
+    supported = " ".join(("gh", *MODEL_EVAL_GH_FIXTURE_ARGV))
+    observed = " ".join(command)
+    raise error_cls(
+        f"unsupported gh eval argv before subprocess spawn/provider contact: {observed}; "
+        f"supported fixture is {supported}"
+    )
+
+
 def _model_eval_curated_path_entries(
     root: Path,
     command: Sequence[str],
@@ -331,7 +373,10 @@ def _model_eval_curated_path_entries(
 ) -> list[str]:
     entries = [str(shim_dir)]
     seen = {str(shim_dir)}
-    for tool in [command[0], *required_tools]:
+    tools = list(required_tools)
+    if command[0] != "gh":
+        tools.insert(0, command[0])
+    for tool in tools:
         parent = str(_model_eval_resolve_program(root, tool, error_cls=error_cls).parent)
         if parent not in seen:
             entries.append(parent)
@@ -377,6 +422,22 @@ def run_bounded_gh_admission_eval(
     if not command:
         raise error_cls("model eval child command required")
     root = root.resolve()
+    _model_eval_reject_real_gh_route(
+        root,
+        command[0],
+        route_name="child command[0]",
+        allow_shim_name=True,
+        error_cls=error_cls,
+    )
+    _model_eval_validate_gh_command(command, error_cls=error_cls)
+    for index, tool in enumerate(required_tools):
+        _model_eval_reject_real_gh_route(
+            root,
+            tool,
+            route_name=f"--tool[{index}]",
+            allow_shim_name=False,
+            error_cls=error_cls,
+        )
     temp_root = Path(tempfile.mkdtemp(prefix="noodles-model-eval-"))
     before = _model_eval_parent_snapshot()
     receipt: dict[str, Any] | None = None
@@ -409,7 +470,11 @@ def run_bounded_gh_admission_eval(
         )
         for key in MODEL_EVAL_GITHUB_ENV_KEYS:
             child_env.pop(key, None)
-        argv = [str(_model_eval_resolve_program(root, command[0], error_cls=error_cls)), *command[1:]]
+        argv = (
+            ["gh", *command[1:]]
+            if command[0] == "gh"
+            else [str(_model_eval_resolve_program(root, command[0], error_cls=error_cls)), *command[1:]]
+        )
         result = subprocess.run(
             argv,
             cwd=str(root),

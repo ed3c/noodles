@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -72,6 +73,29 @@ def probe_script(argv: list[str]) -> str:
 
 
 class ProtectionContractTests(unittest.TestCase):
+    def real_gh_path(self) -> Path:
+        gh_path = shutil.which("gh")
+        self.assertIsNotNone(gh_path)
+        return Path(str(gh_path)).resolve()
+
+    def assert_model_eval_rejected_before_spawn(
+        self,
+        command: list[str],
+        *,
+        required_tools: list[str] | None = None,
+        pattern: str,
+        error_cls: type[Exception] = AssertionError,
+    ) -> None:
+        with mock.patch.object(github_protection.subprocess, "run", side_effect=RuntimeError("unexpected spawn")) as run_mock:
+            with self.assertRaisesRegex(error_cls, pattern):
+                github_protection.run_bounded_gh_admission_eval(
+                    CANDIDATE_ROOT,
+                    command,
+                    required_tools=required_tools or [],
+                    error_cls=error_cls,
+                )
+        run_mock.assert_not_called()
+
     def test_required_separate_token_cannot_fallback(self) -> None:
         with mock.patch.dict(
             os.environ,
@@ -467,6 +491,20 @@ class ProtectionContractTests(unittest.TestCase):
         )
         self.assertEqual(len(receipt["child_surface"]["path_entries"]), 2)
 
+    def test_model_eval_direct_gh_fixture_command_preserves_frozen_shim_read_path(self) -> None:
+        receipt = github_protection.run_bounded_gh_admission_eval(
+            CANDIDATE_ROOT,
+            ["gh", *github_protection.MODEL_EVAL_GH_FIXTURE_ARGV],
+            error_cls=AssertionError,
+        )
+        self.assertEqual(receipt["command"][0], "gh")
+        self.assertEqual(receipt["child"]["returncode"], 0)
+        self.assertEqual(json.loads(receipt["child"]["stdout"]), github_protection.MODEL_EVAL_GH_ISSUE_FIXTURE)
+        self.assertEqual(receipt["child_surface"]["path_entries"], [receipt["child_surface"]["path_entries"][0]])
+        self.assertTrue(receipt["child_surface"]["path_entries"][0].endswith("/bin"))
+        self.assertTrue(receipt["parent_unchanged"])
+        self.assertTrue(receipt["temp_root_removed"])
+
     def test_model_eval_fixture_path_supports_non_python_carrier(self) -> None:
         with mock.patch.dict(os.environ, {"GH_TOKEN": "parent-gh-token"}, clear=False):
             receipt = github_protection.run_bounded_gh_admission_eval(
@@ -500,6 +538,41 @@ class ProtectionContractTests(unittest.TestCase):
                 self.assertTrue(receipt["parent_unchanged"])
                 self.assertTrue(receipt["temp_root_removed"])
 
+    def test_model_eval_direct_gh_api_is_rejected_before_subprocess_spawn(self) -> None:
+        self.assert_model_eval_rejected_before_spawn(
+            [
+                "gh",
+                "api",
+                "--method",
+                "PATCH",
+                "repos/ed3c/noodles/issues/70",
+                "-f",
+                "body=nope",
+            ],
+            pattern="unsupported gh eval argv before subprocess spawn/provider contact",
+        )
+
+    def test_model_eval_rejects_tool_gh_before_subprocess_spawn(self) -> None:
+        self.assert_model_eval_rejected_before_spawn(
+            ["python3", "-c", "print('ok')"],
+            required_tools=["gh"],
+            pattern=r"unsupported real-gh executable route via --tool\[0\]: gh -> ",
+        )
+
+    def test_model_eval_rejects_real_gh_path_and_symlink_before_subprocess_spawn(self) -> None:
+        real_gh = self.real_gh_path()
+        self.assert_model_eval_rejected_before_spawn(
+            [str(real_gh), "api", "--method", "PATCH", "repos/ed3c/noodles/issues/70"],
+            pattern=f"unsupported real-gh executable route via child command\\[0\\]: {re.escape(str(real_gh))} -> {re.escape(str(real_gh))}",
+        )
+        with tempfile.TemporaryDirectory(prefix="noodles-gh-link-") as temp_name:
+            symlink = Path(temp_name) / "gh-link"
+            symlink.symlink_to(real_gh)
+            self.assert_model_eval_rejected_before_spawn(
+                [str(symlink), "api", "--method", "PATCH", "repos/ed3c/noodles/issues/70"],
+                pattern=f"unsupported real-gh executable route via child command\\[0\\]: {re.escape(str(symlink))} -> {re.escape(str(real_gh))}",
+            )
+
     def test_model_eval_cli_entrypoint_runs_same_boundary_contract(self) -> None:
         stdout = io.StringIO()
         with mock.patch.dict(os.environ, {"GH_TOKEN": "parent-gh-token"}, clear=False), \
@@ -522,6 +595,30 @@ class ProtectionContractTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["child"]["returncode"], 0)
         self.assertTrue(payload["parent_unchanged"])
+
+    def test_model_eval_cli_entrypoint_rejects_direct_gh_api_before_spawn(self) -> None:
+        stderr = io.StringIO()
+        with mock.patch.object(github_protection.subprocess, "run", side_effect=RuntimeError("unexpected spawn")) as run_mock, \
+             mock.patch("sys.stderr", stderr):
+            result = noodles.main(
+                [
+                    "--root",
+                    str(CANDIDATE_ROOT),
+                    "eval",
+                    "gh-boundary",
+                    "--",
+                    "gh",
+                    "api",
+                    "--method",
+                    "PATCH",
+                    "repos/ed3c/noodles/issues/70",
+                    "-f",
+                    "body=nope",
+                ]
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("unsupported gh eval argv before subprocess spawn/provider contact", stderr.getvalue())
+        run_mock.assert_not_called()
 
 
 if __name__ == "__main__":
