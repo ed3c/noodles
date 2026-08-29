@@ -7,14 +7,22 @@ from pathlib import Path
 from unittest import mock
 
 import noodles
-from tests.support import CANDIDATE_ROOT, cmd, control_checkout_fixture, handoff_fixture
+from tests.support import (
+    CANDIDATE_ROOT,
+    ISSUE_FEATURE_MARKER,
+    cmd,
+    control_checkout_fixture,
+    handoff_fixture,
+    write_feature_evidence,
+)
 
 
 class ContractParserTests(unittest.TestCase):
-    BODY = """<!-- noodles-role: repository-mutating-atom -->
+    BODY = f"""<!-- noodles-role: repository-mutating-atom -->
 <!-- noodles-target: ed3c/noodles -->
 <!-- noodles-subject: ed3c/noodles#7 -->
 <!-- noodles-state: ready -->
+{ISSUE_FEATURE_MARKER}
 """
 
     def test_issue_contract_positive(self) -> None:
@@ -76,6 +84,14 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        write_feature_evidence(self.root, self.head)
+        self.issue = mock.patch.object(
+            noodles,
+            "issue_read",
+            return_value={"body": ContractParserTests.BODY.replace("ed3c/noodles#7", self.SUBJECT)},
+        )
+        self.issue.start()
+        self.addCleanup(self.issue.stop)
 
     def pr(self, **overrides: object) -> dict:
         payload = {
@@ -121,6 +137,7 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT, blocking=False)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        write_feature_evidence(self.root, self.head)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_set_state"):
             with self.assertRaisesRegex(noodles.GateError, "blocking"):
@@ -141,10 +158,12 @@ class ExecuteHandoffTests(unittest.TestCase):
             "<!-- noodles-role: repository-mutating-atom -->\n"
             "<!-- noodles-target: ed3c/noodles -->\n"
             f"<!-- noodles-subject: {self.SUBJECT} -->\n"
-            "<!-- noodles-state: ready -->\n\n"
+            "<!-- noodles-state: ready -->\n"
+            "<!-- noodles-feature: verification-skill-oracle -->\n\n"
             "- Evidence: docs/research/2026-08-29-noodle-shared-vs-noodles-performance.md\n"
         )
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_read", return_value={"state": "open", "body": body}), \
              mock.patch.object(noodles, "gh_api", return_value={"state": "open", "body": body}) as api:
             with self.assertRaisesRegex(noodles.GateError, "docs/research/"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())

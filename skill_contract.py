@@ -30,6 +30,14 @@ EXECUTE_MULTI_PHASE_ROUTE = (
     "- `long multi-phase work` -> `show-me-your-work` plus "
     "`poteto-mode/playbooks/multi-phase-plan.md`; oracle `decision trail plus direct readback`"
 )
+EXECUTE_VERIFICATION_ROUTE = (
+    "- `verification skill work` -> `create-verification-skill` or `maintain-verification-skill`; "
+    "oracle `declared feature operation plus deterministic observed-state check`"
+)
+EXECUTE_VERIFICATION_P_CLASS_PHRASE = (
+    "Output from `create-verification-skill` or `maintain-verification-skill` stays P-class until "
+    "`./noodles feature verify <feature-id>` runs the declared operation and its oracle checks observed state."
+)
 EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`"
 EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
 EXECUTE_UNSUPPORTED_PHRASE = (
@@ -137,6 +145,8 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
         (EXECUTE_INVESTIGATION_ROUTE, "investigation fixture"),
         (EXECUTE_FEATURE_ROUTE, "function-boundary feature fixture"),
         (EXECUTE_MULTI_PHASE_ROUTE, "multi-phase fixture"),
+        (EXECUTE_VERIFICATION_ROUTE, "verification-skill fixture"),
+        (EXECUTE_VERIFICATION_P_CLASS_PHRASE, "verification-skill P-class refusal"),
         (EXECUTE_CONTROL_CLI_ROUTE, "CLI control fixture"),
         (EXECUTE_DESLOP_ROUTE, "pre-commit cleanup fixture"),
         (EXECUTE_UNSUPPORTED_PHRASE, "unsupported route refusal"),
