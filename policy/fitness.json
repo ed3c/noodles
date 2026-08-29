@@ -10,6 +10,12 @@
   "max_workflows": 2,
   "required_noodle_mode": "supervised",
   "required_codex_model": "gpt-5.4",
+  "max_agent_document_hops": 3,
+  "agent_document_route": [
+    "AGENTS.md",
+    "contracts/system-v1.md",
+    "issue-named executable contract/test"
+  ],
   "required_paths": [
     ".agents/skills/execute/SKILL.md",
     ".agents/skills/schedule/SKILL.md",
