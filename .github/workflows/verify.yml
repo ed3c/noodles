@@ -74,6 +74,7 @@ jobs:
         env:
           NOODLES_CANDIDATE_ROOT: ${{ github.workspace }}/.candidate
           PYTHONPATH: ${{ github.workspace }}/.trusted
+          NOODLES_OFFLINE_TESTS: '1'
         run: python3 -m unittest discover -s .trusted/tests -v
 
       - name: Produce exact-head trusted receipt
