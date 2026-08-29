@@ -161,7 +161,7 @@ def handoff_fixture(
     return temp, root, binary, session_id
 
 
-def provider_fixture(subpath: str = "skills/engineering", license_path: str = "LICENSE") -> tuple[tempfile.TemporaryDirectory[str], Path]:
+def provider_fixture(subpath: str = "skills/control-noodle", license_path: str = "LICENSE") -> tuple[tempfile.TemporaryDirectory[str], Path]:
     temp = tempfile.TemporaryDirectory(prefix="noodles-provider-test-")
     base = Path(temp.name)
     candidate = base / "candidate"
@@ -170,8 +170,29 @@ def provider_fixture(subpath: str = "skills/engineering", license_path: str = "L
     source.mkdir()
     initialize_repo(source)
     (source / "LICENSE").write_text("MIT\n")
-    (source / "skills/engineering/example").mkdir(parents=True)
-    (source / "skills/engineering/example/SKILL.md").write_text("# Example\n")
+    skill_root = source / "skills/control-noodle"
+    skill_root.mkdir(parents=True)
+    skill_file = skill_root / "SKILL.md"
+    skill_file.write_text("# Control Noodle\n")
+    skill_tree_sha256 = tree_digest(skill_root)
+    admission_path = source / "admissions/control-noodle.json"
+    admission_path.parent.mkdir(parents=True, exist_ok=True)
+    admission_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "skill": "control-noodle",
+                "status": "ADMITTED",
+                "subject_files": [
+                    {
+                        "path": "skills/control-noodle/SKILL.md",
+                        "sha256": runtime_contract.sha256_file(skill_file),
+                    }
+                ],
+                "skill_tree_sha256": skill_tree_sha256,
+            }
+        )
+    )
     cmd(["git", "add", "-A"], source)
     cmd(["git", "commit", "-q", "-m", "provider"], source)
     commit = cmd(["git", "rev-parse", "HEAD"], source)
@@ -185,6 +206,15 @@ def provider_fixture(subpath: str = "skills/engineering", license_path: str = "L
             "subpath": subpath,
             "destination": ".noodle/providers/fixture",
             "license_path": license_path,
+            "admission": {
+                "path": "admissions/control-noodle.json",
+                "sha256": runtime_contract.sha256_file(admission_path),
+                "skill": "control-noodle",
+                "skill_tree_sha256": skill_tree_sha256,
+                "subject_files": {
+                    "skills/control-noodle/SKILL.md": runtime_contract.sha256_file(skill_file),
+                },
+            },
             "enabled": True,
             "authority": "P",
         }
@@ -248,7 +278,7 @@ def write_skill_discovery_fixture(
     compat_source_root = (
         candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
     ).resolve()
-    matt_skill = (candidate / ".noodle/providers/matt-engineering/skills/engineering/ask-matt").resolve()
+    control_noodle_source_root = (candidate / runtime_contract.CONTROL_NOODLE_DISCOVERY_ROOT).resolve()
 
     poteto_skill = cursor_root / "poteto-mode"
     poteto_skill.mkdir(parents=True, exist_ok=True)
@@ -280,9 +310,12 @@ def write_skill_discovery_fixture(
         os.symlink(os.path.relpath(target, start=mapped_dir), mapped_dir / "SKILL.md")
         output_lines.append(f"{skill}\t{project_root}\ttrue\t{mapped_dir}")
 
-    matt_skill.mkdir(parents=True, exist_ok=True)
-    (matt_skill / "SKILL.md").write_text("# Ask Matt\n")
-    output_lines.append(f"ask-matt\t{matt_skill.parent}\ttrue\t{matt_skill}")
+    control_noodle_source_root.mkdir(parents=True, exist_ok=True)
+    (control_noodle_source_root / "SKILL.md").write_text("# Control Noodle\n")
+    control_noodle_root = project_root / runtime_contract.CONTROL_NOODLE_SKILL
+    control_noodle_root.mkdir(exist_ok=True)
+    os.symlink(os.path.relpath(control_noodle_source_root / "SKILL.md", start=control_noodle_root), control_noodle_root / "SKILL.md")
+    output_lines.append(f"{runtime_contract.CONTROL_NOODLE_SKILL}\t{project_root}\ttrue\t{control_noodle_root}")
     return "\n".join(output_lines) + "\n"
 
 
