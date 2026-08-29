@@ -1,259 +1,217 @@
 # System Projection
 
-> N-class projection for snapshot `CTX-2026-08-30T02:44:51+08:00`. The executable and provider owners named below remain authoritative; this file is not.
+> N-class projection for `CTX-2026-08-30T02:55:36+08:00`. Executable and provider owners remain authoritative; this file is not.
 
-## System boundary
-
-`noodles` is a target-local correctness/evidence extension around upstream Noodle, pinned pstack knowledge, Git, and GitHub. It is not a second Agent OS and does not own generic scheduling, worktree lifecycle, provider truth, or model reasoning quality.
-
-The intended responsibility split is:
+## Responsibility boundary
 
 ```text
 Noodle
-  owns scheduling, orders, process isolation, and worktrees
+  scheduling, orders, process isolation, worktrees
 
 pstack / poteto-mode
-  owns probabilistic engineering-route selection
+  probabilistic engineering route and playbook selection
 
 noodles
-  owns target-local contracts, evidence adapters, gates, repair/reconcile hooks
+  target-local contracts, evidence adapters, gates, repair/reconcile hooks
 
 Git
-  owns candidate source identity and ancestry
+  candidate source identity, tree, ancestry
 
 GitHub
-  owns protected default-branch reality, exact-head merge, and Issue closure
+  protected default-branch reality, exact-head verification/merge, Issue closure
 
 target repository
-  owns its feature/domain oracles and every authority-bearing local contract
+  feature/domain oracles and every local authority-bearing contract
 ```
 
 ## Directory and surface map
 
-This table is compiled from provider tree `afc1ec4ab5077b16b6e03b1091a539737a6b9970`.
+Compiled from provider tree `b450cc02578b25a7834754ad170632554e0b4ddd`.
 
-| Surface | Intended concern | Admitted writer / transition owner | Primary readback | State-machine role | Main data flow |
-|---|---|---|---|---|---|
-| `.agents/bin/codex` | Repository-owned Codex carrier boundary | Exact carrier/model atom only | argv/model/effort/isolation controls | carrier launch | Noodle task → exact Codex profile |
-| `.agents/skills/schedule/` | Project scheduling procedure | Exact schedule-Skill atom; Noodle still owns order lifecycle | Noodle skill discovery + compact-order contract | schedule proposal | typed backlog → candidate orders |
-| `.agents/skills/execute/` | Project implementation/handoff procedure | Exact execute-Skill atom | route resolution, issue digest, handoff controls | execute lane | order → poteto-mode → candidate → handoff |
-| `.github/workflows/verify.yml` | Trusted candidate verification | Trusted workflow atom only | semantic workflow validator + run/jobs/receipt | trusted verification | exact PR head → trusted receipt |
-| `.github/workflows/land.yml` | Exact-head landing and Issue closure | Trusted land workflow only | protection, PR/head/tree, merge, branch, Issue state | provider landing | trusted receipt → merge/closure |
-| `.noodle.toml` | Noodle runtime/configured routing | Exact runtime/routing atom | config and pinned-runtime controls | runtime admission | task type → provider/model/path |
-| `.noodle/adapters/github` | Backlog adapter entrypoint | Exact GitHub adapter atom | provider Issue/PR readback | backlog synchronization | GitHub Issues ↔ Noodle backlog |
-| `AGENTS.md` | Always-loaded bootloader laws and 3-hop route | Canonical document-owner atom | document-route controls | context routing | Agent start → system/Issue pointer |
-| `contracts/system-v1.md` | Stable cross-task claim boundaries and system decisions | System-spec/decision atom | direct source readback + bounded document controls | constitution | requirement/authority law → Issue context |
-| `docs/research/**` | N-class research projections | Documentation-only atom | source identity/freshness | research snapshot | sources → analysis |
-| `docs/design/**` | N-class design/program projections | Documentation-only atom | source identity/freshness | planning snapshot | sources → DAG/closure packets |
-| `feature_contract.py` | Baseline acceptance plus optional specialized feature oracle | Exact verification-contract atom | operation/oracle/evidence tests | completion admission | candidate head/tree → evidence envelope |
-| `skill_contract.py` | Skill, schedule, and document-route contracts | Exact contract atom | parser/publish/document controls | structural admission | Skill/order/doc bytes → accept/reject |
-| `github_protection.py` | GitHub workflow/protection/landing boundary | Exact provider-security atom | live GitHub API + semantic workflow controls | R gate | receipt + provider state → land/refuse |
-| `provider_contract.py` | External Skill provider identity/admission | Exact provider atom | commit/tree/license/admission digests | provider sync/check | lock → detached provider bytes |
-| `runtime_contract.py` | Pinned Noodle runtime and local runtime admission | Exact runtime atom | version/asset/binary/process/listener/snapshot | runtime start/readiness | lock + binary → admitted Noodle runtime |
-| `repair_contract.py` | Re-entry after trusted check failure | Exact repair atom | Issue/PR/head/session/worktree receipt | repair loop | failed check → same lane/new head |
-| `policy/*.json` | Machine-readable exact policy and immutable pins | Nearest owning policy atom | executable consumers and planted drift | gate configuration | candidate/provider state → decision |
-| `migrations/skills-shared/ledger.json` | Evidence-bounded migration dispositions | Migration atom only | ledger schema and evidence requirement | capability admission | historical evidence → MIGRATE/REVALIDATE/etc. |
-| `tests/` | Positive, planted-negative, non-case, and regression controls | Nearest contract/feature atom | exit code + direct fixtures/readback | local proof | claim boundary → falsification |
-| root Python modules | Thin target-local control/evidence implementation | Exact Issue lane in Noodle worktree | tests, source/head/tree, provider readback | implementation | typed input → deterministic decision |
-| `noodles` / `noodles.py` | User entrypoint and core command dispatch | Exact CLI/control atom | CLI output, tests, repository gate | system entrypoint | operator/Noodle → contracts/providers/reconcile |
+| Surface | Concern | Admitted writer / transition owner | Direct readback | Data flow |
+|---|---|---|---|---|
+| `.agents/bin/codex` | exact Codex carrier/model boundary | carrier/model atom | argv, model, effort, isolation canary | Noodle task → Codex session |
+| `.agents/skills/schedule/` | scheduling procedure | schedule-Skill atom; Noodle still owns orders | Noodle skill discovery + compact-order contract | typed backlog → candidate orders |
+| `.agents/skills/execute/` | implementation/handoff procedure | execute-Skill atom | route, Issue digest, acceptance, handoff | order → poteto-mode → candidate → PR |
+| `.github/workflows/verify.yml` | trusted candidate verification | trusted workflow atom | semantic workflow validator + run/jobs/receipt | exact PR head → trusted receipt |
+| `.github/workflows/land.yml` | exact-head merge and closure | trusted land workflow | protection, PR/head/tree, merge, branch, Issue state | receipt → merge/closure |
+| `.noodle.toml` | Noodle routing/runtime config | runtime/routing atom | config and pinned-runtime checks | task key → provider/model/path |
+| `.noodle/adapters/github` | backlog/provider adapter | exact adapter atom | provider Issue/PR readback | GitHub Issues ↔ Noodle backlog |
+| `AGENTS.md` | always-loaded bootloader and three-hop route | canonical document-owner atom | route and pointer controls | Agent start → system/Issue pointer |
+| `contracts/system-v1.md` | stable system decisions and requirements | system-spec atom | direct source + document/spec controls | stable requirement → Issue context |
+| `docs/research/**`, `docs/design/**` | N-class research/design projections | documentation-only atom | source identity/freshness | sources → planning projection |
+| `feature_contract.py` | mandatory baseline plus optional specialized oracle | verification-contract atom | operation/oracle/evidence tests | exact head/tree → evidence envelope |
+| `skill_contract.py` | Skill, schedule, and document-route boundaries | nearest contract atom | parser/publish/route controls | bytes → accept/reject |
+| `github_protection.py` | workflow/protection/landing authority | provider-security atom | live API + semantic workflow controls | receipt/provider state → land/refuse |
+| `provider_contract.py` | external Skill provider identity | provider atom | commit/tree/license/digests/clean state | lock → detached provider bytes |
+| `runtime_contract.py` | pinned Noodle runtime | runtime atom | release/version/asset/binary/process | lock + binary → admitted runtime |
+| `repair_contract.py` | same-lane re-entry after failed check | repair atom | Issue/PR/head/session/worktree receipt | failed head → repair/new head |
+| `policy/*.json` | exact machine policy and pins | nearest owning policy atom | executable consumers + planted drift | candidate/provider state → decision |
+| `migrations/skills-shared/ledger.json` | bounded migration dispositions | migration atom | ledger schema/evidence requirement | historical evidence → disposition |
+| `tests/` | positive, planted-negative, non-case, regression | nearest feature/contract atom | exit/output/fixture/readback | claim boundary → falsification |
+| root Python modules | thin target-local control implementation | exact Issue lane in Noodle worktree | source/head/tree/tests/provider | typed input → deterministic decision |
+| `noodles`, `noodles.py` | user/system entrypoint | exact CLI/control atom | CLI output and repository gate | operator/Noodle → contracts/providers/reconcile |
 
-## State Machine A: Issue-to-landed reality
+## State Machine A: Issue to landed reality
 
 ```text
 OPEN ISSUE
-  │ structural markers / provider body
-  ▼
-STRUCTURALLY VISIBLE
-  │ dependency/provider/body-digest admission
-  ▼
-SCHEDULABLE
-  │ Noodle order
-  ▼
-ISOLATED WORKTREE
-  │ poteto-mode and selected P-class playbook
-  ▼
-CANDIDATE IMPLEMENTATION
-  │ mandatory baseline acceptance
-  │ optional declared specialized oracle
-  ▼
-LOCAL EVIDENCE COMPLETE
-  │ exact branch/head + one-line Refs PR
-  ▼
-AWAITING_LAND
-  │ blocking stage message
-  ▼
-NOODLE PENDING REVIEW
-  │ trusted verify exact-head receipt
-  ▼
-PROVIDER VERIFIED
-  │ expected-head merge + merge/default-branch readback
-  ▼
-ISSUE LANDED + CLOSED
-  │ local provider fast-forward + machine merge control
-  ▼
-RECONCILED
+  → STRUCTURALLY VISIBLE
+  → PROVIDER/DEPENDENCY/BOUNDARY ADMISSION
+  → SCHEDULABLE
+  → NOODLE ORDER
+  → ISOLATED WORKTREE
+  → POTETO-MODE / P-CLASS PLAYBOOK
+  → CANDIDATE IMPLEMENTATION
+  → MANDATORY BASELINE ACCEPTANCE
+  → OPTIONAL APPLICABLE SPECIALIZED ORACLE
+  → LOCAL EVIDENCE COMPLETE
+  → EXACT-HEAD PR + AWAITING_LAND
+  → NOODLE PENDING REVIEW
+  → TRUSTED VERIFY RECEIPT
+  → PROTECTED EXPECTED-HEAD MERGE
+  → ISSUE LANDED + CLOSED
+  → LOCAL MACHINE RECONCILIATION
 ```
 
-Authority by segment:
+Authority:
 
-- Issue understanding and pstack route: `P`;
-- baseline/specialized executable acceptance: `L`;
-- protected exact-head merge/closure: `R`;
-- this diagram: `N`.
+- understanding/routing: `P`;
+- executable acceptance: `L`;
+- protected merge/closure: `R`;
+- this projection: `N`.
 
 ## State Machine B: trusted-check repair
 
 ```text
 AWAITING_LAND PR
-  │ required check failure readback
-  ▼
-FAILED EXACT HEAD
-  │ bind Issue + PR + head + session + worktree
-  ▼
-REPAIR RECEIPT
-  │ re-enter same Noodle-owned worktree
-  ▼
-REPAIR ATTEMPT
-  ├─ new exact head → rerun trusted verification
-  ├─ attempt budget exhausted → explicit escalation
-  └─ identity/worktree drift → fail closed
+  → FAILED REQUIRED CHECK AT EXACT HEAD
+  → BIND ISSUE + PR + HEAD + SESSION + WORKTREE
+  → DETERMINISTIC REPAIR RECEIPT
+  → RE-ENTER SAME NOODLE WORKTREE
+  → NEW EXACT HEAD
+  → TRUSTED VERIFICATION
+      ├─ pass → provider landing
+      ├─ fail → bounded next attempt
+      └─ exhausted/unsupported → explicit escalation
 ```
 
-The loop is a runtime repair cycle, not a delivery dependency cycle. It cannot convert failed or unknown verification into PASS.
+This operational cycle does not convert failed or unknown verification into PASS.
 
-## State Machine C: failure-to-organizational knowledge
+## State Machine C: failure to executable knowledge
 
-Current status: **proposed / incomplete**, owned by open Issue #21.
+Current owner: open Issue #21.
 
 ```text
 OBSERVED FAILURE
-  │ pstack reflect or other hypothesis generation
-  ▼
-P-CLASS LESSON CANDIDATE
-  │ preserve occurrence evidence
-  ▼
-INDEPENDENT REPRODUCTION A + B
-  │ plus one non-case
-  ▼
-EVAL DISTINGUISHES BOUNDARY
-  ├─ no → remain P-only guidance
-  └─ yes
-       ▼
-NEAREST TEST / LINT / CONTRACT
-       │ planted negative + regression
-       ▼
-DURABLE EXECUTABLE RULE
+  → P-CLASS LESSON CANDIDATE
+  → TWO INDEPENDENT REPRODUCTIONS
+  → ONE NON-CASE
+  → EVAL DISTINGUISHES BOUNDARY
+      ├─ no → remain P-only
+      └─ yes → nearest test/lint/contract
+                 → planted negative
+                 → regression
+                 → durable executable rule
 ```
 
-A single anecdote or direct prose edit must not enter the durable L boundary.
+A single anecdote or direct `AGENTS.md` edit is not organizational learning.
 
-## State Machine D: context-closure planning
+## State Machine D: context closure
 
 ```text
 SOURCE DENOMINATOR FREEZE
-  │ exact identity / classification / freshness
-  ▼
-SHADOW MONITOR
-  │ architecture, intent/case, authority, lifecycle,
-  │ concurrency, and evidence deltas
-  ▼
-TECH LEAD COMPILATION
-  │ true start/completion edges, requirement owners,
-  │ disjoint writers, convergence owners
-  ▼
-N-CLASS CONTEXT PACK
-  │ SYSTEM / DAG / CLOSURE / TRACEABILITY / DRIFT
-  ▼
-CANDIDATE TASK PACKETS
-  │ explicit provider action is still required
-  ▼
-EXACT GITHUB ISSUE
+  → SHADOW MONITOR (read-only)
+  → TECH LEAD TRUE-DAG / OWNER / WRITER COMPILATION
+  → N-CLASS SYSTEM/DAG/CLOSURE/TRACE/DRIFT PACK
+  → CANDIDATE TASK PACKETS
+  → SEPARATE EXACT GITHUB ISSUE
 ```
 
-This State Machine has no implementation or closure authority. The output becomes actionable only when an exact Issue passes the normal target-local lifecycle.
+The pack itself creates no provider or implementation authority.
 
 ## Primary data and authority flow
 
 ```text
-System requirement / owner intent                      N or owner authority
-        │
-        ▼
-Exact GitHub Issue body + provider digest              provider fact
-        │
-        ▼
-Noodle scheduler/order/worktree                        execution topology
-        │
-        ▼
-poteto-mode / pstack playbook                          P
-        │
-        ▼
-Candidate source in isolated worktree                  Git subject
-        │
-        ▼
-Baseline acceptance + optional specialized oracle      L
-        │
-        ▼
-Exact-head trusted receipt                             L bound to provider subject
-        │
-        ▼
-Protected GitHub merge and closure                     R
-        │
-        ▼
-Derived requirement status / context projection        N
+stable requirement / owner intent                   N or owner input
+        ↓
+exact GitHub Issue body + provider digest           provider fact
+        ↓
+Noodle order/worktree                               execution topology
+        ↓
+poteto-mode/playbook                                P
+        ↓
+candidate Git head/tree                             source subject
+        ↓
+baseline + optional specialized oracle              L
+        ↓
+trusted exact-head receipt                          L bound to provider subject
+        ↓
+protected merge and closure                         R
+        ↓
+derived status/context projection                   N
 ```
 
-No downstream projection may become an upstream authority. In particular:
+No downstream projection becomes upstream authority. In particular:
 
-- a route packet cannot authorize a merge;
-- candidate-modified tests cannot be the sole authority for that candidate;
-- a context document cannot serve as evidence;
-- a derived `PARTIAL`/`LANDED` status must not be stored as a second mutable truth;
+- pstack route evidence cannot authorize merge;
+- candidate-modified bytes cannot be the sole authority for the same candidate;
+- N documents cannot serve as receipts;
+- `LANDED/PARTIAL/HOLD` is derived, not stored as a second status truth;
 - central planning cannot replace target-repository authority.
 
-## No-self-authorization boundary
+## Landed Agent-friendly architecture
 
-Owner conversation proposes the general law:
+Issue #109 provider-landed through PR #118 at merge `bb42c7c4cf81ebde8d2659ae0ff0c37dbc5d9f24`, tree `b450cc02578b25a7834754ad170632554e0b4ddd`.
 
-```text
-candidate-modified bytes
-must not be the sole authority
-for admitting the same candidate
-```
-
-Current repository mechanisms partially realize it through separate candidate/trusted jobs, trusted verifier bytes from default branch, exact-head receipts, and provider landing. This pack records the law as an owner requirement and current mechanism as repository/provider facts. It does not claim every future feature oracle already satisfies the law.
-
-## Agent-friendly architecture relationship
-
-Issue #72 already landed a compact Agent-friendly shortest-path summary. Issue #109 is the current convergence atom for complete Dune-derived rationale and requirements `AF-01` through `AF-06` in the system contract.
-
-The intended local optimization is:
+The locally obvious path is now defined by AF-01 through AF-06:
 
 ```text
-correct path
-  exact Issue → Noodle worktree → nearest contract → acceptance/oracle → provider gate
-
-shortcut
-  shared-root edit / unowned writer / skipped oracle / direct close / stale receipt
-  → mechanical refusal or explicit unsupported state
+exact Issue
+  → Noodle-owned worktree
+  → nearest executable boundary
+  → mandatory baseline
+  → every applicable specialized oracle
+  → exact-head provider gate
 ```
 
-PR #118 is not yet provider-landed at this snapshot. The AF section remains a candidate until R readback completes.
+A shortcut such as shared-root mutation, competing writer, skipped oracle, stale receipt, or direct closure is an error path, not a parallel Golden Path.
 
-## Concurrency relationship
+## Current specification and Issue-contract evolution
 
-The target design does not derive safety from a fixed concurrency number. Open Issues model four N-independent invariants:
+- #119 owns convergence of `contracts/system-v1.md` into a compact low-change constitution with stable requirement evolution rules.
+- #120 owns stable requirement references plus deterministic Issue structural completeness after #82/#98/#83/#119.
+- #83 still owns canonical Agent procedure/document cleanup and overlaps #119's system-contract surface; Tech Lead must serialize those writers.
 
-- I1, truthful single Noodle daemon lease: #45;
-- I2, exact Issue/session/worktree/branch provenance: #46;
-- I3, disjoint declared write boundaries: #98;
-- I4, no duplicate lane when an exact open PR exists: #99.
+Neither #119 nor #120 is implemented by this context pack.
 
-Issue #100 is the convergence owner for binding declared concurrency to evidence that those invariants remain alive. Until those atoms land, concurrency independence is an incomplete design claim.
+## Current active provider lanes
 
-## Cross-repository relationship
+| Issue / PR | Concern | Exact head | Snapshot state |
+|---|---|---|---|
+| #82 / PR #121 | typed dependencies and derived schedulability | `35e0feed1c321c96b43d200ee57f3197a4d38fb4` | `awaiting_land`; exact-head verify failed |
+| #45 / PR #122 | truthful Noodle daemon lease, concurrency I1 | `30651b61b8c747c3bd8f684652fb5a59e33a2c1f` | `awaiting_land`; exact-head verify failed |
+| #116 / PR #123 | optional repo-infra specialized oracle | `8e35b65ba9f9be051e9a6fca1527d23acac0cf22` | `awaiting_land`; exact-head verify failed |
+| #117 | N-class context pack | branch `agent/issue-117-context-closure-rebased` | implementation in progress; no provider PR at snapshot |
 
-Open Issue #14 owns target-local cross-repository admission. The projected law is:
+Failed lanes remain owned by the same exact repair lifecycle; no separate worker or new Issue is inferred here.
+
+## Concurrency architecture
+
+The intended safety proof is N-independent:
+
+- I1 truthful daemon lease: #45;
+- I2 exact Issue/session/worktree/branch provenance: #46;
+- I3 disjoint typed write boundaries: #98;
+- I4 refusal when an exact open PR/lane already exists: #99;
+- convergence/proof lock: #100.
+
+At this snapshot I1 has a candidate PR but no trusted PASS; the other invariants remain open. No concurrency-safety completion claim is justified.
+
+## Cross-repository architecture
+
+Issue #14 owns the target-local contract. The durable law is:
 
 > Authority follows the mutated repository.
 
-A central noodles instance may discover or plan work. Each target must still own its own Noodle/worktree boundary, feature/domain oracle, protected provider gate, and live canary. No source-side allowlist or central receipt establishes another repository's correctness.
+A central noodles instance may discover/plan. Each target must still own local Noodle/worktree isolation, its oracle, protection/credential scope, exact-head landing, and a live canary.
