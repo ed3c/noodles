@@ -27,15 +27,9 @@ Repository-owned context uses at most three nodes:
 
 ## Agent-friendly shortest path
 
-Predictable local Agent behavior is guidance unless an executable gate or provider readback already enforces it.
+Make the locally obvious path the globally correct path: exact Issue → isolated Noodle worktree → nearest executable contract/test → physical oracle → exact-head provider gate. Keep one obvious owner/writer for each durable value, and admit exceptions only as exact bounded atoms.
 
-- Prefer the Golden Path because it requires fewer decisions than a shortcut: exact Issue, isolated Noodle worktree, nearest executable contract/test, local verify, exact-head PR.
-- Forbidden dependencies and forbidden structural states fail mechanically instead of becoming style debates.
-- Every durable value has one owner, and every repository mutation has one Noodle writer.
-- New work starts in an isolated Noodle worktree rather than a shared-root edit or branch switch in the shared tree.
-- Exceptions stay exact narrow atoms; they still pass the nearest executable gate, and any authority claim still requires provider readback.
-
-Read at most `AGENTS.md` → `contracts/system-v1.md` when its trigger applies → the exact Issue and nearest executable contract or test, then stop document traversal.
+For the Dune-derived rationale, ownership map, limits of current enforcement, and requirements `AF-01` through `AF-06`, read `contracts/system-v1.md`, then follow the exact Issue to its nearest executable contract/test and stop document traversal.
 
 Comments, prose, Skills, reviews, and model consensus may guide routing and implementation, but they never replace executable tests, type/static restrictions, CI, or provider readback.
 

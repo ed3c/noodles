@@ -29,6 +29,51 @@ This file is the single system-level decision and claim-boundary record for v1; 
 
 Only observed invariants with an executable/readback boundary may be listed as L or R claims. An architecture decision may be recorded before its mechanism exists only when it is explicitly `HOLD` or N-class and states the physical admission criteria. Mutable Issue, PR, runtime, and provider receipts remain with their owning surfaces instead of being copied here.
 
+## Agent-friendly architecture
+
+Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow a requested implementation even when the wider system invariant is not visible. Noodles does not treat those tendencies as failures to repair with more prose. It arranges ownership, paths, and executable gates so the least surprising local action is also the system-correct action.
+
+This adapts Dune's agent-friendly design principles as noodles system laws, not as a runtime dependency, implementation template, extra document, or new framework. The design target is local-obvious → globally-correct: an Agent starting from an exact Issue should naturally reach the Golden Path with fewer choices than any shortcut, and the obvious meaning of “done” should be the physically verified meaning.
+
+| ID | System requirement | Admission boundary |
+|---|---|---|
+| AF-01 | The conventional path has fewer decisions than a shortcut: exact Issue, Noodle-owned isolated worktree, nearest executable contract/test, local oracle, exact-head PR, provider readback. | The route is P-class guidance; each named local or provider gate has only its existing L or R authority. |
+| AF-02 | A forbidden dependency, structural state, or authority transition fails mechanically with a diagnostic that names the supported path. | A prohibition is enforced only where a deterministic gate or provider readback already rejects it; prose alone is N-class. |
+| AF-03 | Every durable value has one obvious owner and one admitted writer or transition surface. Copies are read-only projections, never competing truth. | The owner map below is the decision record. Mechanical duplicate-ownership coverage is explicitly incomplete below. |
+| AF-04 | Repository mutation occurs only in an admitted isolated worktree owned by Noodle; the shared control checkout is a read/reconcile surface, not an Agent edit surface. | Noodle worktree/order/session readback and the existing L-03 containment controls. |
+| AF-05 | Bootstrap and recovery exceptions are exact, narrow, bounded atoms with receipts; they pass the nearest executable gate and provider admission when authority changes. | Exact Issue subject, declared boundary, L controls, and R readback; an exception never becomes a second normal path. |
+| AF-06 | The locally obvious completion path reaches the nearest required physical oracle before any completion or authority claim. | L-07 feature operation/oracle evidence followed by the existing exact-head R gates. |
+
+### Durable owner and writer map
+
+“One writer” means one admitted mutation or transition surface for the durable value. It does not mean one process has every authority, and it does not turn a prose ownership statement into an L or R guarantee.
+
+| Durable value or truth | Owner | Admitted writer or transition surface | Required readback |
+|---|---|---|---|
+| Exact Issue goal, target, dependencies, and lifecycle state | GitHub Issue | Configured GitHub backlog adapter; only the trusted lander performs post-merge closure | Exact provider Issue body/state |
+| Scheduling, orders, process isolation, and worktrees | Noodle | Noodle control/runtime APIs | Exact order, stage, session, and worktree state |
+| Engineering playbook selection and route evidence | pstack | `poteto-mode` through the admitted execute Skill/provider path | Route packet remains P-class and cannot grant correctness or provider authority |
+| Feature operation and oracle contract | noodles | `feature_contract.py` and the nearest executable contract/test named by the Issue | Executed operation, observed state, artifact digest, exact candidate head |
+| Candidate repository source | Git in the Noodle-owned isolated worktree | The repository-mutating Agent inside that admitted worktree | Git status/tree/head plus local gate residue checks |
+| Default-branch source, merge, and Issue closure | GitHub | Trusted verify/land workflows with an expected head SHA | Verify receipt, PR/head/tree, merge parent, default-branch head, closure state |
+| Post-provider runtime reconciliation | noodles | `./noodles reconcile`, which drives the Noodle control API and configured backlog adapter after provider readback | Provider-landed ancestry, command acknowledgement, released order |
+
+### Design consequences
+
+- **Shortcut failure.** A shortcut is either structurally unavailable or fails with a diagnostic naming the supported Golden Path. A silent fallback, permissive cache, or second writer is an architecture defect, not convenience.
+- **Nearest contract.** Domain knowledge lives at the nearest executable boundary: an invariant in its positive and planted-negative test, an adapter rule in its contract test, and a provider assumption in live provider readback. Prose, Skills, route packets, and reviews remain P or N until the named operation executes and its state is read back.
+- **Isolation.** No repository-mutating Agent edits the shared control checkout. New mutation begins in a Noodle-owned isolated worktree; the shared checkout may observe and reconcile provider-landed state only.
+- **Exceptions.** Bootstrap or recovery work names one exact subject, trigger, write boundary, expiry/completion condition, receipt, and unsupported case. It uses the same executable/provider admission as normal work and cannot establish a new normal route by precedent.
+- **Subtraction.** Before adding a registry, router, framework, manager, or document layer, demonstrate a physical failure that the nearest existing contract cannot close. Prefer deleting or strengthening an existing seam; another abstraction is admitted only when subtraction cannot preserve the required behavior.
+- **`poteto-mode`.** pstack selects engineering playbooks probabilistically through `poteto-mode`. It may improve investigation, implementation, review, or cleanup choices, but it owns neither correctness nor GitHub authority and cannot bypass the nearest oracle.
+- **Verification architecture.** The architecture is agent-friendly only when the easiest completion path necessarily executes the exact feature operation, checks observed state at the nearest oracle, binds evidence to the candidate head, and then reaches the provider gate. A locally convenient “done” that stops at prose, tests unrelated to the Issue, or model consensus violates AF-06.
+
+### Current mechanical coverage and follow-up gap
+
+L-06 and its controls verify the declared three-node route, resolve its static document pointers, and reject a planted fourth architecture-document hop. The direct specification readback also pins one occurrence of each AF requirement row in this file.
+
+There is no current seam that enumerates every canonical Agent-facing document and rejects a semantic duplicate of an AF durable rule or owner value. Therefore AF-03's repository-wide single-owner property is not mechanically verified by this atom. Follow-up work must first define the finite canonical document set and a deterministic ownership key/readback before adding a duplicate-owner planted negative; until that lands, do not claim more than the route and exact-row controls above.
+
 ## Claim registry
 
 | ID | Class | Exact claim | Physical boundary |

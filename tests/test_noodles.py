@@ -473,10 +473,35 @@ class RepositoryGateTests(unittest.TestCase):
     def test_agent_document_route_negative_controls(self) -> None:
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
         paths = {relative for _, relative in noodles.tracked_entries(CANDIDATE_ROOT)}
+        self.assertEqual(skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, policy), [])
         wrong = {**policy, "agent_document_route": ["AGENTS.md", "missing.md"]}
         self.assertTrue(any("pointer missing" in error for error in skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, wrong)))
-        policy["agent_document_route"].append("README.md")
-        self.assertTrue(any("maximum is 3" in error for error in skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, policy)))
+        fourth_hop = {**policy, "agent_document_route": [*policy["agent_document_route"], "ARCHITECTURE.md"]}
+        self.assertTrue(any("maximum is 3" in error for error in skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, fourth_hop)))
+
+    def test_agent_friendly_system_contract_readback(self) -> None:
+        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        agents = (CANDIDATE_ROOT / "AGENTS.md").read_text()
+        self.assertIn("## Agent-friendly architecture", system_contract)
+        self.assertIn("Predictable local Agent behavior", system_contract)
+        self.assertIn("### Durable owner and writer map", system_contract)
+        for required_readback in (
+            "local-obvious → globally-correct",
+            "**Shortcut failure.**",
+            "**Nearest contract.**",
+            "**Isolation.**",
+            "**Exceptions.**",
+            "**Subtraction.**",
+            "**`poteto-mode`.**",
+            "**Verification architecture.**",
+            "### Current mechanical coverage and follow-up gap",
+        ):
+            self.assertIn(required_readback, system_contract)
+        for requirement_id in ("AF-01", "AF-02", "AF-03", "AF-04", "AF-05", "AF-06"):
+            self.assertEqual(system_contract.count(f"| {requirement_id} |"), 1)
+        self.assertIn("contracts/system-v1.md", agents)
+        self.assertIn("`AF-01` through `AF-06`", agents)
+        self.assertNotIn("### Durable owner and writer map", agents)
 
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
