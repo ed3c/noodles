@@ -30,7 +30,7 @@ Any missing subject, stale head, absent control, failed test, dirty provider che
 | L-01 | L | Tracked repository inventory contains only regular files and admitted surfaces. | `git ls-files --stage`, mode checks, required/forbidden paths. |
 | L-02 | L | The candidate satisfies the current fitness budget. | Trusted `noodles.py verify` exit code and metrics readback. |
 | L-03 | L | Exact Issue/PR syntax is unambiguous. | Parser positive and planted-negative tests. |
-| L-04 | L | External skills are exact pinned checkouts with license and SKILL readback. | Detached HEAD, clean status, tree, license digest, SKILL count. |
+| L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
 | R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
 | R-02 | R | Only the exact verified PR head is merged. | Workflow-run receipt, PR/head/tree readback, merge API SHA precondition. |

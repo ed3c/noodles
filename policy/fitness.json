@@ -26,6 +26,8 @@
     "policy/fitness.json",
     "policy/github.json",
     "policy/providers.lock.json",
+    "policy/runtime.lock.json",
+    "runtime_contract.py",
     "tests/run.sh",
     "tests/test_noodles.py"
   ],

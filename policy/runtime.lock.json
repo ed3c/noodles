@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "repository": "poteto/noodle",
+    "release": "v0.1.5",
+    "commit": "eaa1d5cce36f73e33e81d4855bb2fc47e33d0b24",
+    "command": "noodle",
+    "platforms": {
+      "darwin_arm64": {
+        "asset_name": "noodle_darwin_arm64.tar.gz",
+        "asset_sha256": "d83f367b0afd933a6322b7fcf01888ff098f4df3c2c6ac058355cb652c078765",
+        "binary_sha256": "56dfc5bbc05a45c41783715d01c24edab79a8e94f0ba777066325b9302a3f375"
+      }
+    }
+  }
+}
