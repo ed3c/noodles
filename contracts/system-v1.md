@@ -93,6 +93,7 @@ There is no current seam that enumerates every canonical Agent-facing document a
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
 | L-06 | L | The declared repository document route has no more than three nodes and every static pointer resolves. | Fitness policy, direct file readback, missing-pointer control, and fourth-node control. |
 | L-07 | L | Completion always requires baseline acceptance at the exact candidate head/tree; an Issue-declared specialized feature oracle is optional and additive. | Executed `tests/run.sh` and `./noodles verify --json`, zero-residue/head/tree readback, optional real code-surface digest and operation/oracle readback, plus handoff controls for skipped baseline, unknown feature, stale evidence, self-report, and artifact-blind packets. |
+| L-08 | L | Dependency eligibility is derived from each predecessor's own provider readback; no manual dependency-waiting state exists, and an unread predecessor is never satisfied. | Exact `noodles-depends-on` parsing in `issue_contract.py`, read-only `./noodles issue contract` provider readback with body digest, and landed-stale/open-predecessor/wrong-repository/duplicate/digest-drift/read-failure controls. |
 | R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
 | R-02 | R | Only the exact verified PR head is merged. | Workflow-run receipt, PR/head/tree readback, merge API SHA precondition. |
 | R-03 | R | The provider retained the PR head in a merge commit on default branch. | Merge result, PR readback, merge-parent readback, branch-head readback. |
@@ -162,6 +163,7 @@ A central repo cannot claim physical control of another repo merely because it c
 - Agent cross-review is not independent provider verification.
 - A verification skill existing on disk, or its output, is P-class until its optional specialized operation runs and checks observed state. The mandatory baseline proves only repository acceptance; it does not upgrade an undeclared product capability into a verified feature.
 - Architecture warnings are health signals only. They are not correctness evidence, merge permission, or a reason to compress readable code instead of creating a real seam.
+- Derived schedulability is admission input for the scheduler only; it is not a dependency solver, not merge or closure authority, and it does not make Agent reasoning deterministic.
 - GrepAI candidates are not source truth and misses are not absence proof.
 - Tree-sitter ranges do not prove a context compiler.
 - Serena indexing does not prove bounded edit execution.

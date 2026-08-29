@@ -65,7 +65,11 @@ Enabled providers are fetched outside Git history under `.noodle/providers/` and
 <!-- noodles-target: ed3c/noodles -->
 <!-- noodles-subject: ed3c/noodles#123 -->
 <!-- noodles-state: ready -->
+<!-- noodles-feature: verification-skill-oracle -->
+<!-- noodles-depends-on: none -->
 ```
+
+`./noodles issue contract ed3c/noodles#123` returns that contract read-only, with the provider body digest and schedulability derived from each declared predecessor's own landed/closed readback.
 
 The implementation PR contains exactly:
 

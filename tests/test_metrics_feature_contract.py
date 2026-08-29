@@ -17,6 +17,7 @@ import feature_contract
 import noodles
 from tests.support import (
     CANDIDATE_ROOT,
+    ISSUE_DEPENDS_ON_MARKER,
     cmd,
     code_surface_digest,
     copy_tracked,
@@ -33,6 +34,7 @@ ISSUE_BODY = (
     f"<!-- noodles-subject: {SUBJECT} -->\n"
     "<!-- noodles-state: ready -->\n"
     f"{ISSUE_FEATURE_MARKER}\n"
+    f"{ISSUE_DEPENDS_ON_MARKER}\n"
 )
 
 

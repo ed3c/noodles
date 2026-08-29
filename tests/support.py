@@ -20,6 +20,7 @@ ENGINE_ROOT = Path(noodles.__file__).resolve().parent
 CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve()
 FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
 ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
+ISSUE_DEPENDS_ON_MARKER = "<!-- noodles-depends-on: none -->"
 
 
 def code_surface_digest(root: Path, feature: feature_contract.FeatureContract = FEATURE) -> str:

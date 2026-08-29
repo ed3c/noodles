@@ -7,7 +7,7 @@ from unittest import mock
 
 import noodles
 import runtime_contract
-from tests.support import CANDIDATE_ROOT, ISSUE_FEATURE_MARKER, cmd, handoff_fixture
+from tests.support import CANDIDATE_ROOT, ISSUE_DEPENDS_ON_MARKER, ISSUE_FEATURE_MARKER, cmd, handoff_fixture
 
 
 class RepairTests(unittest.TestCase):
@@ -36,6 +36,7 @@ class RepairTests(unittest.TestCase):
             f"<!-- noodles-subject: {self.SUBJECT} -->\n"
             f"<!-- noodles-state: {state} -->\n"
             f"{ISSUE_FEATURE_MARKER}\n"
+            f"{ISSUE_DEPENDS_ON_MARKER}\n"
         )
 
     def pr(self, **overrides: object) -> dict:
