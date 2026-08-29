@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import noodles
+import runtime_contract
 from tests.support import CANDIDATE_ROOT, cmd, handoff_fixture
 
 
@@ -117,6 +118,51 @@ class RepairTests(unittest.TestCase):
         repair_events = [item for item in events if item["type"] == "repair_receipt"]
         self.assertEqual(len(repair_events), 1)
         self.assertEqual(repair_events[0]["payload"]["head_sha"], self.head)
+
+    def test_worktree_exec_reads_exact_top_and_head_from_pending_review_worktree(self) -> None:
+        top = runtime_contract.worktree_exec(
+            self.root,
+            self.WORKTREE_NAME,
+            ["git", "rev-parse", "--show-toplevel"],
+            error_cls=AssertionError,
+        )
+        head = runtime_contract.worktree_exec(
+            self.root,
+            self.WORKTREE_NAME,
+            ["git", "rev-parse", "HEAD"],
+            error_cls=AssertionError,
+        )
+
+        self.assertEqual(Path(top).resolve(), self.root.resolve())
+        self.assertEqual(head, self.head)
+
+    def test_worktree_exec_rejects_missing_worktree_name(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "pending review worktree_name is missing"):
+            runtime_contract.worktree_exec(
+                self.root,
+                " ",
+                ["git", "rev-parse", "HEAD"],
+                error_cls=AssertionError,
+            )
+
+    def test_worktree_exec_rejects_unknown_worktree_name_with_diagnostics(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "unknown worktree"):
+            runtime_contract.worktree_exec(
+                self.root,
+                "missing-worktree",
+                ["git", "rev-parse", "HEAD"],
+                error_cls=AssertionError,
+            )
+
+    def test_worktree_exec_rejects_wrong_project_root_with_diagnostics(self) -> None:
+        with mock.patch.dict("os.environ", {"NOODLE_PROJECT_DIR": str(self.root.parent)}, clear=False):
+            with self.assertRaisesRegex(AssertionError, "Noodle runtime directory missing from project"):
+                runtime_contract.worktree_exec(
+                    self.root,
+                    self.WORKTREE_NAME,
+                    ["git", "rev-parse", "HEAD"],
+                    error_cls=AssertionError,
+                )
 
     def test_changed_worktree_head_fails_closed(self) -> None:
         readme = self.root / "README.md"
