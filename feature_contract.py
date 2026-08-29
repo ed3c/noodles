@@ -7,12 +7,23 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from skill_contract import EXECUTE_VERIFICATION_P_CLASS_PHRASE, EXECUTE_VERIFICATION_ROUTE
 
 EVIDENCE_PATH = ".noodle/feature-evidence.json"
 EVIDENCE_FIELDS = ("feature_id", "head", "code_surface", "code_surface_sha256", "operation", "oracle", "observed")
+
+# constraint: observed_check reads the declared operation's parsed stdout and raises error_cls on oracle rejection - the one pluggable seam per feature.
+ObservedCheck = Callable[..., dict[str, Any]]
+
+
+def _ok_errors_observed_check(
+    root: Path, contract: "FeatureContract", observed_raw: Any, head: str, *, error_cls: type[Exception]
+) -> dict[str, Any]:
+    if not isinstance(observed_raw, dict) or observed_raw.get("ok") is not True or observed_raw.get("errors"):
+        raise error_cls(f"feature {contract.feature_id} oracle rejected observed operation state")
+    return {"returncode": 0, "ok": True, "errors": []}
 
 
 @dataclass(frozen=True)
@@ -22,6 +33,7 @@ class FeatureContract:
     operation: tuple[str, ...]
     oracle_phrases: tuple[str, ...]
     oracle: str
+    observed_check: ObservedCheck = _ok_errors_observed_check
 
 
 VERIFICATION_SKILL_FEATURE = FeatureContract(
@@ -31,7 +43,63 @@ VERIFICATION_SKILL_FEATURE = FeatureContract(
     oracle_phrases=(EXECUTE_VERIFICATION_ROUTE, EXECUTE_VERIFICATION_P_CLASS_PHRASE),
     oracle="code-surface digest and required routing bytes plus exit-zero declared operation reporting ok with zero errors",
 )
-ADMITTED_FEATURES = {VERIFICATION_SKILL_FEATURE.feature_id: VERIFICATION_SKILL_FEATURE}
+
+
+def _independent_tracked_files_count(root: Path, head: str, *, error_cls: type[Exception]) -> int:
+    """Recompute the real regular-file count straight from the git object database at the exact
+    candidate head, using a different plumbing command than repository_metrics' own `git ls-files
+    --stage` (index/worktree state). A wrong number reported by the CLI cannot fool both paths at once."""
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", head], cwd=str(root), text=True, capture_output=True, check=False
+    )
+    if listing.returncode != 0:
+        raise error_cls(f"cannot read back source-tree listing at {head}: {listing.stderr.strip()}")
+    count = 0
+    for record in listing.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, _path = record.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if mode in {"100644", "100755"}:
+            count += 1
+    return count
+
+
+def _metrics_observed_check(
+    root: Path, contract: "FeatureContract", observed_raw: Any, head: str, *, error_cls: type[Exception]
+) -> dict[str, Any]:
+    if not isinstance(observed_raw, dict):
+        raise error_cls(f"feature {contract.feature_id} operation produced malformed output: not a JSON object")
+    reported = observed_raw.get("tracked_files")
+    expected = _independent_tracked_files_count(root, head, error_cls=error_cls)
+    if reported != expected:
+        raise error_cls(
+            f"feature {contract.feature_id} oracle rejected planted wrong metric: "
+            f"stdout tracked_files={reported!r} source-tree(head {head})={expected!r}"
+        )
+    return {"returncode": 0, "ok": True, "errors": [], "oracle_metric": "tracked_files", "oracle_metric_value": expected}
+
+
+METRICS_CLI_FEATURE = FeatureContract(
+    feature_id="metrics-cli-oracle",
+    code_surface="noodles.py",
+    operation=("./noodles", "metrics", "--json"),
+    oracle_phrases=(
+        "def repository_metrics(root: Path) -> dict[str, Any]:",
+        "def metrics_readback(root: Path, policy_root: Path | None = None) -> dict[str, Any]:",
+    ),
+    oracle=(
+        "code-surface digest and required repository_metrics/metrics_readback routing bytes, exit-zero "
+        "declared operation reading the real policy/fitness.json policy surface, plus an independently "
+        "recomputed tracked_files count (git ls-tree at the exact candidate head) that must equal the "
+        "reported metric"
+    ),
+    observed_check=_metrics_observed_check,
+)
+ADMITTED_FEATURES = {
+    VERIFICATION_SKILL_FEATURE.feature_id: VERIFICATION_SKILL_FEATURE,
+    METRICS_CLI_FEATURE.feature_id: METRICS_CLI_FEATURE,
+}
 
 
 def resolve_feature(feature_id: str | None, *, error_cls: type[Exception]) -> FeatureContract:
@@ -69,6 +137,7 @@ def verify_feature(root: Path, feature_id: str | None, *, error_cls: type[Except
     )
     if head.returncode != 0:
         raise error_cls(f"feature {contract.feature_id} cannot read back exact head: {head.stderr.strip()}")
+    exact_head = head.stdout.strip()
     operated = subprocess.run(
         list(contract.operation), cwd=str(root), text=True, capture_output=True, check=False
     )
@@ -78,19 +147,18 @@ def verify_feature(root: Path, feature_id: str | None, *, error_cls: type[Except
             f"{operated.stderr.strip() or operated.stdout.strip()}"
         )
     try:
-        observed = json.loads(operated.stdout)
+        observed_raw = json.loads(operated.stdout)
     except json.JSONDecodeError as exc:
         raise error_cls(f"feature {contract.feature_id} operation produced unreadable observed state: {exc}") from exc
-    if not isinstance(observed, dict) or observed.get("ok") is not True or observed.get("errors"):
-        raise error_cls(f"feature {contract.feature_id} oracle rejected observed operation state")
+    observed = contract.observed_check(root, contract, observed_raw, exact_head, error_cls=error_cls)
     return {
         "feature_id": contract.feature_id,
-        "head": head.stdout.strip(),
+        "head": exact_head,
         "code_surface": contract.code_surface,
         "code_surface_sha256": digest,
         "operation": list(contract.operation),
         "oracle": contract.oracle,
-        "observed": {"returncode": operated.returncode, "ok": True, "errors": []},
+        "observed": observed,
     }
 
 
