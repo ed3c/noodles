@@ -46,9 +46,9 @@ REPORT_ONLY_FITNESS_LIMITS = {
     "markdown_share": ("max", "max_markdown_share"),
     "normalized_line_entropy": ("min", "min_normalized_entropy"),
     "test_to_executable_ratio": ("min", "min_test_to_executable_ratio"),
+    "root_surfaces": ("max", "max_root_surfaces"),
 }
 FAILING_FITNESS_LIMITS = {
-    "root_surfaces": ("max", "max_root_surfaces"),
     "enabled_external_providers": ("max", "max_enabled_providers"),
 }
 
