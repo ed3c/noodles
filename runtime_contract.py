@@ -168,6 +168,122 @@ def _resolve_binary(root: Path, command: str, *, error_cls: type[Exception]) -> 
     return binary
 
 
+def resolve_locked_runtime_binary(root: Path, *, error_cls: type[Exception]) -> Path:
+    _payload, runtime = _load_runtime_policy(root, error_cls=error_cls)
+    binary = _resolve_binary(root, str(runtime.get("command") or ""), error_cls=error_cls)
+    version = run([str(binary), "--version"], cwd=root, error_cls=error_cls).stdout.strip()
+    release = str(runtime.get("release") or "")
+    if version != release:
+        raise error_cls(f"noodle version {version} != locked {release}")
+    digest = sha256_file(binary)
+    platforms = runtime.get("platforms") or {}
+    if not any(isinstance(item, dict) and item.get("binary_sha256") == digest for item in platforms.values()):
+        raise error_cls(f"noodle binary digest {digest} is not admitted by the runtime lock")
+    return binary
+
+
+def _noodle_project_root(root: Path, *, error_cls: type[Exception]) -> Path:
+    configured = os.getenv("NOODLE_PROJECT_DIR", "").strip()
+    if configured:
+        project = Path(configured).expanduser().resolve()
+    else:
+        common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", error_cls=error_cls)).resolve()
+        if common.name != ".git":
+            raise error_cls(f"cannot resolve Noodle project from git common directory: {common}")
+        project = common.parent
+    if not (project / ".noodle").is_dir():
+        raise error_cls(f"Noodle runtime directory missing from project: {project}")
+    return project
+
+
+def _session_events(path: Path, *, error_cls: type[Exception]) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise error_cls(f"cannot read Noodle session events {path}: {exc}") from exc
+    events: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise error_cls(f"invalid Noodle session event in {path}: {exc}") from exc
+        if not isinstance(event, dict):
+            raise error_cls(f"invalid Noodle session event in {path}: expected object")
+        events.append(event)
+    return events
+
+
+def validate_handoff_session(
+    root: Path,
+    subject: str,
+    session_id: str,
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    session_id = session_id.strip()
+    if not session_id or Path(session_id).name != session_id:
+        raise error_cls("current NOODLE_SESSION_ID is missing or unsafe")
+    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    session = project / ".noodle" / "sessions" / session_id
+    if not session.is_dir():
+        raise error_cls(f"current Noodle session does not exist: {session_id}")
+    spawn = load_json(session / "spawn.json", error_cls=error_cls)
+    worktree = Path(str(spawn.get("worktree_path") or "")).expanduser().resolve()
+    if worktree != root.resolve():
+        raise error_cls(f"Noodle session worktree {worktree} != current worktree {root.resolve()}")
+    events_path = session / "events.ndjson"
+    events = _session_events(events_path, error_cls=error_cls)
+    order_marker = f"[order:{subject}]"
+    if not any(
+        isinstance(item.get("payload"), dict) and order_marker in str(item["payload"].get("message") or "")
+        for item in events
+    ):
+        raise error_cls(f"Noodle session {session_id} is not tied to exact order {subject}")
+    return {"project": project, "events_path": events_path, "events": events}
+
+
+def emit_blocking_handoff(
+    root: Path,
+    subject: str,
+    pr_number: int,
+    head: str,
+    session_id: str,
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
+    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head}; park until trusted provider landing readback."
+    payload = {"message": message, "blocking": True}
+
+    def matching(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            item for item in events
+            if item.get("type") == "stage_message"
+            and isinstance(item.get("payload"), dict)
+            and item["payload"].get("message") == message
+        ]
+
+    existing = matching(context["events"])
+    if len(existing) > 1:
+        raise error_cls("execute handoff has duplicate blocking stage messages")
+    if not existing:
+        binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
+        run(
+            [str(binary), "--project-dir", str(context["project"]), "event", "emit", "stage_message", "--session", session_id, "--payload", json.dumps(payload, separators=(",", ":"))],
+            cwd=root,
+            error_cls=error_cls,
+        )
+    events = _session_events(context["events_path"], error_cls=error_cls)
+    observed = matching(events)
+    stage_messages = [item for item in events if item.get("type") == "stage_message"]
+    if len(observed) != 1 or not stage_messages or stage_messages[-1] is not observed[0]:
+        raise error_cls("execute handoff stage message direct readback failed")
+    event = observed[0]
+    if event.get("session_id") != session_id or event["payload"].get("blocking") is not True:
+        raise error_cls("execute handoff stage message is not blocking for the exact session")
+    return {"session_id": session_id, "head": head, "message": message, "blocking": True}
+
+
 def runtime_check(
     root: Path,
     gh_get_json: Callable[[str], Any],

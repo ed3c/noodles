@@ -20,26 +20,19 @@ This skill operates inside the Noodle-created isolated worktree.
 9. Run the exact task acceptance plus `tests/run.sh` and `./noodles verify`.
 10. Inspect direct source/runtime/provider readback and confirm zero residue.
 11. Commit and push the current worktree branch. Never push `main`.
-12. Set the Issue to `awaiting_land` before opening the PR.
-13. Open exactly one non-draft PR to `main` with exactly one line `Refs owner/repo#N`.
-14. Stop. GitHub verify/land and local machine reconciliation own completion.
+12. Open exactly one non-draft PR to `main` with exactly one line `Refs owner/repo#N`.
+13. Run `./noodles issue handoff owner/repo#N --pr N`. This validates the exact PR head/body, sets the Issue to `awaiting_land`, and emits one blocking `stage_message` for the current `NOODLE_SESSION_ID`.
+14. Stop immediately after the handoff succeeds. GitHub verify/land and local machine reconciliation own completion.
 
 ## Evidence packet
 
-The PR body must state, without expanding the claim:
+The PR body must contain only:
 
 ```text
-Claim
-Exact candidate head
-Positive control
-Planted-negative control
-Direct readback
-Residue result
-Non-claims
 Refs owner/repo#N
 ```
 
-Do not include `Closes`, `Fixes`, or `Resolves`.
+Report the claim, exact candidate head, positive control, planted-negative control, direct readback, residue result, and non-claims in the final task response. Do not include `Closes`, `Fixes`, or `Resolves` in the PR body.
 
 ## Runtime verification
 

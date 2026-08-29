@@ -21,10 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from runtime_contract import (
+    emit_blocking_handoff,
     provider_check as runtime_provider_check,
     provider_sync as runtime_provider_sync,
+    resolve_locked_runtime_binary,
     runtime_check as runtime_binary_check,
     skill_discovery_check,
+    validate_handoff_session,
     validate_runtime_lock,
 )
 from skill_contract import validate_backlog_scheduler, validate_noodle_worktree_ignore
@@ -165,9 +168,10 @@ def replace_marker(body: str, name: str, value: str) -> str:
 def parse_pr_reference(body: str) -> str:
     if AUTO_CLOSE_RE.search(body or ""):
         raise GateError("auto-close keywords are forbidden; provider lander closes the issue")
+    lines = (body or "").splitlines()
     refs = REF_RE.findall(body or "")
-    if len(refs) != 1:
-        raise GateError(f"expected exactly one 'Refs owner/repo#N' line, found {len(refs)}")
+    if len(lines) != 1 or len(refs) != 1 or lines[0] != f"Refs {refs[0]}":
+        raise GateError("PR body must be exactly one 'Refs owner/repo#N' line")
     return parse_subject(refs[0]).value
 
 
@@ -482,6 +486,28 @@ def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
     return readback
 
 
+def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str, Any]) -> dict[str, Any]:
+    subject = parse_subject(subject_value)
+    if subject.repo != gh_repo_from_git(root):
+        raise GateError("handoff subject repository does not match current worktree")
+    if pr.get("state") != "open" or pr.get("draft"):
+        raise GateError("handoff PR must be open and non-draft")
+    if parse_pr_reference(pr.get("body") or "") != subject_value:
+        raise GateError("handoff PR does not exactly reference the issue")
+    policy = protection_policy(root)
+    if pr.get("base", {}).get("ref") != policy["default_branch"]:
+        raise GateError(f"handoff PR base must be {policy['default_branch']}")
+    head = git(root, "rev-parse", "HEAD")
+    if pr.get("head", {}).get("sha") != head:
+        raise GateError("handoff PR head does not match current worktree HEAD")
+    session_id = os.getenv("NOODLE_SESSION_ID", "").strip()
+    validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
+    resolve_locked_runtime_binary(root, error_cls=GateError)
+    issue_set_state(subject_value, "awaiting_land")
+    receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
+    return {"subject": subject_value, "pr": pr_number, "state": "awaiting_land", **receipt}
+
+
 def protection_policy(root: Path) -> dict[str, Any]:
     return load_json(root / "policy/github.json")
 
@@ -702,7 +728,7 @@ def reconcile_once(root: Path, control_url: str) -> list[str]:
             control_url.rstrip("/") + "/api/control",
             payload={"id": command_id, "action": "merge", "order_id": order_id},
         )
-        if not ack.get("ok", False):
+        if ack.get("id") != command_id or ack.get("action") != "merge" or ack.get("status") != "ok":
             raise GateError(f"Noodle rejected machine reconciliation for {order_id}: {ack}")
         completed.append(order_id)
     return completed
@@ -904,10 +930,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.issue_action == "handoff":
                 subject = parse_subject(args.subject)
                 pr = gh_api(f"repos/{subject.repo}/pulls/{args.pr}")
-                if pr.get("state") != "open" or parse_pr_reference(pr.get("body") or "") != args.subject:
-                    raise GateError("handoff PR does not exactly reference the issue")
-                issue_set_state(args.subject, "awaiting_land")
-                print(json.dumps({"subject": args.subject, "pr": args.pr, "head": pr["head"]["sha"], "state": "awaiting_land"}))
+                print(json.dumps(execute_handoff(root, args.subject, args.pr, pr)))
                 return 0
         if args.command == "github":
             if args.github_action == "protect":

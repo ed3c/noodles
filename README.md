@@ -85,7 +85,7 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ./noodles providers sync            # exact detached provider checkouts
 ./noodles providers check           # HEAD/tree/license/SKILL/detached/clean readback
 ./noodles issue validate REPO#N     # exact Issue contract
-./noodles issue handoff REPO#N --pr N
+./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
 ./noodles github protect audit
 ./noodles github protect apply
 ./noodles reconcile                 # one machine reconciliation pass

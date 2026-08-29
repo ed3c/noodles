@@ -10,8 +10,10 @@ READY Issue
   → isolated worktree
   → implementation
   → local L gate
-  → Issue AWAITING_LAND
   → PR exact head
+  → Issue AWAITING_LAND
+  → blocking execute handoff
+  → Noodle pending review
   → trusted verify receipt
   → GitHub R gate
   → merged PR readback
@@ -29,7 +31,7 @@ Any missing subject, stale head, absent control, failed test, dirty provider che
 | P-02 | P | `AGENTS.md` can route an Agent toward the Golden Path. | Never a correctness gate. |
 | L-01 | L | Tracked repository inventory contains only regular files and admitted surfaces. | `git ls-files --stage`, mode checks, required/forbidden paths. |
 | L-02 | L | The candidate satisfies the current fitness budget. | Trusted `noodles.py verify` exit code and metrics readback. |
-| L-03 | L | Exact Issue/PR syntax is unambiguous. | Parser positive and planted-negative tests. |
+| L-03 | L | Exact Issue/PR/handoff syntax is unambiguous and the completed execute session remains contained. | Parser controls plus exact worktree/order/session event readback and blocking-message controls. |
 | L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
 | R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
@@ -47,13 +49,13 @@ Any missing subject, stale head, absent control, failed test, dirty provider che
 
 ## Supervised containment
 
-Upstream Noodle `auto` merges a local worktree or remote branch into local `main`; that is not a GitHub provider gate. `noodles` therefore uses Noodle `supervised` as a containment point. This does not create a Human Verifier state:
+Upstream Noodle merges a completed cook into local `main` when no blocking stage message exists; that is not a GitHub provider gate. The execute handoff therefore emits one blocking message for its exact Noodle session, which parks the order in `pending-review.json`. This does not create a Human Verifier state:
 
 1. GitHub lander performs the R gate and closes the Issue.
 2. `noodles reconcile` reads the provider receipt.
 3. local `main` fast-forwards to `origin/main`.
-4. the Noodle control API receives `merge` for the now-provider-landed order.
-5. Noodle's local merge is an already-contained/no-op ancestry reconciliation.
+4. the Noodle control API receives `merge` for the now-provider-landed order and returns the exact command acknowledgement.
+5. Noodle's local merge is an already-contained/no-op ancestry reconciliation, then `backlog.done` releases the order.
 
 ## Cross-repository boundary
 
