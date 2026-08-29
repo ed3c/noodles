@@ -22,19 +22,21 @@ FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
 ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
 
 
-def code_surface_digest(root: Path) -> str:
-    return hashlib.sha256((root / FEATURE.code_surface).read_bytes()).hexdigest()
+def code_surface_digest(root: Path, feature: feature_contract.FeatureContract = FEATURE) -> str:
+    return hashlib.sha256((root / feature.code_surface).read_bytes()).hexdigest()
 
 
-def write_feature_evidence(root: Path, head: str, **overrides: object) -> Path:
+def write_feature_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract = FEATURE, **overrides: object
+) -> Path:
     """Write an evidence packet shaped exactly like the verifier's own output, then apply planted drift."""
     evidence: dict[str, object] = {
-        "feature_id": FEATURE.feature_id,
+        "feature_id": feature.feature_id,
         "head": head,
-        "code_surface": FEATURE.code_surface,
-        "code_surface_sha256": code_surface_digest(root),
-        "operation": list(FEATURE.operation),
-        "oracle": FEATURE.oracle,
+        "code_surface": feature.code_surface,
+        "code_surface_sha256": code_surface_digest(root, feature),
+        "operation": list(feature.operation),
+        "oracle": feature.oracle,
         "observed": {"returncode": 0, "ok": True, "errors": []},
     }
     evidence.update(overrides)
