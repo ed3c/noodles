@@ -130,6 +130,27 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_agent_document_route(root: Path, tracked_paths: set[str], policy: dict[str, Any]) -> list[str]:
+    route = policy.get("agent_document_route")
+    max_hops = policy.get("max_agent_document_hops")
+    if not isinstance(route, list) or not route or not all(isinstance(node, str) and node for node in route):
+        return ["agent document route must be a non-empty string list"]
+    if not isinstance(max_hops, int) or max_hops < 1:
+        return ["max_agent_document_hops must be a positive integer"]
+    errors = []
+    if len(route) > max_hops:
+        errors.append(f"agent document route has {len(route)} nodes; maximum is {max_hops}")
+    for index, node in enumerate(route):
+        if not node.endswith(".md"):
+            continue
+        if node not in tracked_paths:
+            errors.append(f"agent document route missing tracked node: {node}")
+            continue
+        if index + 1 < len(route) and route[index + 1] not in (root / node).read_text(encoding="utf-8", errors="ignore"):
+            errors.append(f"agent document route pointer missing: {node} -> {route[index + 1]}")
+    return errors
+
+
 def _orders(payload: Any, label: str) -> tuple[list[Any], list[str]]:
     if not isinstance(payload, dict):
         return [], [f"{label} must be a JSON object"]

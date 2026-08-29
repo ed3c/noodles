@@ -31,7 +31,12 @@ from runtime_contract import (
     validate_handoff_session,
     validate_runtime_lock,
 )
-from skill_contract import validate_backlog_scheduler, validate_execute_task, validate_noodle_worktree_ignore
+from skill_contract import (
+    validate_agent_document_route,
+    validate_backlog_scheduler,
+    validate_execute_task,
+    validate_noodle_worktree_ignore,
+)
 
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
@@ -327,6 +332,7 @@ def validate_migration_ledger(root: Path) -> list[str]:
             errors.append(f"{identifier}: MIGRATE requires physical evidence")
     return errors
 
+
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
@@ -342,6 +348,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             errors.append(f"forbidden git mode {mode}: {relative}")
     paths = {relative for _, relative in entries}
     errors.extend(validate_noodle_worktree_ignore(root, paths))
+    errors.extend(validate_agent_document_route(root, paths, policy))
     for required in policy["required_paths"]:
         if required not in paths:
             errors.append(f"missing required tracked path: {required}")

@@ -15,6 +15,16 @@
 
 Human Verifier is not an operational state. A person may set goals, change constraints, or handle an admitted escalation; a person is never the routine correctness oracle or merge gate.
 
+## Agent document route
+
+Repository-owned context uses at most three nodes:
+
+1. `AGENTS.md` supplies always-loaded ownership and execution laws.
+2. `contracts/system-v1.md` is loaded only for claim boundaries, delivery topology, cross-repository admission, or another system-level decision.
+3. The exact Issue selects the nearest executable contract/test; inspect its implementation and evidence, then stop document traversal.
+
+`./noodles verify` checks this route's declared nodes and pointers. That proves document structure, not Agent cognition: choosing and reading the route remains P-class.
+
 ## Guarantee classes
 
 | ID | Class | Meaning | Allowed authority |

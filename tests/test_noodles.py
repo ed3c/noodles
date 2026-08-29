@@ -406,6 +406,14 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("forbidden tracked residue" in item for item in result["errors"]))
 
+    def test_agent_document_route_negative_controls(self) -> None:
+        policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
+        paths = {relative for _, relative in noodles.tracked_entries(CANDIDATE_ROOT)}
+        wrong = {**policy, "agent_document_route": ["AGENTS.md", "missing.md"]}
+        self.assertTrue(any("pointer missing" in error for error in skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, wrong)))
+        policy["agent_document_route"].append("README.md")
+        self.assertTrue(any("maximum is 3" in error for error in skill_contract.validate_agent_document_route(CANDIDATE_ROOT, paths, policy)))
+
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
@@ -564,13 +572,15 @@ class ExecuteHandoffTests(unittest.TestCase):
             with self.assertRaisesRegex(noodles.GateError, "blocking"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
 
-    def test_wrong_pr_body_or_head_fails_closed(self) -> None:
+    def test_wrong_pr_body_head_or_base_fails_closed(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_set_state"):
             with self.assertRaises(noodles.GateError):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(body="Claim\nRefs ed3c/noodles#33"))
             with self.assertRaisesRegex(noodles.GateError, "head"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": "f" * 40}))
+            with self.assertRaisesRegex(noodles.GateError, "base"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(base={"ref": "dependent-feature"}))
 
     def test_missing_pr_fails_before_issue_or_session_mutation(self) -> None:
         with mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("missing PR")), \
