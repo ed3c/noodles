@@ -148,6 +148,174 @@ class ProtectionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(noodles.GateError, "workflow run readback failed"):
             github_protection.workflow_run_readback(fake_gh_api, noodles.GateError, "ed3c/noodles", 9)
 
+    def test_pull_request_target_source_accepts_candidate_head_branch(self) -> None:
+        payloads = {
+            "repos/ed3c/noodles/actions/runs/33234782723": {
+                "id": 33234782723,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "event": "pull_request_target",
+                "head_branch": "ed3c-noodles-3-0-task",
+                "head_sha": "6c7a4d70d676f5da4acc72a3b90cdac043716e31",
+                "workflow_id": 344826945,
+            },
+            "repos/ed3c/noodles": {
+                "full_name": "ed3c/noodles",
+                "default_branch": "main",
+            },
+            "repos/ed3c/noodles/actions/workflows/verify.yml": {
+                "id": 344826945,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "state": "active",
+            },
+        }
+
+        source = github_protection.trusted_workflow_run_readback(
+            lambda endpoint: payloads[endpoint],
+            noodles.GateError,
+            "ed3c/noodles",
+            33234782723,
+            name="verify",
+            path=".github/workflows/verify.yml",
+            event="pull_request_target",
+            default_branch="main",
+        )
+
+        self.assertEqual(source["run"]["head_branch"], "ed3c-noodles-3-0-task")
+        self.assertEqual(source["workflow"]["id"], 344826945)
+        self.assertEqual(source["provider_default_branch"], "main")
+
+    def test_trusted_workflow_source_rejects_wrong_event(self) -> None:
+        def fake_gh_api(endpoint: str) -> dict:
+            if endpoint.endswith("/actions/runs/7"):
+                return {
+                    "id": 7,
+                    "name": "verify",
+                    "path": ".github/workflows/verify.yml",
+                    "event": "pull_request",
+                    "workflow_id": 11,
+                }
+            if endpoint == "repos/ed3c/noodles":
+                return {"full_name": "ed3c/noodles", "default_branch": "main"}
+            return {"id": 11, "name": "verify", "path": ".github/workflows/verify.yml", "state": "active"}
+
+        with self.assertRaisesRegex(noodles.GateError, "event must be pull_request_target"):
+            github_protection.trusted_workflow_run_readback(
+                fake_gh_api,
+                noodles.GateError,
+                "ed3c/noodles",
+                7,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
+    def test_trusted_workflow_source_rejects_wrong_run_path(self) -> None:
+        def fake_gh_api(endpoint: str) -> dict:
+            if endpoint.endswith("/actions/runs/7"):
+                return {
+                    "id": 7,
+                    "name": "verify",
+                    "path": ".github/workflows/candidate.yml",
+                    "event": "pull_request_target",
+                    "workflow_id": 11,
+                }
+            if endpoint == "repos/ed3c/noodles":
+                return {"full_name": "ed3c/noodles", "default_branch": "main"}
+            return {"id": 11, "name": "verify", "path": ".github/workflows/verify.yml", "state": "active"}
+
+        with self.assertRaisesRegex(noodles.GateError, "workflow run identity mismatch"):
+            github_protection.trusted_workflow_run_readback(
+                fake_gh_api,
+                noodles.GateError,
+                "ed3c/noodles",
+                7,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
+    def test_trusted_workflow_source_rejects_wrong_immutable_id(self) -> None:
+        def fake_gh_api(endpoint: str) -> dict:
+            if endpoint.endswith("/actions/runs/7"):
+                return {
+                    "id": 7,
+                    "name": "verify",
+                    "path": ".github/workflows/verify.yml",
+                    "event": "pull_request_target",
+                    "workflow_id": 99,
+                }
+            if endpoint == "repos/ed3c/noodles":
+                return {"full_name": "ed3c/noodles", "default_branch": "main"}
+            return {"id": 11, "name": "verify", "path": ".github/workflows/verify.yml", "state": "active"}
+
+        with self.assertRaisesRegex(noodles.GateError, "immutable workflow id mismatch"):
+            github_protection.trusted_workflow_run_readback(
+                fake_gh_api,
+                noodles.GateError,
+                "ed3c/noodles",
+                7,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
+    def test_trusted_workflow_source_rejects_provider_default_branch_drift(self) -> None:
+        def fake_gh_api(endpoint: str) -> dict:
+            if endpoint.endswith("/actions/runs/7"):
+                return {
+                    "id": 7,
+                    "name": "verify",
+                    "path": ".github/workflows/verify.yml",
+                    "event": "pull_request_target",
+                    "workflow_id": 11,
+                }
+            if endpoint == "repos/ed3c/noodles":
+                return {"full_name": "ed3c/noodles", "default_branch": "candidate"}
+            return {"id": 11, "name": "verify", "path": ".github/workflows/verify.yml", "state": "active"}
+
+        with self.assertRaisesRegex(noodles.GateError, "provider default branch identity mismatch"):
+            github_protection.trusted_workflow_run_readback(
+                fake_gh_api,
+                noodles.GateError,
+                "ed3c/noodles",
+                7,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
+    def test_trusted_workflow_source_rejects_wrong_provider_workflow_identity(self) -> None:
+        def fake_gh_api(endpoint: str) -> dict:
+            if endpoint.endswith("/actions/runs/7"):
+                return {
+                    "id": 7,
+                    "name": "verify",
+                    "path": ".github/workflows/verify.yml",
+                    "event": "pull_request_target",
+                    "workflow_id": 11,
+                }
+            if endpoint == "repos/ed3c/noodles":
+                return {"full_name": "ed3c/noodles", "default_branch": "main"}
+            return {"id": 11, "name": "verify", "path": ".github/workflows/candidate.yml", "state": "active"}
+
+        with self.assertRaisesRegex(noodles.GateError, "provider workflow identity mismatch"):
+            github_protection.trusted_workflow_run_readback(
+                fake_gh_api,
+                noodles.GateError,
+                "ed3c/noodles",
+                7,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

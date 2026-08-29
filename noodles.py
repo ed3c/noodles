@@ -614,19 +614,15 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     workflow_boundary_errors, workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     if workflow_boundary_errors:
         raise GateError("trusted workflow boundary invalid: " + "; ".join(workflow_boundary_errors))
-    verify_run = github_protection.workflow_run_readback(gh_api, GateError, repository, int(workflow.get("id") or 0))
-    if verify_run["name"] != "verify" or verify_run["path"] != ".github/workflows/verify.yml":
-        raise GateError("trusted verify workflow source readback failed")
-    if verify_run["head_branch"] != policy["default_branch"]:
-        raise GateError("trusted verify workflow must run from the default branch")
-    land_run: dict[str, Any] | None = None
+    verify_source = github_protection.trusted_workflow_run_readback(
+        gh_api, GateError, repository, int(workflow.get("id") or 0), name="verify", path=".github/workflows/verify.yml", event="pull_request_target", default_branch=policy["default_branch"]
+    )
     current_run_id = int(os.getenv("GITHUB_RUN_ID", "0") or "0")
+    land_source: dict[str, Any] | None = None
     if current_run_id > 0:
-        land_run = github_protection.workflow_run_readback(gh_api, GateError, repository, current_run_id)
-        if land_run["name"] != "land" or land_run["path"] != ".github/workflows/land.yml":
-            raise GateError("trusted land workflow source readback failed")
-        if land_run["head_branch"] != policy["default_branch"]:
-            raise GateError("trusted land workflow must run from the default branch")
+        land_source = github_protection.trusted_workflow_run_readback(
+            gh_api, GateError, repository, current_run_id, name="land", path=".github/workflows/land.yml", event="workflow_run", default_branch=policy["default_branch"]
+        )
     protection_receipt = github_protection.protection_audit(
         lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
         GateError,
@@ -692,8 +688,9 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         "issue_closed": True,
         "protection_readback": protection_receipt,
         "trusted_workflows": {
-            "verify_run": verify_run,
-            "land_run": land_run,
+            "verify_run": verify_source["run"],
+            "land_run": land_source["run"] if land_source else None,
+            "provider_workflow_identity": {"verify": verify_source["workflow"], "land": land_source["workflow"] if land_source else None, "default_branch": verify_source["provider_default_branch"]},
             "boundary": workflow_boundary,
         },
     }

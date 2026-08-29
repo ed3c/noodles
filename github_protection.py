@@ -280,3 +280,38 @@ def workflow_run_readback(
         "head_sha": str(payload.get("head_sha") or ""),
         "workflow_id": int(payload.get("workflow_id") or 0),
     }
+
+
+def trusted_workflow_run_readback(
+    gh_api_fn: Callable[..., Any],
+    error_cls: type[Exception],
+    repo: str,
+    run_id: int,
+    *,
+    name: str,
+    path: str,
+    event: str,
+    default_branch: str,
+) -> dict[str, Any]:
+    run = workflow_run_readback(gh_api_fn, error_cls, repo, run_id)
+    if run["event"] != event:
+        raise error_cls(f"trusted workflow event must be {event}")
+    if run["name"] != name or run["path"] != path:
+        raise error_cls("trusted workflow run identity mismatch")
+    repository = gh_api_fn(f"repos/{repo}")
+    if (
+        not isinstance(repository, dict)
+        or repository.get("full_name") != repo
+        or repository.get("default_branch") != default_branch
+    ):
+        raise error_cls("provider default branch identity mismatch")
+    workflow = gh_api_fn(f"repos/{repo}/actions/workflows/{Path(path).name}")
+    if not isinstance(workflow, dict) or run["workflow_id"] <= 0 or int(workflow.get("id") or 0) != run["workflow_id"]:
+        raise error_cls("trusted immutable workflow id mismatch")
+    if workflow.get("name") != name or workflow.get("path") != path or workflow.get("state") != "active":
+        raise error_cls("trusted provider workflow identity mismatch")
+    return {
+        "run": run,
+        "workflow": workflow,
+        "provider_default_branch": str(repository.get("default_branch") or ""),
+    }
