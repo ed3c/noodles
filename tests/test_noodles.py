@@ -562,7 +562,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "max",
                 policy["max_tracked_files"] + 1,
                 policy["max_tracked_files"],
-                "architecture warning tracked_files=34 exceeds 33",
+                "architecture warning tracked_files=37 exceeds 36",
             ),
         )
         for metric_key, policy_key, direction, planted_value, threshold, warning in cases:
