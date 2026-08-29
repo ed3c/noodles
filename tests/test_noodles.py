@@ -22,9 +22,11 @@ from tests.support import (
     handoff_fixture,
     provider_fixture,
     runtime_release_reader,
+    assert_valid_start_entrypoint_receipt,
     script_mode_gateerror_identity,
     start_entrypoint_with_delayed_listener,
     tree_digest,
+    validate_script_mode_gateerror_identity,
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
@@ -707,15 +709,16 @@ class StartUnattendedTests(unittest.TestCase):
 
     def test_script_mode_repair_path_shares_one_gate_error_identity(self) -> None:
         readback = script_mode_gateerror_identity()
-        self.assertEqual(readback["main_module"], "__main__")
-        self.assertEqual(readback["engine_module"], "__main__")
-        self.assertTrue(readback["same_gate_error_identity"])
+        self.assertEqual(validate_script_mode_gateerror_identity(readback), [])
 
     def test_documented_start_entrypoint_retries_delayed_listener_in_script_mode(self) -> None:
         result = start_entrypoint_with_delayed_listener()
-        self.assertEqual(result["returncode"], 0, result["stderr"])
-        self.assertIn("repair: Noodle control request failed", result["stderr"])
-        self.assertNotIn("Traceback", result["stderr"])
+        assert_valid_start_entrypoint_receipt(result)
+
+    def test_documented_start_entrypoint_negative_control_detects_unreachable_listener(self) -> None:
+        result = start_entrypoint_with_delayed_listener(start_listener=False)
+        with self.assertRaisesRegex(AssertionError, "listener never became reachable|listener never served snapshot readback"):
+            assert_valid_start_entrypoint_receipt(result)
 
 
 class ProviderPhysicalTests(unittest.TestCase):
