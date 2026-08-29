@@ -16,11 +16,12 @@ from tests.support import (
     CANDIDATE_ROOT,
     FEATURE,
     ISSUE_FEATURE_MARKER,
+    acceptance_evidence,
     cmd,
     code_surface_digest,
     copy_tracked,
     handoff_fixture,
-    write_feature_evidence,
+    write_acceptance_evidence,
 )
 
 SUBJECT = "ed3c/noodles#33"
@@ -88,14 +89,54 @@ class FeatureVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(noodles.GateError, "operation .* failed"):
             feature_contract.verify_feature(root, FEATURE.feature_id, error_cls=noodles.GateError)
 
-    def test_missing_feature_id_and_unadmitted_id_fail_closed(self) -> None:
+    def test_missing_issue_feature_is_structurally_valid_but_unknown_declared_feature_is_deferred(self) -> None:
         for feature_id in ("", "   ", None, "some-other-feature"):
             with self.subTest(feature_id=feature_id):
                 with self.assertRaises(noodles.GateError):
                     feature_contract.resolve_feature(feature_id, error_cls=noodles.GateError)
-        with self.assertRaisesRegex(noodles.GateError, "missing noodles-feature"):
-            noodles.parse_issue_contract(ISSUE_BODY.replace(ISSUE_FEATURE_MARKER, ""), SUBJECT)
+        marker_free = noodles.parse_issue_contract(ISSUE_BODY.replace(ISSUE_FEATURE_MARKER, ""), SUBJECT)
+        self.assertEqual(marker_free["feature"], "")
+        unknown = noodles.parse_issue_contract(ISSUE_BODY.replace(FEATURE.feature_id, "some-other-feature"), SUBJECT)
+        self.assertEqual(unknown["feature"], "some-other-feature")
         self.assertEqual(noodles.parse_issue_contract(ISSUE_BODY, SUBJECT)["feature"], FEATURE.feature_id)
+
+    def test_baseline_acceptance_binds_exact_head_tree_and_operations(self) -> None:
+        root = self.candidate_copy()
+        head = cmd(["git", "rev-parse", "HEAD"], root)
+        results = (
+            mock.Mock(returncode=0, stdout="tests passed", stderr=""),
+            mock.Mock(returncode=0, stdout=json.dumps({"ok": True, "errors": []}), stderr=""),
+        )
+        with mock.patch.object(feature_contract, "_run_operation", side_effect=results):
+            evidence = feature_contract.verify_acceptance(root, None, error_cls=noodles.GateError)
+        self.assertEqual(evidence["head"], head)
+        self.assertEqual(evidence["tree"], cmd(["git", "rev-parse", "HEAD^{tree}"], root))
+        self.assertEqual(evidence["baseline"]["contract_id"], feature_contract.BASELINE_CONTRACT_ID)
+        self.assertIsNone(evidence["specialized"])
+
+    def test_baseline_is_mandatory_and_specialized_is_additive(self) -> None:
+        root = self.candidate_copy()
+        head = cmd(["git", "rev-parse", "HEAD"], root)
+        packet = acceptance_evidence(root, head, FEATURE)
+        path = root / feature_contract.ACCEPTANCE_EVIDENCE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        admitted = feature_contract.admit_acceptance_evidence(
+            root, FEATURE.feature_id, head, error_cls=noodles.GateError
+        )
+        self.assertEqual(admitted, packet)
+        packet["baseline"] = None
+        path.write_text(json.dumps(packet), encoding="utf-8")
+        with self.assertRaisesRegex(noodles.GateError, "baseline acceptance"):
+            feature_contract.admit_acceptance_evidence(root, FEATURE.feature_id, head, error_cls=noodles.GateError)
+
+    def test_baseline_rejects_dirty_residue_before_running_operations(self) -> None:
+        root = self.candidate_copy()
+        (root / "untracked-residue.txt").write_text("residue", encoding="utf-8")
+        with mock.patch.object(feature_contract, "_run_operation") as operation:
+            with self.assertRaisesRegex(noodles.GateError, "zero residue"):
+                feature_contract.verify_acceptance(root, None, error_cls=noodles.GateError)
+        operation.assert_not_called()
 
     def test_contract_without_operation_or_oracle_fails_closed(self) -> None:
         hollow = feature_contract.FeatureContract(
@@ -155,38 +196,59 @@ class FeatureEvidenceHandoffTests(unittest.TestCase):
         self.assertNotIn("stage_message", events)
 
     def test_positive_control_admits_verified_feature_evidence(self) -> None:
-        write_feature_evidence(self.root, self.head)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         set_state, receipt = self.handoff()
         set_state.assert_called_once_with(SUBJECT, "awaiting_land")
         self.assertEqual(receipt["feature"], FEATURE.feature_id)
         self.assertEqual(receipt["feature_code_surface_sha256"], code_surface_digest(self.root))
 
+    def test_marker_free_issue_uses_mandatory_baseline_without_specialized_oracle(self) -> None:
+        marker_free_body = ISSUE_BODY.replace(ISSUE_FEATURE_MARKER, "")
+        write_acceptance_evidence(self.root, self.head)
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_read", return_value={"body": marker_free_body}), \
+             mock.patch.object(noodles, "issue_set_state") as set_state:
+            receipt = noodles.execute_handoff(self.root, SUBJECT, 44, self.pr)
+        set_state.assert_called_once_with(SUBJECT, "awaiting_land")
+        self.assertEqual(receipt["acceptance"], feature_contract.BASELINE_CONTRACT_ID)
+        self.assertIsNone(receipt["feature"])
+
+    def test_wrong_tree_baseline_evidence_fails_closed(self) -> None:
+        write_acceptance_evidence(self.root, self.head, FEATURE, tree="0" * 40)
+        self.assert_rejected("stale acceptance evidence tree")
+
     def test_skipped_verifier_fails_closed(self) -> None:
         self.assert_rejected("verifier was skipped")
 
     def test_stale_wrong_head_evidence_fails_closed(self) -> None:
-        write_feature_evidence(self.root, "f" * 40)
-        self.assert_rejected("stale feature evidence head")
+        write_acceptance_evidence(self.root, "f" * 40, FEATURE)
+        self.assert_rejected("stale acceptance evidence head")
 
     def test_agent_self_report_alone_fails_closed(self) -> None:
-        (self.root / feature_contract.EVIDENCE_PATH).write_text(
+        (self.root / feature_contract.ACCEPTANCE_EVIDENCE_PATH).write_text(
             json.dumps({"feature_id": FEATURE.feature_id, "verified": True, "note": "I ran the operation"}),
             encoding="utf-8",
         )
         self.assert_rejected("agent self-report")
 
     def test_evidence_that_never_observed_the_real_artifact_fails_closed(self) -> None:
-        write_feature_evidence(self.root, self.head, code_surface_sha256="0" * 64)
+        packet = acceptance_evidence(self.root, self.head, FEATURE)
+        packet["specialized"]["code_surface_sha256"] = "0" * 64
+        (self.root / feature_contract.ACCEPTANCE_EVIDENCE_PATH).write_text(json.dumps(packet), encoding="utf-8")
         self.assert_rejected("never observed the real artifact")
 
     def test_evidence_without_declared_operation_or_passing_observation_fails_closed(self) -> None:
-        write_feature_evidence(self.root, self.head, operation=["true"])
+        packet = acceptance_evidence(self.root, self.head, FEATURE)
+        packet["specialized"]["operation"] = ["true"]
+        (self.root / feature_contract.ACCEPTANCE_EVIDENCE_PATH).write_text(json.dumps(packet), encoding="utf-8")
         self.assert_rejected("records no declared operation")
-        write_feature_evidence(self.root, self.head, observed={"returncode": 1, "ok": False, "errors": ["boom"]})
+        packet = acceptance_evidence(self.root, self.head, FEATURE)
+        packet["specialized"]["observed"] = {"returncode": 1, "ok": False, "errors": ["boom"]}
+        (self.root / feature_contract.ACCEPTANCE_EVIDENCE_PATH).write_text(json.dumps(packet), encoding="utf-8")
         self.assert_rejected("does not record a passing declared operation")
 
     def test_unadmitted_issue_feature_id_fails_closed(self) -> None:
-        write_feature_evidence(self.root, self.head)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(
                  noodles,

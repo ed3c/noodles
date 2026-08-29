@@ -21,7 +21,7 @@ from tests.support import (
     code_surface_digest,
     copy_tracked,
     handoff_fixture,
-    write_feature_evidence,
+    write_acceptance_evidence,
 )
 
 FEATURE = feature_contract.METRICS_CLI_FEATURE
@@ -162,7 +162,7 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
         set_state.assert_not_called()
 
     def test_positive_control_admits_verified_feature_evidence(self) -> None:
-        write_feature_evidence(self.root, self.head, FEATURE)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_read", return_value={"body": ISSUE_BODY}), \
              mock.patch.object(noodles, "issue_set_state") as set_state:
@@ -175,11 +175,11 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
         self.assert_rejected("verifier was skipped")
 
     def test_stale_wrong_head_evidence_fails_closed(self) -> None:
-        write_feature_evidence(self.root, "f" * 40, FEATURE)
-        self.assert_rejected("stale feature evidence head")
+        write_acceptance_evidence(self.root, "f" * 40, FEATURE)
+        self.assert_rejected("stale acceptance evidence head")
 
     def test_unadmitted_issue_feature_id_fails_closed(self) -> None:
-        write_feature_evidence(self.root, self.head, FEATURE)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(
                  noodles,
