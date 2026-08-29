@@ -25,6 +25,20 @@ Repository-owned context uses at most three nodes:
 
 `./noodles verify` checks this route's declared nodes and pointers. That proves document structure, not Agent cognition: choosing and reading the route remains P-class.
 
+## Agent-friendly shortest path
+
+Predictable local Agent behavior is guidance unless an executable gate or provider readback already enforces it.
+
+- Prefer the Golden Path because it requires fewer decisions than a shortcut: exact Issue, isolated Noodle worktree, nearest executable contract/test, local verify, exact-head PR.
+- Forbidden dependencies and forbidden structural states fail mechanically instead of becoming style debates.
+- Every durable value has one owner, and every repository mutation has one Noodle writer.
+- New work starts in an isolated Noodle worktree rather than a shared-root edit or branch switch in the shared tree.
+- Exceptions stay exact narrow atoms; they still pass the nearest executable gate, and any authority claim still requires provider readback.
+
+Read at most `AGENTS.md` → `contracts/system-v1.md` when its trigger applies → the exact Issue and nearest executable contract or test, then stop document traversal.
+
+Comments, prose, Skills, reviews, and model consensus may guide routing and implementation, but they never replace executable tests, type/static restrictions, CI, or provider readback.
+
 ## Guarantee classes
 
 | ID | Class | Meaning | Allowed authority |
