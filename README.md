@@ -101,7 +101,11 @@ The executable budget is `policy/fitness.json`. It limits tracked files, root su
 ./noodles metrics --json
 ```
 
-Metrics are N-class disclosure. Threshold enforcement by `verify` is L-class.
+Metrics are N-class disclosure. `./noodles metrics --json` reports every metric and emits explicit architecture warnings/readback when report-only thresholds are exceeded.
+
+`./noodles verify` fails only physical repository invariants. Provider count, workflow count, runtime dependency manifests, tracked residue, and the other exact repository contracts remain L-class gates. Architecture-health indicators such as module size, markdown share, line entropy, test/code ratio, and tracked-file count stay visible as warnings and do not become correctness proof by appearing in a failing gate.
+
+Resolve module-size pressure at a real module seam. Do not delete useful newlines, compress readable code, or revert already useful seams merely to shrink a metric.
 
 ## Migration
 
