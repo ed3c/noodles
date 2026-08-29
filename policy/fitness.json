@@ -35,6 +35,7 @@
     ".noodle/adapters/github",
     "AGENTS.md",
     "README.md",
+    "codex_isolation.py",
     "contracts/system-v1.md",
     "feature_contract.py",
     "migrations/skills-shared/ledger.json",

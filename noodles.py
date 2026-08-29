@@ -2,6 +2,7 @@
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
 from __future__ import annotations
 import argparse
+import codex_isolation
 import feature_contract
 import hashlib
 import github_protection
@@ -398,7 +399,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         schedule_profile = required_task_profiles.get("schedule") if isinstance(required_task_profiles, dict) else None
         schedule_model = schedule_profile.get("model") if isinstance(schedule_profile, dict) else None
         if noodle_config.get("routing", {}).get("defaults", {}).get("model") != schedule_model: errors.append(f".noodle.toml routing model must be schedule model {schedule_model!r}")
-        if noodle_config.get("agents", {}).get("codex", {}).get("path") != ".agents/bin": errors.append(".noodle.toml Codex path must route through '.agents/bin'")
+        errors.extend(codex_isolation.validate_codex_agent_config(root, noodle_config))
         errors.extend(runtime_contract.validate_skill_config_paths([str(path) for path in noodle_config.get("skills", {}).get("paths", [])]))
         adapter_scripts = noodle_config.get("adapters", {}).get("backlog", {}).get("scripts", {})
         expected_adapter = ".noodle/adapters/github"
@@ -846,6 +847,7 @@ def start_unattended(root: Path, control_url: str, interval: float) -> int:
     runtime_receipt = runtime_check(root)
     provider_sync(root)
     skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
+    codex_isolation.codex_surface_canary(root, error_cls=GateError)
     policy = protection_policy(root)
     protection_readback(policy["repository"], policy["default_branch"], policy["required_check"])
     env = os.environ.copy()

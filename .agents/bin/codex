@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Apply the repository's exact task-model effort before invoking Codex."""
+"""Isolate Codex HOME/CODEX_HOME and apply the repository's exact task-model effort before invoking Codex."""
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -14,6 +13,10 @@ EXPECTED_PROFILES = {
     "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
     "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
 }
+DIAGNOSTIC_SUBCOMMANDS = {"debug", "plugin"}
+ISOLATED_HOME = ".noodle/codex-isolation/home"
+ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
+FORBIDDEN_FORWARD_ARG = "--dangerously-bypass-approvals-and-sandbox"
 
 
 def fail(message: str) -> None:
@@ -21,8 +24,11 @@ def fail(message: str) -> None:
     raise SystemExit(2)
 
 
-def policy_profiles() -> dict[str, dict[str, str]]:
-    root = Path(__file__).resolve().parents[2]
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def policy_profiles(root: Path) -> dict[str, dict[str, str]]:
     try:
         policy = json.loads((root / "policy/fitness.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -67,32 +73,91 @@ def reject_reasoning_override(argv: list[str]) -> None:
             fail("model_reasoning_effort must come only from the task profile")
 
 
-def real_codex() -> str:
-    carrier_dir = Path(__file__).resolve().parent
-    search_path = os.pathsep.join(
-        entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if entry and Path(entry).resolve() != carrier_dir
-    )
-    resolved = shutil.which("codex", path=search_path)
-    if resolved is None:
-        fail("real codex executable not found outside carrier directory")
-    return resolved
-
-
-def main() -> None:
-    argv = sys.argv[1:]
+def inject_task_model_effort(root: Path, argv: list[str]) -> list[str]:
     reject_reasoning_override(argv)
     model = requested_model(argv)
-    profiles = policy_profiles()
+    profiles = policy_profiles(root)
     matching = [profile for profile in profiles.values() if profile["model"] == model]
     if len(matching) != 1:
         fail(f"model {model!r} is not an exact admitted task model")
     effort = matching[0]["reasoning_effort"]
     injection = ["-c", f'model_reasoning_effort="{effort}"']
-    insert_at = 1 if argv and argv[0] == "exec" else 0
-    os.execv(real_codex(), [real_codex(), *argv[:insert_at], *injection, *argv[insert_at:]])
+    insert_at = 1 if argv[0] == "exec" else 0
+    return [*argv[:insert_at], *injection, *argv[insert_at:]]
+
+
+def real_codex(self_path: Path) -> str:
+    override = os.environ.get("NOODLES_CODEX_REAL_BIN", "").strip()
+    if override:
+        return override
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(entry or ".") / "codex"
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved == self_path:
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    raise SystemExit("NOODLES_CODEX_WRAPPER_FAIL: cannot resolve real codex binary")
+
+
+def link_auth(user_home: Path, codex_home: Path) -> dict[str, str | None]:
+    source = user_home / ".codex" / "auth.json"
+    target = codex_home / "auth.json"
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    if source.is_file():
+        target.symlink_to(source)
+        return {"auth_source": str(source), "auth_target": str(target)}
+    return {"auth_source": None, "auth_target": None}
+
+
+def forwarded_argv(argv: list[str]) -> list[str]:
+    return [arg for arg in argv if arg != FORBIDDEN_FORWARD_ARG]
+
+
+def write_trace(trace_file: Path, payload: dict[str, object]) -> None:
+    trace_file.parent.mkdir(parents=True, exist_ok=True)
+    trace_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    root = repo_root()
+    self_path = Path(__file__).resolve()
+    incoming_argv = sys.argv[1:]
+    argv = incoming_argv
+    if argv and argv[0] not in DIAGNOSTIC_SUBCOMMANDS:
+        argv = inject_task_model_effort(root, argv)
+    original_home = Path(os.environ.get("HOME", "~")).expanduser().resolve()
+    isolated_home = (root / ISOLATED_HOME).resolve()
+    isolated_codex_home = (root / ISOLATED_CODEX_HOME).resolve()
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    isolated_codex_home.mkdir(parents=True, exist_ok=True)
+    auth = link_auth(original_home, isolated_codex_home)
+    forwarded = forwarded_argv(argv)
+    codex_bin = real_codex(self_path)
+    env = os.environ.copy()
+    env["HOME"] = str(isolated_home)
+    env["CODEX_HOME"] = str(isolated_codex_home)
+    trace_target = env.get("NOODLES_CODEX_TRACE_FILE", "").strip()
+    if trace_target:
+        write_trace(
+            Path(trace_target),
+            {
+                "cwd": os.getcwd(),
+                "forwarded_argv": forwarded,
+                "incoming_argv": incoming_argv,
+                "isolated_codex_home": str(isolated_codex_home),
+                "isolated_home": str(isolated_home),
+                "original_home": str(original_home),
+                "real_codex": codex_bin,
+                **auth,
+            },
+        )
+    os.execvpe(codex_bin, [codex_bin, *forwarded], env)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
