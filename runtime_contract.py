@@ -536,7 +536,7 @@ def worktree_exec(
     project = _noodle_project_root(root.resolve(), error_cls=error_cls)
     binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
     result = run(
-        [str(binary), "--project-dir", str(project), "worktree", "exec", worktree_name, *command],
+        [str(binary), "worktree", "exec", worktree_name, *command],
         cwd=project,
         error_cls=error_cls,
     )
