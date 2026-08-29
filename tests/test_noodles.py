@@ -502,7 +502,7 @@ class RepositoryGateTests(unittest.TestCase):
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
-        self.assertTrue(any("verify missing" in item for item in result["errors"]))
+        self.assertIn("trusted verify job must depend only on candidate-self-tests", result["errors"])
 
     def test_trusted_verify_rejects_candidate_script_execution(self) -> None:
         temp, root = self.mutated_copy()
@@ -519,7 +519,7 @@ class RepositoryGateTests(unittest.TestCase):
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
-        self.assertTrue(any("verify forbids" in item for item in result["errors"]))
+        self.assertIn("trusted verify job must not execute candidate scripts", result["errors"])
 
     def test_report_only_architecture_thresholds_emit_warnings_without_failing_verify(self) -> None:
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
