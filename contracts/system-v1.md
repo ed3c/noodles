@@ -36,7 +36,7 @@ Only observed invariants with an executable/readback boundary may be listed as L
 | P-01 | P | External skills can improve routing and implementation choices. | Pinned checkout exists; skill output remains probabilistic. |
 | P-02 | P | `AGENTS.md` can route an Agent toward the Golden Path. | Never a correctness gate. |
 | L-01 | L | Tracked repository inventory contains only regular files and admitted surfaces. | `git ls-files --stage`, mode checks, required/forbidden paths. |
-| L-02 | L | The candidate satisfies the current fitness budget. | Trusted `noodles.py verify` exit code and metrics readback. |
+| L-02 | L | The candidate satisfies the current failing fitness invariants. Architecture-health thresholds remain warning readback only. | Trusted `noodles.py verify` exit code and metrics readback. |
 | L-03 | L | Exact Issue/PR/handoff syntax is unambiguous and the completed execute session remains contained. | Parser controls plus exact worktree/order/session event readback and blocking-message controls. |
 | L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
@@ -108,6 +108,7 @@ A central repo cannot claim physical control of another repo merely because it c
 
 - Passing tests is not full task verification unless the exact task contract names those tests and readbacks.
 - Agent cross-review is not independent provider verification.
+- Architecture warnings are health signals only. They are not correctness evidence, merge permission, or a reason to compress readable code instead of creating a real seam.
 - GrepAI candidates are not source truth and misses are not absence proof.
 - Tree-sitter ranges do not prove a context compiler.
 - Serena indexing does not prove bounded edit execution.

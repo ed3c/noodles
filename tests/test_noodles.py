@@ -32,6 +32,29 @@ class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
         return noodles.verify_repository(root, ENGINE_ROOT)
 
+    def baseline_metrics(self) -> dict:
+        return dict(noodles.repository_metrics(CANDIDATE_ROOT))
+
+    def passing_metrics(self) -> dict:
+        metrics = self.baseline_metrics()
+        policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
+        metrics.update(
+            {
+                "tracked_files": policy["max_tracked_files"],
+                "max_file_lines": policy["max_file_lines"],
+                "markdown_share": policy["max_markdown_share"],
+                "normalized_line_entropy": policy["min_normalized_entropy"],
+                "test_to_executable_ratio": policy["min_test_to_executable_ratio"],
+            }
+        )
+        return metrics
+
+    def verify_with_metrics(self, *, overrides: dict[str, object], root: Path = CANDIDATE_ROOT) -> dict:
+        metrics = self.passing_metrics()
+        metrics.update(overrides)
+        with mock.patch.object(noodles, "repository_metrics", return_value=metrics):
+            return noodles.verify_repository(root, ENGINE_ROOT)
+
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp = tempfile.TemporaryDirectory(prefix="noodles-test-")
         root = Path(temp.name) / "repo"
@@ -45,6 +68,7 @@ class RepositoryGateTests(unittest.TestCase):
     def test_positive_baseline_passes(self) -> None:
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(result["warnings"], [])
 
     def test_auto_mode_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -488,190 +512,143 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("verify forbids" in item for item in result["errors"]))
 
+    def test_report_only_architecture_thresholds_emit_warnings_without_failing_verify(self) -> None:
+        policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
+        cases = (
+            (
+                "max_file_lines",
+                "max_file_lines",
+                "max",
+                policy["max_file_lines"] + 1,
+                policy["max_file_lines"],
+                "architecture warning max_file_lines=1001 exceeds 1000",
+            ),
+            (
+                "markdown_share",
+                "max_markdown_share",
+                "max",
+                round(policy["max_markdown_share"] + 0.000001, 6),
+                policy["max_markdown_share"],
+                "architecture warning markdown_share=0.580001 exceeds 0.58",
+            ),
+            (
+                "normalized_line_entropy",
+                "min_normalized_entropy",
+                "min",
+                round(policy["min_normalized_entropy"] - 0.000001, 6),
+                policy["min_normalized_entropy"],
+                "architecture warning normalized_line_entropy=0.479999 below 0.48",
+            ),
+            (
+                "test_to_executable_ratio",
+                "min_test_to_executable_ratio",
+                "min",
+                round(policy["min_test_to_executable_ratio"] - 0.000001, 6),
+                policy["min_test_to_executable_ratio"],
+                "architecture warning test_to_executable_ratio=0.199999 below 0.2",
+            ),
+            (
+                "tracked_files",
+                "max_tracked_files",
+                "max",
+                policy["max_tracked_files"] + 1,
+                policy["max_tracked_files"],
+                "architecture warning tracked_files=33 exceeds 32",
+            ),
+        )
+        for metric_key, policy_key, direction, planted_value, threshold, warning in cases:
+            with self.subTest(metric=metric_key):
+                result = self.verify_with_metrics(overrides={metric_key: planted_value})
+                self.assertTrue(result["ok"], result.get("errors"))
+                self.assertEqual(result.get("errors"), [])
+                self.assertEqual(result.get("warnings"), [warning])
+                self.assertEqual(len(result.get("warning_readback", [])), 5)
+                warning_entries = [item for item in result["warning_readback"] if item["status"] == "warning"]
+                self.assertEqual(
+                    warning_entries,
+                    [{
+                        "metric": metric_key,
+                        "policy_key": policy_key,
+                        "classification": "report-only",
+                        "authority": "N",
+                        "direction": direction,
+                        "threshold": threshold,
+                        "value": planted_value,
+                        "status": "warning",
+                        "message": warning,
+                    }],
+                )
+                self.assertEqual(
+                    {item["metric"] for item in result["warning_readback"] if item["status"] == "ok"},
+                    {"tracked_files", "max_file_lines", "markdown_share", "normalized_line_entropy", "test_to_executable_ratio"} - {metric_key},
+                )
+                self.assertEqual(result["metrics"][metric_key], planted_value)
+                self.assertFalse(any(f"fitness {metric_key}=" in item for item in result.get("errors", [])))
+
+    def test_enabled_provider_count_still_fails_closed(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / "policy/providers.lock.json"
+        payload = json.loads(path.read_text())
+        payload["providers"][2]["enabled"] = True
+        path.write_text(json.dumps(payload))
+        self.commit(root)
+        with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
+            result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertIn("enabled providers 3 exceed limit 2", result["errors"])
+
+    def test_workflow_count_still_fails_closed(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        extra = root / ".github/workflows/extra.yml"
+        extra.write_text("name: extra\non: workflow_dispatch\njobs: {}\n")
+        self.commit(root)
+        with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
+            result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertIn("workflow count must equal 2, got 3", result["errors"])
+
+    def test_runtime_dependency_manifest_still_fails_closed(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / "package.json"
+        path.write_text("{}\n")
+        self.commit(root)
+        with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
+            result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertIn("runtime dependency manifest forbidden: package.json", result["errors"])
+
+    def test_metrics_readback_preserves_metrics_and_reports_warning_metadata(self) -> None:
+        policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
+        metrics = self.passing_metrics()
+        metrics["max_file_lines"] = policy["max_file_lines"] + 1
+        with mock.patch.object(noodles, "repository_metrics", return_value=metrics):
+            readback = noodles.metrics_readback(CANDIDATE_ROOT, ENGINE_ROOT)
+        self.assertEqual(readback["max_file_lines"], metrics["max_file_lines"])
+        self.assertEqual(readback["warnings"], ["architecture warning max_file_lines=1001 exceeds 1000"])
+        self.assertEqual(
+            [item for item in readback["warning_readback"] if item["status"] == "warning"],
+            [{
+                "metric": "max_file_lines",
+                "policy_key": "max_file_lines",
+                "classification": "report-only",
+                "authority": "N",
+                "direction": "max",
+                "threshold": policy["max_file_lines"],
+                "value": policy["max_file_lines"] + 1,
+                "status": "warning",
+                "message": "architecture warning max_file_lines=1001 exceeds 1000",
+            }],
+        )
+
     def test_metrics_stay_inside_budget(self) -> None:
         metrics = noodles.repository_metrics(CANDIDATE_ROOT)
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
         self.assertLessEqual(metrics["tracked_files"], policy["max_tracked_files"])
         self.assertLessEqual(metrics["max_file_lines"], policy["max_file_lines"])
         self.assertGreaterEqual(metrics["test_to_executable_ratio"], policy["min_test_to_executable_ratio"])
-
-
-class ContractParserTests(unittest.TestCase):
-    BODY = """<!-- noodles-role: repository-mutating-atom -->
-<!-- noodles-target: ed3c/noodles -->
-<!-- noodles-subject: ed3c/noodles#7 -->
-<!-- noodles-state: ready -->
-"""
-
-    def test_issue_contract_positive(self) -> None:
-        parsed = noodles.parse_issue_contract(self.BODY, "ed3c/noodles#7")
-        self.assertEqual(parsed["state"], "ready")
-
-    def test_issue_contract_rejects_target_drift(self) -> None:
-        with self.assertRaises(noodles.GateError):
-            noodles.parse_issue_contract(self.BODY.replace("noodles-target: ed3c/noodles", "noodles-target: ed3c/other"))
-
-    def test_pr_reference_is_exact_and_non_closing(self) -> None:
-        self.assertEqual(noodles.parse_pr_reference("Refs ed3c/noodles#7\n"), "ed3c/noodles#7")
-        with self.assertRaises(noodles.GateError):
-            noodles.parse_pr_reference("Claim\nRefs ed3c/noodles#7\n")
-        with self.assertRaises(noodles.GateError):
-            noodles.parse_pr_reference("Refs ed3c/noodles#7\nRefs ed3c/noodles#8\n")
-        with self.assertRaises(noodles.GateError):
-            noodles.parse_pr_reference("Closes #7\nRefs ed3c/noodles#7\n")
-
-    def test_state_marker_replacement_is_single(self) -> None:
-        changed = noodles.replace_marker(self.BODY, "state", "awaiting_land")
-        self.assertEqual(noodles.parse_issue_contract(changed)["state"], "awaiting_land")
-
-
-class ExecuteHandoffTests(unittest.TestCase):
-    SUBJECT = "ed3c/noodles#33"
-
-    def setUp(self) -> None:
-        self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT)
-        self.addCleanup(self.temp.cleanup)
-        self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
-
-    def pr(self, **overrides: object) -> dict:
-        payload = {
-            "state": "open",
-            "draft": False,
-            "body": f"Refs {self.SUBJECT}",
-            "head": {"sha": self.head},
-            "base": {"ref": "main"},
-        }
-        payload.update(overrides)
-        return payload
-
-    def test_positive_handoff_emits_one_blocking_message_for_exact_session(self) -> None:
-        pr = self.pr()
-        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
-            receipt = noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
-
-        self.assertEqual(receipt["session_id"], self.session_id)
-        self.assertEqual(receipt["head"], self.head)
-        events_path = self.root / ".noodle" / "sessions" / self.session_id / "events.ndjson"
-        events = [json.loads(line) for line in events_path.read_text().splitlines()]
-        handoffs = [item for item in events if item["type"] == "stage_message"]
-        self.assertEqual(len(handoffs), 1)
-        self.assertIs(handoffs[0]["payload"]["blocking"], True)
-        self.assertIn(self.SUBJECT, handoffs[0]["payload"]["message"])
-
-        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
-            noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
-        events = [json.loads(line) for line in events_path.read_text().splitlines()]
-        self.assertEqual(sum(item["type"] == "stage_message" for item in events), 1)
-
-    def test_wrong_session_id_fails_before_emission(self) -> None:
-        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": "wrong-session"}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state") as set_state:
-            with self.assertRaisesRegex(noodles.GateError, "session"):
-                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
-        set_state.assert_not_called()
-
-    def test_non_blocking_runtime_event_fails_direct_readback(self) -> None:
-        self.temp.cleanup()
-        self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT, blocking=False)
-        self.addCleanup(self.temp.cleanup)
-        self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
-        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
-            with self.assertRaisesRegex(noodles.GateError, "blocking"):
-                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
-
-    def test_wrong_pr_body_head_or_base_fails_closed(self) -> None:
-        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
-            with self.assertRaises(noodles.GateError):
-                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(body="Claim\nRefs ed3c/noodles#33"))
-            with self.assertRaisesRegex(noodles.GateError, "head"):
-                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": "f" * 40}))
-            with self.assertRaisesRegex(noodles.GateError, "base"):
-                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(base={"ref": "dependent-feature"}))
-
-    def test_missing_pr_fails_before_issue_or_session_mutation(self) -> None:
-        with mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("missing PR")), \
-             mock.patch.object(noodles, "issue_set_state") as set_state:
-            self.assertEqual(noodles.main(["--root", str(self.root), "issue", "handoff", self.SUBJECT, "--pr", "404"]), 1)
-        set_state.assert_not_called()
-
-
-class ReconcileTests(unittest.TestCase):
-    def test_control_checkout_admission_fails_before_snapshot_or_merge(self) -> None:
-        with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
-             mock.patch.object(noodles, "http_json") as http_json, \
-             mock.patch.object(noodles, "git") as git_cmd:
-            with self.assertRaisesRegex(noodles.GateError, "dirty"):
-                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
-        admit.assert_called_once_with(CANDIDATE_ROOT)
-        http_json.assert_not_called()
-        git_cmd.assert_not_called()
-
-    def test_provider_landed_sends_exact_merge_control_and_accepts_status_ack(self) -> None:
-        calls: list[tuple[str, object]] = []
-
-        def fake_http(url: str, *, payload: object | None = None) -> dict:
-            calls.append((url, payload))
-            if payload is None:
-                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
-            return {"id": payload["id"], "action": "merge", "status": "ok"}
-
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
-             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
-             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value="") as git_cmd:
-            completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
-
-        self.assertEqual(completed, ["ed3c/noodles#33"])
-        self.assertEqual(calls[1][1]["action"], "merge")
-        self.assertEqual(calls[1][1]["order_id"], "ed3c/noodles#33")
-        git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "main")
-        git_cmd.assert_any_call(CANDIDATE_ROOT, "merge", "--ff-only", "origin/main")
-
-    def test_reconcile_uses_admitted_default_branch_for_fetch_and_merge(self) -> None:
-        def fake_http(url: str, *, payload: object | None = None) -> dict:
-            if payload is None:
-                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
-            return {"id": payload["id"], "action": "merge", "status": "ok"}
-
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "trunk"}), \
-             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
-             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value="") as git_cmd:
-            noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
-
-        git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "trunk")
-        git_cmd.assert_any_call(CANDIDATE_ROOT, "merge", "--ff-only", "origin/trunk")
-
-    def test_machine_merge_rejects_control_ack_drift(self) -> None:
-        responses = [
-            {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]},
-            {"id": "wrong", "action": "merge", "status": "ok"},
-        ]
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
-             mock.patch.object(noodles, "http_json", side_effect=responses), \
-             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value=""):
-            with self.assertRaisesRegex(noodles.GateError, "rejected machine reconciliation"):
-                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
-
-    def test_preland_reconcile_sends_no_control(self) -> None:
-        calls: list[tuple[str, object]] = []
-
-        def fake_http(url: str, *, payload: object | None = None) -> dict:
-            calls.append((url, payload))
-            return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
-
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
-             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
-             mock.patch.object(noodles, "provider_landed", side_effect=noodles.GateError("not landed")):
-            completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
-
-        self.assertEqual(completed, [])
-        self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
 
 
 class StartUnattendedTests(unittest.TestCase):

@@ -2,6 +2,7 @@
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
 from __future__ import annotations
 import argparse
+import fitness_contract
 import hashlib
 import github_protection
 import json
@@ -97,7 +98,6 @@ def run(
     return result
 def git(root: Path, *args: str, check: bool = True) -> str:
     return run(["git", *args], cwd=root, check=check).stdout.strip()
-
 
 def load_json(path: Path) -> Any:
     try:
@@ -251,6 +251,13 @@ def repository_metrics(root: Path) -> dict[str, Any]:
         "workflow_count": len(workflows),
         "claim_counts": claim_counts,
     }
+def metrics_readback(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
+    root = root.resolve()
+    policy_root = (policy_root or root).resolve()
+    return fitness_contract.metrics_readback(
+        repository_metrics(root),
+        load_json(policy_root / "policy/fitness.json"),
+    )
 
 
 def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:
@@ -411,23 +418,20 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             errors.append(f"land workflow missing trusted boundary phrase: {phrase}")
     workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     errors.extend(workflow_boundary_errors)
-    metrics = repository_metrics(root)
-    numeric_limits = {
-        "tracked_files": ("max", policy["max_tracked_files"]),
-        "root_surfaces": ("max", policy["max_root_surfaces"]),
-        "max_file_lines": ("max", policy["max_file_lines"]),
-        "markdown_share": ("max", policy["max_markdown_share"]),
-        "normalized_line_entropy": ("min", policy["min_normalized_entropy"]),
-        "test_to_executable_ratio": ("min", policy["min_test_to_executable_ratio"]),
-        "enabled_external_providers": ("max", policy["max_enabled_providers"]),
-    }
-    for key, (direction, threshold) in numeric_limits.items():
+    metrics_result = metrics_readback(root, policy_root)
+    metrics = {key: value for key, value in metrics_result.items() if key not in {"warnings", "warning_readback"}}
+    for key, (direction, policy_key) in fitness_contract.FAILING_FITNESS_LIMITS.items():
+        threshold = policy[policy_key]
         value = metrics[key]
-        if direction == "max" and value > threshold:
-            errors.append(f"fitness {key}={value} exceeds {threshold}")
-        if direction == "min" and value < threshold:
-            errors.append(f"fitness {key}={value} below {threshold}")
-    return {"ok": not errors, "errors": errors, "metrics": metrics}
+        if fitness_contract.threshold_exceeded(value, direction, threshold):
+            errors.append(fitness_contract.failing_fitness_message(key, value, direction, threshold))
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": metrics_result["warnings"],
+        "warning_readback": metrics_result["warning_readback"],
+        "metrics": metrics,
+    }
 
 
 def provider_check(root: Path) -> list[dict[str, Any]]:
@@ -920,7 +924,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
             return 0
         if args.command == "metrics":
-            metrics = repository_metrics(root)
+            metrics = metrics_readback(root)
             print(json.dumps(metrics, indent=2, sort_keys=True) if args.json else json.dumps(metrics, sort_keys=True))
             return 0
         if args.command == "runtime":
