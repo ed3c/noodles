@@ -12,11 +12,38 @@ import threading
 import time
 from pathlib import Path
 
+import feature_contract
 import noodles
 import runtime_contract
 
 ENGINE_ROOT = Path(noodles.__file__).resolve().parent
 CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve()
+FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
+ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
+
+
+def code_surface_digest(root: Path) -> str:
+    return hashlib.sha256((root / FEATURE.code_surface).read_bytes()).hexdigest()
+
+
+def write_feature_evidence(root: Path, head: str, **overrides: object) -> Path:
+    """Write an evidence packet shaped exactly like the verifier's own output, then apply planted drift."""
+    evidence: dict[str, object] = {
+        "feature_id": FEATURE.feature_id,
+        "head": head,
+        "code_surface": FEATURE.code_surface,
+        "code_surface_sha256": code_surface_digest(root),
+        "operation": list(FEATURE.operation),
+        "oracle": FEATURE.oracle,
+        "observed": {"returncode": 0, "ok": True, "errors": []},
+    }
+    evidence.update(overrides)
+    for field in [key for key, value in overrides.items() if value is None]:
+        evidence.pop(field, None)
+    path = root / feature_contract.EVIDENCE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    return path
 
 
 def cmd(argv: list[str], cwd: Path) -> str:

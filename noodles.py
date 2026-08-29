@@ -2,6 +2,7 @@
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
 from __future__ import annotations
 import argparse
+import feature_contract
 import hashlib
 import github_protection
 import json
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+import tokenize
 import tomllib
 import urllib.error
 import urllib.request
@@ -50,6 +52,7 @@ MARKER_PATTERNS = {
     "target": re.compile(r"<!--\s*noodles-target:\s*([^>]+?)\s*-->", re.I),
     "subject": re.compile(r"<!--\s*noodles-subject:\s*([^>]+?)\s*-->", re.I),
     "state": re.compile(r"<!--\s*noodles-state:\s*([^>]+?)\s*-->", re.I),
+    "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
     "head": re.compile(r"<!--\s*noodles-head:\s*([0-9a-f]{40})\s*-->", re.I),
     "merge": re.compile(r"<!--\s*noodles-merge:\s*([0-9a-f]{40})\s*-->", re.I),
@@ -57,8 +60,14 @@ MARKER_PATTERNS = {
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+N_CLASS_PREFIXES = ("docs/research/", "docs/design/")
+N_CLASS_EVIDENCE_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+][ \t]+)?\*{0,2}(claim|acceptance|evidence)\*{0,2}[ \t]*:[^\n]*?"
+    + r"((?:" + "|".join(prefix.rstrip("/") for prefix in N_CLASS_PREFIXES) + r")/[^\s`)\]]*)"
+)
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
+ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
 @dataclass(frozen=True)
@@ -136,6 +145,8 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     target = one_marker(body, "target")
     subject_value = one_marker(body, "subject")
     state_value = one_marker(body, "state")
+    feature_value = one_marker(body, "feature")
+    feature_contract.resolve_feature(feature_value, error_cls=GateError)
     if role != "repository-mutating-atom":
         raise GateError(f"unsupported noodles-role: {role}")
     subject = parse_subject(subject_value or "")
@@ -145,7 +156,10 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         raise GateError(f"issue subject {subject.value} does not match expected {expected_subject}")
     if state_value not in ALLOWED_ISSUE_STATES:
         raise GateError(f"unsupported noodles-state: {state_value}")
-    return {"role": role, "target": target or "", "subject": subject.value, "state": state_value or ""}
+    offending = N_CLASS_EVIDENCE_RE.search(body or "")
+    if offending:
+        raise GateError(f"{offending.group(1).lower()} field must cite a machine artifact, not N-class prose: {offending.group(2)}")
+    return {"role": role, "target": target or "", "subject": subject.value, "state": state_value or "", "feature": feature_value or ""}
 
 
 def replace_marker(body: str, name: str, value: str) -> str:
@@ -326,6 +340,27 @@ def validate_migration_ledger(root: Path) -> list[str]:
         if disposition == "MIGRATE" and not evidence:
             errors.append(f"{identifier}: MIGRATE requires physical evidence")
     return errors
+def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
+    errors: list[str] = []
+    for python_path in sorted(path for path in paths if path.endswith(".py")):
+        try:
+            with (root / python_path).open("rb") as handle:
+                for token in tokenize.tokenize(handle.readline):
+                    if token.type == tokenize.COMMENT and not (token.start[0] == 1 and token.string.startswith("#!")) and not token.string.startswith(ALLOWED_COMMENT_TAGS):
+                        errors.append(f"untagged comment {python_path}:{token.start[0]}: {token.string}")
+        except (OSError, SyntaxError, IndentationError, UnicodeDecodeError, tokenize.TokenizeError) as exc:
+            errors.append(f"comment scan failed for {python_path}: {exc}")
+    for other_path in sorted(path for path in paths if path.endswith(".sh") or path.endswith(".toml")):
+        try:
+            lines = (root / other_path).read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            errors.append(f"comment scan failed for {other_path}: {exc}")
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") and not (lineno == 1 and stripped.startswith("#!")) and not stripped.startswith(ALLOWED_COMMENT_TAGS):
+                errors.append(f"untagged comment {other_path}:{lineno}: {stripped}")
+    return errors
 
 
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
@@ -390,6 +425,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         result = run(["bash", "-n", str(root / shell_path)], check=False)
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
+    errors.extend(validate_comment_tags(root, paths))
     agents = (root / "AGENTS.md").read_text(encoding="utf-8", errors="ignore") if (root / "AGENTS.md").exists() else ""
     for phrase in policy["required_agent_phrases"]:
         if phrase not in agents:
@@ -473,9 +509,11 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     session_id = os.getenv("NOODLE_SESSION_ID", "").strip()
     validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
     resolve_locked_runtime_binary(root, error_cls=GateError)
+    contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
+    evidence = feature_contract.admit_feature_evidence(root, contract["feature"], head, error_cls=GateError)
     issue_set_state(subject_value, "awaiting_land")
     receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
-    return {"subject": subject_value, "pr": pr_number, "state": "awaiting_land", **receipt}
+    return {"subject": subject_value, "pr": pr_number, "state": "awaiting_land", "feature": evidence["feature_id"], "feature_code_surface_sha256": evidence["code_surface_sha256"], **receipt}
 def protection_policy(root: Path) -> dict[str, Any]:
     return load_json(root / "policy/github.json")
 def protection_readback(repo: str, branch: str, required_check: str) -> dict[str, Any]:
@@ -718,6 +756,7 @@ def issue_template(repo: str, number: int, title: str) -> str:
         f"<!-- noodles-target: {repo} -->\n"
         f"<!-- noodles-subject: {subject} -->\n"
         "<!-- noodles-state: ready -->\n"
+        f"<!-- noodles-feature: {feature_contract.VERIFICATION_SKILL_FEATURE.feature_id} -->\n"
         "<!-- noodles-depends-on: none -->\n\n"
         f"## Goal\n\n{title}\n\n"
         "## Physical acceptance\n\n- Exact-subject positive and planted-negative controls pass.\n"
@@ -857,6 +896,9 @@ def build_parser() -> argparse.ArgumentParser:
     issue_handoff = issue_sub.add_parser("handoff")
     issue_handoff.add_argument("subject")
     issue_handoff.add_argument("--pr", type=int, required=True)
+    feature = sub.add_parser("feature")
+    feature.add_argument("action", choices=["verify"])
+    feature.add_argument("feature_id")
     eval_sub = sub.add_parser("eval").add_subparsers(dest="eval_action", required=True)
     eval_gh = eval_sub.add_parser("gh-boundary")
     eval_gh.add_argument("--tool", action="append", default=[]); eval_gh.add_argument("child_command", nargs=argparse.REMAINDER)
@@ -919,6 +961,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pr = gh_api(f"repos/{subject.repo}/pulls/{args.pr}")
                 print(json.dumps(execute_handoff(root, args.subject, args.pr, pr)))
                 return 0
+        if args.command == "feature":
+            evidence = feature_contract.verify_feature(root, args.feature_id, error_cls=GateError)
+            write_json(root / feature_contract.EVIDENCE_PATH, evidence)
+            print(json.dumps(evidence, indent=2, sort_keys=True))
+            return 0
         if args.command == "eval":
             if args.eval_action != "gh-boundary":
                 raise GateError(f"unsupported eval action: {args.eval_action}")

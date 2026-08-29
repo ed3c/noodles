@@ -22,8 +22,9 @@ This skill operates inside the Noodle-created isolated worktree.
 10. Inspect direct source/runtime/provider readback and confirm zero residue.
 11. Commit and push the current worktree branch. Never push `main`.
 12. Open exactly one non-draft PR to `main` with exactly one line `Refs owner/repo#N`.
-13. Run `./noodles issue handoff owner/repo#N --pr N`. This validates the exact PR head/body, sets the Issue to `awaiting_land`, and emits one blocking `stage_message` for the current `NOODLE_SESSION_ID`.
-14. Stop immediately after the handoff succeeds. GitHub verify/land and local machine reconciliation own completion.
+13. Run `./noodles feature verify <feature-id>` for the exact Issue's `noodles-feature` id at the pushed head.
+14. Run `./noodles issue handoff owner/repo#N --pr N`. This validates the exact PR head/body, sets the Issue to `awaiting_land`, and emits one blocking `stage_message` for the current `NOODLE_SESSION_ID`.
+15. Stop immediately after the handoff succeeds. GitHub verify/land and local machine reconciliation own completion.
 
 ## Routing contract
 
@@ -36,6 +37,7 @@ Immutable route fixtures:
 - `investigation` -> `poteto-mode/playbooks/investigation.md`; oracle `exact issue readback plus direct source/runtime/provider readback`
 - `function-boundary feature work` -> `architect` plus `poteto-mode/playbooks/feature.md`; oracle `tests plus direct source/runtime readback`
 - `long multi-phase work` -> `show-me-your-work` plus `poteto-mode/playbooks/multi-phase-plan.md`; oracle `decision trail plus direct readback`
+- `verification skill work` -> `create-verification-skill` or `maintain-verification-skill`; oracle `declared feature operation plus deterministic observed-state check`
 - `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`
 - `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`
 
@@ -55,6 +57,8 @@ Report the claim, exact candidate head, positive control, planted-negative contr
 ## Runtime verification
 
 `tests pass` is insufficient when the Issue names a real product/runtime behavior. Operate the actual feature, collect the named evidence, compare expected versus observed, and include only the receipt/digest needed for the contract. Do not commit generated receipts.
+
+Output from `create-verification-skill` or `maintain-verification-skill` stays P-class until `./noodles feature verify <feature-id>` runs the declared operation and its oracle checks observed state. Run it at the exact candidate head after the final commit; `./noodles issue handoff` re-reads the exact Issue's `noodles-feature` id, resolves that contract, and rejects a missing, stale, wrong-head, self-reported, or artifact-blind evidence packet.
 
 ## Failure handling
 
