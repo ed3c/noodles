@@ -11,6 +11,10 @@ from typing import Any
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
 SCHEDULE_ACTIVE_ORDER_PHRASE = "Do not re-emit any active non-schedule order."
 SCHEDULE_PUBLISH_COMMAND = "python3 skill_contract.py publish .noodle/orders-next.candidate.json"
+SCHEDULE_TASK_MODEL_PHRASE = (
+    "Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model "
+    "on the order's only `execute` stage."
+)
 EXECUTE_ENTRYPOINT_PHRASE = "Every execute task enters `poteto-mode` before any matched playbook or leaf skill."
 EXECUTE_BYPASS_PHRASE = "Do not bypass `poteto-mode` by entering a leaf skill directly."
 EXECUTE_EVIDENCE_PHRASE = "Record the selected P-class route and required physical oracle in the evidence packet."
@@ -102,6 +106,7 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
         (SCHEDULE_OWNERSHIP_PHRASE, "self-order ownership"),
         (SCHEDULE_ACTIVE_ORDER_PHRASE, "active-order preservation"),
         (SCHEDULE_PUBLISH_COMMAND, "deterministic publish gate"),
+        (SCHEDULE_TASK_MODEL_PHRASE, "task-model routing"),
     )
     errors = []
     for phrase, label in required_contracts:
@@ -252,7 +257,11 @@ def _validate_action_needed(payload: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
+def validate_schedule_output(
+    current: Any,
+    proposed: Any,
+    required_task_profiles: dict[str, dict[str, str]],
+) -> list[str]:
     current_orders, errors = _orders(current, "current orders")
     proposed_orders, proposed_errors = _orders(proposed, "scheduler output")
     errors.extend(proposed_errors)
@@ -318,6 +327,21 @@ def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
                 f"scheduler output order {order_id!r} stage[0] has unresolved do {raw_do.strip()!r}; "
                 "expected 'execute'"
             )
+            continue
+        task_profile = required_task_profiles.get(task_key, {})
+        required_model = task_profile.get("model")
+        raw_model = stage.get("model")
+        if not isinstance(raw_model, str) or not raw_model.strip():
+            errors.append(
+                f"scheduler output order {order_id!r} stage[0] requires explicit model {required_model!r} "
+                "for execute"
+            )
+            continue
+        if raw_model != required_model:
+            errors.append(
+                f"scheduler output order {order_id!r} stage[0] model must be {required_model!r} "
+                f"for execute; found {raw_model!r}"
+            )
     return errors
 
 
@@ -339,7 +363,20 @@ def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
     current_path = runtime / "orders.json"
     current = _read_json(current_path, "current orders") if current_path.exists() else {"orders": []}
     proposed = _read_json(candidate, "schedule candidate")
-    errors = validate_schedule_output(current, proposed)
+    policy = _read_json(root / "policy/fitness.json", "fitness policy")
+    required_task_profiles = policy.get("required_codex_task_profiles") if isinstance(policy, dict) else None
+    if (
+        not isinstance(required_task_profiles, dict)
+        or set(required_task_profiles) != {"schedule", "execute"}
+        or not all(
+            isinstance(profile, dict)
+            and set(profile) == {"model", "reasoning_effort"}
+            and all(isinstance(value, str) and value for value in profile.values())
+            for profile in required_task_profiles.values()
+        )
+    ):
+        raise ValueError("fitness policy requires exact non-empty schedule/execute task profiles")
+    errors = validate_schedule_output(current, proposed, required_task_profiles)
     if errors:
         raise ValueError("schedule output rejected: " + "; ".join(errors))
     destination = runtime / "orders-next.json"
