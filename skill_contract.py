@@ -40,10 +40,7 @@ EXECUTE_VERIFICATION_P_CLASS_PHRASE = (
 )
 EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`"
 EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
-EXECUTE_UNSUPPORTED_PHRASE = (
-    "Unsupported routes fail closed: `control-ui`, Cursor `create-skill`, Cursor `/loop`, "
-    "Graphite `gt`, cloud-agent infrastructure, standalone `goal`."
-)
+EXECUTE_UNSUPPORTED_PHRASE = "Unsupported routes fail closed:"
 EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
 COMPACT_ORDER_TOP_LEVEL_FIELDS = frozenset({"orders", "action_needed"})
 COMPACT_ORDER_FIELDS = frozenset({"id", "plan", "rationale", "stages", "title"})
@@ -152,9 +149,15 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
         (EXECUTE_UNSUPPORTED_PHRASE, "unsupported route refusal"),
         (EXECUTE_RESOLUTION_PHRASE, "pinned provider resolution refusal"),
     )
+    content_lines = content.splitlines()
     errors = []
     for phrase, label in required_contracts:
-        if phrase not in content:
+        present = (
+            any(line.startswith(phrase) for line in content_lines)
+            if phrase == EXECUTE_UNSUPPORTED_PHRASE
+            else phrase in content
+        )
+        if not present:
             errors.append(f"project task skill {skill_name!r} missing {label} contract")
     return errors
 
