@@ -1,259 +1,207 @@
 # Implementation DAG
 
-> N-class projection for snapshot `CTX-2026-08-30T02:44:51+08:00`. Re-fetch provider state before execution.
+> N-class projection for `CTX-2026-08-30T02:55:36+08:00`. Re-fetch provider state before operational use.
 
 ## Edge semantics
 
-This file distinguishes two dependency classes:
+- `S`: start-readiness. A successor may begin bounded work after the named interface/fact exists.
+- `C`: completion-readiness. A successor cannot claim completion before the predecessor's exact provider receipt lands.
+- `X`: external dependency outside `ed3c/noodles`.
 
-- `S` — **start-readiness**. A successor may begin bounded work after the predecessor's named interface or fact is available.
-- `C` — **completion-readiness**. The successor must not claim completion or provider landing until the predecessor's exact receipt is provider-landed and read back.
+A thematic relation is not a dependency. Runtime repair cycles may be cyclic; delivery dependencies must remain acyclic.
 
-An unlabeled thematic relationship is not a dependency. A closed Issue is not automatically evidence for a broader objective.
-
-External edges use `X`. Runtime repair/reconciliation loops may be cyclic; delivery dependencies must remain acyclic.
-
-## Current stage: context/spec convergence
+## Current program convergence
 
 ```text
-#112 CONTRACT SPLIT
-landed: 281044f5572f9dd261f17fc6d0963b5162471788
-        │
-        ├─ S ─→ #109 DUNE / AGENT-FRIENDLY SPEC
-        │          ├─ old PR #111 closed as superseded
-        │          └─ PR #118 head 9e6ff70... awaiting exact-head rerun/landing
-        │
-        └─ S ─→ #117 N-CLASS CONTEXT PACK
-                   branch agent/issue-117-context-closure
+#112 baseline acceptance / optional specialized oracle [LANDED]
+        ├─ S/C ─→ #109 Dune / AF-01..AF-06 [LANDED]
+        └─ S ───→ #117 N-class context pack [IN PROGRESS]
 
-#109 provider landing
-        └─ C ─→ #117 final source refresh and completion claim
+#109 [LANDED]
+        ├─ C ───→ #117 final refresh
+        └─ C ───→ #119 canonical System Specification [READY]
 
-#117 provider landing + exact consumer receipt
-        └─ C ─→ ed3c/skill-concerns#9 admission convergence
+#117 provider landing + consumer receipt
+        └─ C/X ─→ ed3c/skill-concerns#9 admission convergence
+
+#119 [READY]
+        └─ C ───→ #120 stable requirement + Issue completeness
+
+#82 + #98 + #83 + #119
+        └─ C ───→ #120 [BLOCKED]
 ```
 
-Rationale:
+#117 is documentation-only and disjoint from current code/system writers. It may land independently as an N projection; its content cannot satisfy #119/#120.
 
-- #112 removed the obsolete assumption that every Issue must carry a pre-admitted specialized feature.
-- #117 can start against the landed baseline contract, but its final system/closure projection must incorporate the provider-landed #109 result or preserve #109 as pending.
-- `context-closure-engineering` must not be admitted from producer prose alone; #117 supplies the first exact consumer boundary.
+## Active lanes at snapshot
 
-### Current disjoint writer lanes
+| Lane | Writer boundary | PR/head | Verify state | Convergence owner |
+|---|---|---|---|---|
+| #82 | Issue contract/adapter/schedule-facing provider readback | #121 / `35e0feed1c321c96b43d200ee57f3197a4d38fb4` | failed run `33269399728` | #82 |
+| #45 | daemon lease/start admission/runtime tests/system claim row | #122 / `30651b61b8c747c3bd8f684652fb5a59e33a2c1f` | failed run `33269402820` | #45 |
+| #116 | `feature_contract.py` and focused repo-infra oracle tests | #123 / `8e35b65ba9f9be051e9a6fca1527d23acac0cf22` | failed run `33269502401` | #116 |
+| #117 | exactly six files under `docs/design/context-closure/` | no PR at snapshot | implementation in progress | #117 |
 
-| Lane | Candidate writer boundary | Convergence owner | Collision disposition |
-|---|---|---|---|
-| #109 / PR #118 | `AGENTS.md`, `contracts/system-v1.md`, `tests/test_agent_friendly_architecture.py` | #109 | Does not overlap #117's fixed docs-only tree. |
-| #117 | exactly six files under `docs/design/context-closure/` | #117 | Must not modify #109 surfaces. |
-| skill-concerns #9 | `ed3c/skill-concerns` intake/admission/Skill surfaces, not noodles | skill-concerns #9 | Cross-repository consumer receipt edge, not a shared writer. |
+The three failed PRs remain in their exact Issue/PR lanes. Repair means same lane, new exact head, rerun; not a duplicate Issue or inferred PASS.
 
-## Agent/document architecture stream
+## Document and specification stream
 
 ```text
 #72 compact Agent-friendly shortest path [LANDED]
-        │
-        ▼
-#109 full Dune-derived AF rationale and AF-01..AF-06 [AWAITING LAND]
-        │ C
-        ▼
-#83 one canonical procedure/document owner [BLOCKED on #82]
-        │
-        ▼
-#84 replace prose phrase locks with structural behavior controls [BLOCKED on #83]
+  → #109 complete Dune-derived AF requirements [LANDED]
+  → #119 canonical low-change System Specification [READY]
+  → #83 canonical Agent procedure/document owners [BLOCKED on #82]
+  → #84 structural behavior controls replacing phrase locks [BLOCKED on #83]
 ```
 
-Additional edge:
+Writer ordering:
 
-```text
-#82 typed provider dependency/read-only Issue contract
-        └─ C ─→ #83
-```
-
-`#109 → #83` is not currently encoded as an Issue dependency, but Tech Lead treats provider-landed #109 as a practical rebase/write-boundary prerequisite because both touch `AGENTS.md` and `contracts/system-v1.md`. This is recorded as a **candidate completion edge**, not silently imposed provider truth.
+- #119 writes `contracts/system-v1.md`.
+- #83 writes `AGENTS.md`, `README.md`, `contracts/system-v1.md`, and repository Skills.
+- Therefore #83 must rebase after #119 even though its formal marker currently names #82 only. Tech Lead treats `#119 C→#83` as a necessary write/convergence edge unless the #83 boundary is narrowed before implementation.
 
 ## Issue admission and concurrency stream
 
 ```text
 #44 clean/provider-exact control checkout [LANDED]
-        │
-        ▼
-#45 truthful single Noodle daemon lease [READY]
-        │ C
-        ▼
-#46 exact Issue/session/worktree/branch provenance [BLOCKED]
-        ├─ C ─→ #99 reject duplicate lane with exact open PR
-        ├─ C ─→ #78 persist provider writer thread identity
-        └─ C ─→ #66 changed-code → journey → oracle handoff
+  → #45 truthful single daemon lease / I1 [AWAITING_LAND, PR FAILED]
+  → #46 exact Issue/session/worktree/branch provenance / I2 [BLOCKED]
+       ├─→ #99 exact open-PR duplicate-lane refusal / I4
+       ├─→ #78 provider writer-thread identity
+       └─→ #66 changed-code → journey → oracle handoff
 
-#81 isolated Codex user-config surface [LANDED]
-        │
-        ▼
-#82 typed provider dependencies and derived schedulability [READY]
-        ├─ C ─→ #83 canonical Agent procedure owners
-        └─ C ─→ #98 disjoint typed write-boundary admission
+#81 isolated Codex user config [LANDED]
+  → #82 typed dependencies/body digest/schedulability [AWAITING_LAND, PR FAILED]
+       ├─→ #83 canonical procedures
+       └─→ #98 typed disjoint write-boundary admission / I3
 
 #46 + #82
-        └─ C ─→ admission surface shared by #98 / #99
+  → shared admission seam for #98/#99
 
 #45 + #46 + #98 + #99
-        └─ C ─→ #100 concurrency proof lock
+  → #100 N-independent concurrency proof lock
+
+#82 + #98 + #83 + #119
+  → #120 stable requirement and deterministic completeness
 ```
 
-Convergence owners:
+Current convergence owners:
 
-- Issue-contract/provider-body/digest and dependency eligibility: #82;
-- daemon liveness/ownership: #45;
-- worktree/session provenance: #46;
-- path-write exclusion: #98;
+- dependency/provider-body truth: #82;
+- daemon lease/liveness: #45;
+- exact worktree/session provenance: #46;
+- write-boundary exclusion: #98;
 - duplicate/open-PR exclusion: #99;
-- N-independent concurrency admission: #100.
+- full Issue completeness: #120;
+- concurrency proof: #100.
 
 ## Verification and autonomy stream
 
 ```text
 #18 poteto-mode routing [LANDED]
-        │
-        ▼
-#19 verification-skill → physical-oracle contract [LANDED]
-        │
-        ▼
-#20 executable metrics CLI feature-map canary [LANDED]
-        │
-        ├──────────────┐
-        │              │
-        ▼              ▼
-#4 single-Issue      #66 changed-code → journey → oracle
-Golden Path          also needs #46
-[READY]              [BLOCKED]
-        │
-        ▼
-#21 repeated failure → executable organizational rule [BLOCKED]
-        │
-        ▼
-#22 bounded three-Issue autonomous program [BLOCKED]
+  → #19 verification procedure → physical oracle [LANDED]
+  → #20 executable metrics feature canary [LANDED]
+  → #112 mandatory baseline + optional specialized oracle [LANDED]
+       ├─→ #4 single-Issue unattended Golden Path [READY]
+       ├─→ #66 changed-code/feature/journey/oracle compiler [also needs #46]
+       └─→ #116 repo-infra optional oracle [AWAITING_LAND, PR FAILED]
+
+#4
+  → #21 repeated failure → executable organizational rule
+  → with #21 and #46 → #22 bounded three-Issue autonomous program
 ```
 
-#4 is the convergence owner for the first complete no-Human-Verifier Issue-to-reconcile canary. The landed infrastructure proves pieces of the path; it does not replace this end-to-end denominator.
+#4 remains the convergence owner for the first complete no-Human-Verifier Issue→worktree→oracle→verify→merge→close→reconcile canary. Landed components do not close its denominator.
 
-## Feature/oracle refinement
-
-```text
-#112 mandatory baseline + optional specialized oracle [LANDED]
-        │
-        ├─ REVIEW ─→ #116 repo-infra specialized oracle
-        │              current rationale was created under the pre-#112
-        │              every-Issue-needs-feature doctrine
-        │
-        └─ governs all marker-free future docs/infra atoms
-```
-
-#116 is not a prerequisite for #117 or #109. It should proceed only if a recurring infrastructure behavior requires a specialized product operation beyond the mandatory baseline. It must not recreate a generic feature-registry requirement.
-
-## Code-intelligence migration stream
+## Code-intelligence stream
 
 ```text
-#4 Golden Path canary [C]
-        ├─→ #5 SQLite exact-subject evidence atom
-        ├─→ #6 Tree-sitter structural byte-range atom
-        ├─→ #7 GrepAI candidate-only retrieval atom
-        ├─→ #8 Serena read-only navigation validation
-        └─→ #10 fresh SCIP validation
+#4
+  ├─→ #5 SQLite exact-subject evidence atom
+  ├─→ #6 Tree-sitter structural byte-range atom
+  ├─→ #7 GrepAI candidate-only retrieval atom
+  ├─→ #8 Serena read-only navigation validation
+  └─→ #10 fresh SCIP validation
 
 #5 + #6 + #7
-        └─ C ─→ #9 minimal code-intelligence integration canary
+  → #9 minimal integration canary
 
 #8
-        └─ C ─→ #12 bounded Serena edit lifecycle
+  → #12 bounded Serena edit lifecycle
 
-#9 with measured retrieval bottleneck
-        └─ C ─→ #11 LanceDB A/B admission experiment
+#9 plus measured retrieval bottleneck
+  → #11 LanceDB A/B experiment
 
 #5 + #6 + #7 + #9
-        └─ C ─→ #13 code-intelligence v1 convergence
-
-#8 / #10 / #11 / #12
-        └─ optional evidence inputs to #13 only when their own receipts justify inclusion
+  → #13 code-intelligence v1 convergence
 ```
 
-No edge permits the historical GrepAI→SCIP→SQLite→Tree-sitter→Serena architecture diagram to become a production claim. Each atom proves only its own boundary.
+#8/#10/#11/#12 are conditional inputs to #13 only when their own receipts justify inclusion. No historical architecture diagram proves a causal chain.
 
 ## Cross-repository stream
 
 ```text
-#3 GitHub protection / landing authority [LANDED]
+#3 GitHub exact-head authority [LANDED]
 #4 same-repository unattended canary [OPEN]
-        │
-        └─ C ─→ #14 target-local cross-repository execution contract
+  → #14 target-local cross-repository contract
 ```
 
-Target-local authority is a hard design boundary: every target repository must own its Noodle/worktree lifecycle, oracle, protection, credential scope, and live canary.
+The target repository must own its own worktree, oracle, protection/credential boundary, landing, and live canary.
 
-## Runtime/upstream stream
+## Upstream/runtime and order-promotion stream
 
 ```text
-poteto/noodle#7 scheduler decision-state empty-result memo
-        ┐
+poteto/noodle#7 decision-state empty-schedule memo
 poteto/noodle#8 selected-skill prompt ownership
-        ┴─ X/C ─→ immutable upstream release
-                         │
-                         ▼
-                    noodles #85 runtime admission
+  → X/C immutable upstream release
+  → #85 exact runtime admission
 ```
-
-#85 remains blocked until both upstream changes are present in an immutable release with source/tag/asset readback. Local reimplementation would duplicate Noodle ownership.
-
-## Order-promotion bypass stream
 
 ```text
-#61 architecture-warning separation [LANDED]
-        │
-        ▼
-#65 prove non-bypassable upstream orders-promotion seam [marker BLOCKED]
+#61 architecture warning separation [LANDED]
+  → #65 bounded discovery of non-bypassable upstream order-promotion seam
 ```
 
-The stated predecessor #61 is landed. #65 therefore requires blocker re-evaluation. It may still remain blocked if the pinned upstream runtime exposes no supported seam, but that blocker must be explicit and current rather than inherited dependency prose.
+#65's named predecessor is landed, but its marker remains blocked. Its current blocker must be re-read as an upstream-seam availability question rather than stale dependency waiting.
 
 ## Runtime repair loop
-
-This is an allowed operational cycle, not a delivery DAG cycle:
 
 ```text
 exact PR head
   → trusted check failure
-  → deterministic repair receipt
-  → re-enter same Noodle worktree
+  → exact repair receipt
+  → same Noodle worktree
   → new exact head
   → trusted verification
-  ├─ pass → provider landing
-  └─ fail → bounded next repair or explicit escalation
+      ├─ pass → provider landing
+      └─ fail → bounded retry or explicit escalation
 ```
 
-Current landed atoms supporting the loop include #50, #54, #57, and #60. The loop does not prove that every failure is repairable.
+Current examples at snapshot: PRs #121, #122, and #123 are failed exact-head lanes. This is an operational cycle, not a delivery-DAG cycle.
 
-## Open-Issue denominator by stream
+## Full open-Issue leaf denominator
 
-Each open leaf appears once as a primary stream owner here. Cross-stream prerequisite mentions above do not create duplicate ownership.
+Every open Issue at the snapshot appears exactly once as a primary stream owner.
 
 | Stream | Open Issues |
 |---|---|
 | autonomy / learning | #4, #21, #22 |
 | code intelligence | #5, #6, #7, #8, #9, #10, #11, #12, #13 |
 | cross repository | #14 |
-| runtime/concurrency/session | #45, #46, #78, #98, #99, #100 |
+| runtime / concurrency / session | #45, #46, #78, #98, #99, #100 |
 | order promotion / upstream | #65, #85 |
-| feature-impact compilation | #66 |
-| Issue/document contracts | #82, #83, #84 |
-| current specification/context convergence | #109, #117 |
-| optional infrastructure oracle review | #116 |
+| feature-impact / optional oracle | #66, #116 |
+| Issue / Agent document contracts | #82, #83, #84, #120 |
+| context and specification convergence | #117, #119 |
 
-Count: `28`, matching `SRC-OPEN-ISSUES` at the snapshot.
+Count: `29`, matching the provider denominator.
 
-## Phase exit for this implementation stage
+## Stage exit for this implementation phase
 
-The current stage is complete only when:
+This phase is complete only when:
 
-1. #109 receives an exact-head trusted receipt and provider landing, or remains explicitly pending in the final #117 snapshot;
-2. #117 contains exactly the six bounded N-class documents and accounts for the full source/open-Issue/open-PR denominators;
-3. every stale or contradictory edge is in `DRIFT.md` with a next owner;
-4. one provider PR for #117 passes the mandatory baseline and lands without treating this pack as evidence;
-5. skill-concerns #9 remains a separate next-stage admission unless its consumer receipt and producer controls are both available.
+1. the six-file #117 projection is refreshed against landed #109 and the full 29-Issue/3-PR denominator;
+2. #117 changes no non-N surface;
+3. the Issue is moved through exact-head baseline acceptance, provider merge/closure, and readback without using these docs as evidence;
+4. skill-concerns #9 remains a separate next-stage admission until its producer controls and #117 consumer receipt both exist;
+5. active failed lanes #121/#122/#123 remain explicitly failed or later traced to their exact replacement heads, never silently counted as landed.
