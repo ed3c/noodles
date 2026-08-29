@@ -148,6 +148,81 @@ class ProtectionContractTests(unittest.TestCase):
         with self.assertRaisesRegex(noodles.GateError, "workflow run readback failed"):
             github_protection.workflow_run_readback(fake_gh_api, noodles.GateError, "ed3c/noodles", 9)
 
+    def test_failed_required_workflow_run_readback_selects_latest_failed_run(self) -> None:
+        head = "a" * 40
+        payloads = {
+            f"repos/ed3c/noodles/actions/runs?head_sha={head}&per_page=100": {
+                "workflow_runs": [
+                    {
+                        "id": 7,
+                        "name": "verify",
+                        "path": ".github/workflows/verify.yml",
+                        "event": "pull_request_target",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "head_sha": head,
+                        "workflow_id": 11,
+                    },
+                    {
+                        "id": 9,
+                        "name": "verify",
+                        "path": ".github/workflows/verify.yml",
+                        "event": "pull_request_target",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "head_sha": head,
+                        "workflow_id": 11,
+                    },
+                ]
+            },
+            "repos/ed3c/noodles/actions/runs/9": {
+                "id": 9,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "event": "pull_request_target",
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": head,
+                "workflow_id": 11,
+            },
+            "repos/ed3c/noodles": {
+                "full_name": "ed3c/noodles",
+                "default_branch": "main",
+            },
+            "repos/ed3c/noodles/actions/workflows/verify.yml": {
+                "id": 11,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "state": "active",
+            },
+        }
+
+        source = github_protection.failed_required_workflow_run_readback(
+            lambda endpoint: payloads[endpoint],
+            noodles.GateError,
+            "ed3c/noodles",
+            head,
+            name="verify",
+            path=".github/workflows/verify.yml",
+            event="pull_request_target",
+            default_branch="main",
+        )
+
+        self.assertEqual(source["run"]["id"], 9)
+        self.assertEqual(source["run"]["conclusion"], "failure")
+
+    def test_failed_workflow_job_readback_rejects_missing_failure(self) -> None:
+        def fake_gh_api(_endpoint: str) -> dict:
+            return {
+                "jobs": [
+                    {"id": 1, "name": "candidate-self-tests", "status": "completed", "conclusion": "success"},
+                    {"id": 2, "name": "verify", "status": "completed", "conclusion": "skipped"},
+                ]
+            }
+
+        with self.assertRaisesRegex(noodles.GateError, "no completed failed jobs"):
+            github_protection.failed_workflow_job_readback(fake_gh_api, noodles.GateError, "ed3c/noodles", 7)
+
     def test_pull_request_target_source_accepts_candidate_head_branch(self) -> None:
         payloads = {
             "repos/ed3c/noodles/actions/runs/33234782723": {

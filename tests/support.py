@@ -78,18 +78,49 @@ def write_handoff_noodle_stub(path: Path, version: str, blocking: bool = True) -
         "#!/usr/bin/env python3\n"
         "import json\n"
         "import pathlib\n"
+        "import subprocess\n"
         "import sys\n"
         "args = sys.argv[1:]\n"
         f"if args == ['--version']:\n    print({version!r})\n"
-        "elif len(args) == 9 and args[0] == '--project-dir' and args[2:5] == ['event', 'emit', 'stage_message']:\n"
+        "elif len(args) >= 5 and args[0] == '--project-dir' and args[2:4] == ['event', 'emit']:\n"
         "    root = pathlib.Path(args[1])\n"
-        "    session = args[6]\n"
-        "    payload = json.loads(args[8])\n"
-        f"    payload['blocking'] = {blocking!r}\n"
-        "    event = {'type': 'stage_message', 'payload': payload, 'timestamp': '2026-08-29T00:00:00Z', 'session_id': session}\n"
+        "    event_type = args[4]\n"
+        "    session = ''\n"
+        "    payload = {}\n"
+        "    index = 5\n"
+        "    while index < len(args):\n"
+        "        if args[index] == '--session':\n"
+        "            session = args[index + 1]\n"
+        "            index += 2\n"
+        "            continue\n"
+        "        if args[index] == '--payload':\n"
+        "            payload = json.loads(args[index + 1])\n"
+        "            index += 2\n"
+        "            continue\n"
+        "        raise SystemExit(f'unexpected args: {args}')\n"
+        "    if event_type == 'stage_message':\n"
+        f"        payload['blocking'] = {blocking!r}\n"
+        "    event = {'type': event_type, 'payload': payload, 'timestamp': '2026-08-29T00:00:00Z', 'session_id': session}\n"
         "    target = root / '.noodle' / 'sessions' / session / 'events.ndjson'\n"
         "    with target.open('a', encoding='utf-8') as handle:\n"
         "        handle.write(json.dumps(event) + '\\n')\n"
+        "elif len(args) >= 6 and args[0] == '--project-dir' and args[2:4] == ['worktree', 'exec']:\n"
+        "    root = pathlib.Path(args[1])\n"
+        "    worktree_name = args[4]\n"
+        "    command = args[5:]\n"
+        "    worktree_path = None\n"
+        "    sessions = root / '.noodle' / 'sessions'\n"
+        "    for spawn in sessions.glob('*/spawn.json'):\n"
+        "        payload = json.loads(spawn.read_text())\n"
+        "        candidate_path = pathlib.Path(str(payload.get('worktree_path') or '')).expanduser()\n"
+        "        candidate_name = str(payload.get('worktree_name') or candidate_path.name)\n"
+        "        if candidate_name == worktree_name:\n"
+        "            worktree_path = candidate_path\n"
+        "            break\n"
+        "    if worktree_path is None:\n"
+        "        raise SystemExit(f'unknown worktree: {worktree_name}')\n"
+        "    completed = subprocess.run(command, cwd=str(worktree_path), text=True, check=False)\n"
+        "    raise SystemExit(completed.returncode)\n"
         "else:\n"
         "    raise SystemExit(f'unexpected args: {args}')\n",
         encoding="utf-8",
@@ -102,6 +133,7 @@ def handoff_fixture(
     subject: str = "ed3c/noodles#33",
     *,
     blocking: bool = True,
+    worktree_name: str = "ed3c-noodles-33-0-execute",
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
     temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
     root = Path(temp.name) / "repo"
@@ -114,10 +146,12 @@ def handoff_fixture(
     lock["runtime"]["command"] = str(binary)
     lock["runtime"]["platforms"]["darwin_arm64"]["binary_sha256"] = runtime_contract.sha256_file(binary)
     lock_path.write_text(json.dumps(lock))
+    cmd(["git", "add", "policy/runtime.lock.json"], root)
+    cmd(["git", "commit", "-q", "-m", "lock handoff runtime"], root)
     session_id = "ed3c-noodles-33-0-execute-fixture"
     session = root / ".noodle" / "sessions" / session_id
     session.mkdir(parents=True)
-    (session / "spawn.json").write_text(json.dumps({"worktree_path": str(root)}))
+    (session / "spawn.json").write_text(json.dumps({"worktree_path": str(root), "worktree_name": worktree_name}))
     (session / "events.ndjson").write_text(json.dumps({
         "type": "action",
         "payload": {"message": f"[order:{subject}] fixture"},

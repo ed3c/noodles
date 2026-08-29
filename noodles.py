@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
-
 from __future__ import annotations
-
 import argparse
 import hashlib
 import github_protection
@@ -21,6 +19,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
     emit_blocking_handoff,
     provider_check as runtime_provider_check,
@@ -37,7 +36,6 @@ from skill_contract import (
     validate_execute_task,
     validate_noodle_worktree_ignore,
 )
-
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
 ALLOWED_ISSUE_STATES = {"ready", "in_progress", "awaiting_land", "landed", "blocked"}
@@ -62,17 +60,14 @@ class GateError(RuntimeError):
 class Subject:
     repo: str
     number: int
-
     @property
     def value(self) -> str:
         return f"{self.repo}#{self.number}"
-
 def repo_root(path: str | Path | None = None) -> Path:
     candidate = Path(path or Path(__file__).resolve().parent).resolve()
     if candidate.is_file():
         candidate = candidate.parent
     return candidate
-
 
 def run(
     argv: Sequence[str],
@@ -852,6 +847,10 @@ def start_unattended(root: Path, control_url: str, interval: float) -> int:
     try:
         while process.poll() is None:
             try:
+                repair_pending_reviews(root, control_url)
+            except GateError as exc:
+                print(f"repair: {exc}", file=sys.stderr)
+            try:
                 reconcile_once(root, control_url)
             except GateError as exc:
                 print(f"reconcile: {exc}", file=sys.stderr)
@@ -900,6 +899,8 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     reconcile.add_argument("--watch", action="store_true")
     reconcile.add_argument("--interval", type=float, default=5.0)
+    repair = sub.add_parser("repair")
+    repair.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     start = sub.add_parser("start")
     start.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     start.add_argument("--interval", type=float, default=5.0)
@@ -980,6 +981,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     time.sleep(args.interval)
             else:
                 print(json.dumps({"reconciled": reconcile_once(root, args.control_url)}))
+            return 0
+        if args.command == "repair":
+            print(json.dumps({"repairable": repair_pending_reviews(root, args.control_url)}, indent=2, sort_keys=True))
             return 0
         if args.command == "start":
             return start_unattended(root, args.control_url, args.interval)

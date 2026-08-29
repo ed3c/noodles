@@ -11,7 +11,7 @@ import tempfile
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -366,6 +366,10 @@ def _session_events(path: Path, *, error_cls: type[Exception]) -> list[dict[str,
     return events
 
 
+def read_session_events(path: Path, *, error_cls: type[Exception]) -> list[dict[str, Any]]:
+    return _session_events(path, error_cls=error_cls)
+
+
 def validate_handoff_session(
     root: Path,
     subject: str,
@@ -393,6 +397,110 @@ def validate_handoff_session(
     ):
         raise error_cls(f"Noodle session {session_id} is not tied to exact order {subject}")
     return {"project": project, "events_path": events_path, "events": events}
+
+
+def validate_pending_review_session(
+    root: Path,
+    subject: str,
+    review: Mapping[str, Any],
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    session_id = str(review.get("session_id") or "").strip()
+    if not session_id or Path(session_id).name != session_id:
+        raise error_cls("pending review session_id is missing or unsafe")
+    worktree_name = str(review.get("worktree_name") or "").strip()
+    if not worktree_name:
+        raise error_cls("pending review worktree_name is missing")
+    worktree_raw = str(review.get("worktree_path") or "").strip()
+    if not worktree_raw:
+        raise error_cls("pending review worktree_path is missing")
+    worktree_path = Path(worktree_raw).expanduser().resolve()
+    if not worktree_path.is_dir():
+        raise error_cls(f"pending review worktree is missing: {worktree_path}")
+    session = project / ".noodle" / "sessions" / session_id
+    if not session.is_dir():
+        raise error_cls(f"pending review session does not exist: {session_id}")
+    spawn = load_json(session / "spawn.json", error_cls=error_cls)
+    spawned_path = Path(str(spawn.get("worktree_path") or "")).expanduser().resolve()
+    if spawned_path != worktree_path:
+        raise error_cls(f"pending review worktree {worktree_path} != session worktree {spawned_path}")
+    spawned_name = str(spawn.get("worktree_name") or "").strip()
+    if spawned_name and spawned_name != worktree_name:
+        raise error_cls(f"pending review worktree name {worktree_name} != session worktree name {spawned_name}")
+    events_path = session / "events.ndjson"
+    events = _session_events(events_path, error_cls=error_cls)
+    order_marker = f"[order:{subject}]"
+    if not any(
+        isinstance(item.get("payload"), dict) and order_marker in str(item["payload"].get("message") or "")
+        for item in events
+    ):
+        raise error_cls(f"Noodle session {session_id} is not tied to exact order {subject}")
+    return {
+        "project": project,
+        "session_id": session_id,
+        "worktree_name": worktree_name,
+        "worktree_path": worktree_path,
+        "events_path": events_path,
+        "events": events,
+    }
+
+
+def emit_session_event(
+    root: Path,
+    session_id: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+    *,
+    error_cls: type[Exception],
+) -> None:
+    session_id = session_id.strip()
+    event_type = event_type.strip()
+    if not session_id or Path(session_id).name != session_id:
+        raise error_cls("current NOODLE_SESSION_ID is missing or unsafe")
+    if not event_type:
+        raise error_cls("session event type is required")
+    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
+    run(
+        [
+            str(binary),
+            "--project-dir",
+            str(project),
+            "event",
+            "emit",
+            event_type,
+            "--session",
+            session_id,
+            "--payload",
+            json.dumps(dict(payload), separators=(",", ":")),
+        ],
+        cwd=root,
+        error_cls=error_cls,
+    )
+
+
+def worktree_exec(
+    root: Path,
+    worktree_name: str,
+    command: Sequence[str],
+    *,
+    error_cls: type[Exception],
+) -> str:
+    worktree_name = worktree_name.strip()
+    if not worktree_name:
+        raise error_cls("pending review worktree_name is missing")
+    if not command:
+        raise error_cls("worktree exec requires a command")
+    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
+    result = run(
+        [str(binary), "--project-dir", str(project), "worktree", "exec", worktree_name, *command],
+        cwd=project,
+        error_cls=error_cls,
+    )
+    return result.stdout.strip()
 
 
 def emit_blocking_handoff(
