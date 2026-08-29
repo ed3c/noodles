@@ -74,6 +74,24 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(result["ok"], result["errors"])
         self.assertTrue(result["errors"] == [] and all(w.startswith("architecture warning ") for w in result["warnings"]), result)
 
+    def test_untagged_comment_variants_fail_with_distinct_diagnostics(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        shell_path = root / "tests/run.sh"
+        shell_lines = shell_path.read_text().splitlines()
+        shell_lines.insert(2, "# reminder: keep this fast")
+        shell_path.write_text("\n".join(shell_lines) + "\n")
+        phrase = 'SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."'
+        py_path = root / "skill_contract.py"
+        py_mutated = py_path.read_text().replace(phrase, f"# {phrase}", 1)
+        py_path.write_text(py_mutated)
+        lineno = py_mutated.splitlines().index(f"# {phrase}") + 1
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("tests/run.sh:3" in item for item in result["errors"]))
+        self.assertTrue(any(f"skill_contract.py:{lineno}" in item for item in result["errors"]))
+
     def test_auto_mode_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)

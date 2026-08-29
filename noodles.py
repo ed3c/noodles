@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+import tokenize
 import tomllib
 import urllib.error
 import urllib.request
@@ -64,6 +65,7 @@ N_CLASS_EVIDENCE_RE = re.compile(
 )
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
+ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
 @dataclass(frozen=True)
@@ -334,6 +336,27 @@ def validate_migration_ledger(root: Path) -> list[str]:
         if disposition == "MIGRATE" and not evidence:
             errors.append(f"{identifier}: MIGRATE requires physical evidence")
     return errors
+def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
+    errors: list[str] = []
+    for python_path in sorted(path for path in paths if path.endswith(".py")):
+        try:
+            with (root / python_path).open("rb") as handle:
+                for token in tokenize.tokenize(handle.readline):
+                    if token.type == tokenize.COMMENT and not (token.start[0] == 1 and token.string.startswith("#!")) and not token.string.startswith(ALLOWED_COMMENT_TAGS):
+                        errors.append(f"untagged comment {python_path}:{token.start[0]}: {token.string}")
+        except (OSError, SyntaxError, IndentationError, UnicodeDecodeError, tokenize.TokenizeError) as exc:
+            errors.append(f"comment scan failed for {python_path}: {exc}")
+    for other_path in sorted(path for path in paths if path.endswith(".sh") or path.endswith(".toml")):
+        try:
+            lines = (root / other_path).read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            errors.append(f"comment scan failed for {other_path}: {exc}")
+            continue
+        for lineno, line in enumerate(lines, start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") and not (lineno == 1 and stripped.startswith("#!")) and not stripped.startswith(ALLOWED_COMMENT_TAGS):
+                errors.append(f"untagged comment {other_path}:{lineno}: {stripped}")
+    return errors
 
 
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
@@ -398,6 +421,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         result = run(["bash", "-n", str(root / shell_path)], check=False)
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
+    errors.extend(validate_comment_tags(root, paths))
     agents = (root / "AGENTS.md").read_text(encoding="utf-8", errors="ignore") if (root / "AGENTS.md").exists() else ""
     for phrase in policy["required_agent_phrases"]:
         if phrase not in agents:
