@@ -222,6 +222,46 @@ def git(root: Path, *args: str, error_cls: type[Exception], check: bool = True) 
     return run(["git", *args], cwd=root, check=check, error_cls=error_cls).stdout.strip()
 
 
+def gh_repo_from_git(root: Path, *, error_cls: type[Exception]) -> str:
+    url = git(root, "remote", "get-url", "origin", error_cls=error_cls)
+    match = re.search(r"github\.com[/:]([^/]+/[^/.]+)(?:\.git)?$", url)
+    if not match:
+        raise error_cls(f"cannot derive GitHub repository from origin: {url}")
+    return match.group(1)
+
+
+def control_checkout_admission(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+    branch = git(root, "branch", "--show-current", error_cls=error_cls)
+    if branch != default_branch:
+        observed = branch or "<detached>"
+        raise error_cls(f"control checkout branch {observed} != default branch {default_branch}")
+    status_output = run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
+        cwd=root,
+        error_cls=error_cls,
+    ).stdout.splitlines()
+    ignored = [line for line in status_output if line.startswith("!! ")]
+    porcelain = [line for line in status_output if not line.startswith("!! ")]
+    if porcelain:
+        raise error_cls("control checkout has tracked or untracked non-ignored changes: " + "; ".join(porcelain[:5]))
+    remote_ref = f"refs/remotes/origin/{default_branch}"
+    git(root, "fetch", "--quiet", "--no-tags", "origin", f"refs/heads/{default_branch}:{remote_ref}", error_cls=error_cls)
+    local_head = git(root, "rev-parse", "HEAD", error_cls=error_cls)
+    provider_head = git(root, "rev-parse", remote_ref, error_cls=error_cls)
+    if local_head != provider_head:
+        ahead_count, behind_count = (int(value) for value in git(root, "rev-list", "--left-right", "--count", f"HEAD...{remote_ref}", error_cls=error_cls).split())
+        relation = "diverged" if ahead_count and behind_count else "ahead" if ahead_count else "behind" if behind_count else "stale"
+        raise error_cls(f"control checkout is provider-stale ({relation}): branch {branch} local {local_head} provider {provider_head}")
+    return {
+        "branch": branch,
+        "local_head": local_head,
+        "provider_head": provider_head,
+        "porcelain": porcelain,
+        "ignored": ignored,
+        "clean": True,
+    }
+
+
 def load_json(path: Path, *, error_cls: type[Exception]) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
