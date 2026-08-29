@@ -591,6 +591,16 @@ class ExecuteHandoffTests(unittest.TestCase):
 
 
 class ReconcileTests(unittest.TestCase):
+    def test_control_checkout_admission_fails_before_snapshot_or_merge(self) -> None:
+        with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
+             mock.patch.object(noodles, "http_json") as http_json, \
+             mock.patch.object(noodles, "git") as git_cmd:
+            with self.assertRaisesRegex(noodles.GateError, "dirty"):
+                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+        admit.assert_called_once_with(CANDIDATE_ROOT)
+        http_json.assert_not_called()
+        git_cmd.assert_not_called()
+
     def test_provider_landed_sends_exact_merge_control_and_accepts_status_ack(self) -> None:
         calls: list[tuple[str, object]] = []
 
@@ -600,21 +610,40 @@ class ReconcileTests(unittest.TestCase):
                 return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
             return {"id": payload["id"], "action": "merge", "status": "ok"}
 
-        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
-             mock.patch.object(noodles, "git", return_value=""):
+             mock.patch.object(noodles, "git", return_value="") as git_cmd:
             completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
 
         self.assertEqual(completed, ["ed3c/noodles#33"])
         self.assertEqual(calls[1][1]["action"], "merge")
         self.assertEqual(calls[1][1]["order_id"], "ed3c/noodles#33")
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "main")
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "merge", "--ff-only", "origin/main")
+
+    def test_reconcile_uses_admitted_default_branch_for_fetch_and_merge(self) -> None:
+        def fake_http(url: str, *, payload: object | None = None) -> dict:
+            if payload is None:
+                return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
+            return {"id": payload["id"], "action": "merge", "status": "ok"}
+
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "trunk"}), \
+             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "git", return_value="") as git_cmd:
+            noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "fetch", "--quiet", "origin", "trunk")
+        git_cmd.assert_any_call(CANDIDATE_ROOT, "merge", "--ff-only", "origin/trunk")
 
     def test_machine_merge_rejects_control_ack_drift(self) -> None:
         responses = [
             {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]},
             {"id": "wrong", "action": "merge", "status": "ok"},
         ]
-        with mock.patch.object(noodles, "http_json", side_effect=responses), \
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "http_json", side_effect=responses), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
              mock.patch.object(noodles, "git", return_value=""):
             with self.assertRaisesRegex(noodles.GateError, "rejected machine reconciliation"):
@@ -627,7 +656,8 @@ class ReconcileTests(unittest.TestCase):
             calls.append((url, payload))
             return {"pending_reviews": [{"order_id": "ed3c/noodles#33"}]}
 
-        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", side_effect=noodles.GateError("not landed")):
             completed = noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
 
@@ -636,6 +666,20 @@ class ReconcileTests(unittest.TestCase):
 
 
 class StartUnattendedTests(unittest.TestCase):
+    def test_control_checkout_admission_fails_before_runtime_provider_sync_or_spawn(self) -> None:
+        with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
+             mock.patch.object(noodles, "verify_repository") as verify, \
+             mock.patch.object(noodles, "runtime_check") as runtime_check, \
+             mock.patch.object(noodles, "provider_sync") as provider_sync, \
+             mock.patch.object(noodles.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(noodles.GateError, "dirty"):
+                noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+        admit.assert_called_once_with(CANDIDATE_ROOT)
+        verify.assert_not_called()
+        runtime_check.assert_not_called()
+        provider_sync.assert_not_called()
+        popen.assert_not_called()
+
     def test_wrapper_polls_repair_reconcile_and_sleeps_before_clean_exit(self) -> None:
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, 0, 0]
@@ -645,7 +689,8 @@ class StartUnattendedTests(unittest.TestCase):
             "required_check": "verify",
         }
 
-        with mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
              mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
              mock.patch.object(noodles, "provider_sync"), \
              mock.patch.object(noodles, "skill_discovery_check"), \
