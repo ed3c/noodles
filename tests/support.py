@@ -22,25 +22,72 @@ FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
 ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
 
 
-def code_surface_digest(root: Path) -> str:
-    return hashlib.sha256((root / FEATURE.code_surface).read_bytes()).hexdigest()
+def code_surface_digest(root: Path, feature: feature_contract.FeatureContract = FEATURE) -> str:
+    return hashlib.sha256((root / feature.code_surface).read_bytes()).hexdigest()
 
 
-def write_feature_evidence(root: Path, head: str, **overrides: object) -> Path:
+def write_feature_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract = FEATURE, **overrides: object
+) -> Path:
     """Write an evidence packet shaped exactly like the verifier's own output, then apply planted drift."""
     evidence: dict[str, object] = {
-        "feature_id": FEATURE.feature_id,
+        "feature_id": feature.feature_id,
         "head": head,
-        "code_surface": FEATURE.code_surface,
-        "code_surface_sha256": code_surface_digest(root),
-        "operation": list(FEATURE.operation),
-        "oracle": FEATURE.oracle,
+        "code_surface": feature.code_surface,
+        "code_surface_sha256": code_surface_digest(root, feature),
+        "operation": list(feature.operation),
+        "oracle": feature.oracle,
         "observed": {"returncode": 0, "ok": True, "errors": []},
     }
     evidence.update(overrides)
     for field in [key for key, value in overrides.items() if value is None]:
         evidence.pop(field, None)
     path = root / feature_contract.EVIDENCE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    return path
+
+
+def acceptance_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract | None = None, **overrides: object
+) -> dict[str, object]:
+    specialized: dict[str, object] | None = None
+    if feature is not None:
+        specialized = {
+            "feature_id": feature.feature_id,
+            "head": head,
+            "code_surface": feature.code_surface,
+            "code_surface_sha256": code_surface_digest(root, feature),
+            "operation": list(feature.operation),
+            "oracle": feature.oracle,
+            "observed": {"returncode": 0, "ok": True, "errors": []},
+        }
+    evidence: dict[str, object] = {
+        "schema_version": 1,
+        "head": head,
+        "tree": cmd(["git", "rev-parse", "HEAD^{tree}"], root),
+        "baseline": {
+            "contract_id": feature_contract.BASELINE_CONTRACT_ID,
+            "operations": [
+                list(feature_contract.BASELINE_TEST_OPERATION),
+                list(feature_contract.BASELINE_VERIFY_OPERATION),
+            ],
+            "observed": {
+                "tests": {"returncode": 0},
+                "verify": {"returncode": 0, "ok": True, "errors": []},
+            },
+        },
+        "specialized": specialized,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def write_acceptance_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract | None = None, **overrides: object
+) -> Path:
+    evidence = acceptance_evidence(root, head, feature, **overrides)
+    path = root / feature_contract.ACCEPTANCE_EVIDENCE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence), encoding="utf-8")
     return path

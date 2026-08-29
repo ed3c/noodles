@@ -9,11 +9,12 @@ from unittest import mock
 import noodles
 from tests.support import (
     CANDIDATE_ROOT,
+    FEATURE,
     ISSUE_FEATURE_MARKER,
     cmd,
     control_checkout_fixture,
     handoff_fixture,
-    write_feature_evidence,
+    write_acceptance_evidence,
 )
 
 
@@ -84,7 +85,7 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
-        write_feature_evidence(self.root, self.head)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         self.issue = mock.patch.object(
             noodles,
             "issue_read",
@@ -137,7 +138,7 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT, blocking=False)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
-        write_feature_evidence(self.root, self.head)
+        write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_set_state"):
             with self.assertRaisesRegex(noodles.GateError, "blocking"):

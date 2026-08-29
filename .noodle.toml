@@ -25,7 +25,7 @@ paths = [
 
 [agents.codex]
 path = ".agents/bin"
-args = ["--sandbox", "workspace-write", "-c", "approval_policy=\"never\""]
+args = ["--ignore-user-config", "--sandbox", "workspace-write", "-c", "approval_policy=\"never\""]
 
 [adapters.backlog]
 skill = "schedule"

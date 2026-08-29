@@ -29,6 +29,12 @@ This file is the single system-level decision and claim-boundary record for v1; 
 
 Only observed invariants with an executable/readback boundary may be listed as L or R claims. An architecture decision may be recorded before its mechanism exists only when it is explicitly `HOLD` or N-class and states the physical admission criteria. Mutable Issue, PR, runtime, and provider receipts remain with their owning surfaces instead of being copied here.
 
+## Enforcement hierarchy
+
+Enforcement descends from repository shape, to static/CI gates, to mechanical diagnostics, to soft Agent guidance. Put an invariant at the strongest available layer: the shortest local path should preserve architecture by default; invalid structural states should fail in executable gates; known invalid patterns should name the supported path; rules and Skills explain choices but grant no authority.
+
+Issue structure and completion evidence therefore have separate seams. Structural parsing owns schedulability without consulting an oracle registry. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle can only add evidence at completion, never replace the baseline. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
+
 ## Agent-friendly architecture
 
 Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow a requested implementation even when the wider system invariant is not visible. Noodles does not treat those tendencies as failures to repair with more prose. It arranges ownership, paths, and executable gates so the least surprising local action is also the system-correct action.
@@ -42,7 +48,7 @@ This adapts Dune's agent-friendly design principles as noodles system laws, not 
 | AF-03 | Every durable value has one obvious owner and one admitted writer or transition surface. Copies are read-only projections, never competing truth. | The owner map below is the decision record. Mechanical duplicate-ownership coverage is explicitly incomplete below. |
 | AF-04 | Repository mutation occurs only in an admitted isolated worktree owned by Noodle; the shared control checkout is a read/reconcile surface, not an Agent edit surface. | Noodle worktree/order/session readback and the existing L-03 containment controls. |
 | AF-05 | Bootstrap and recovery exceptions are exact, narrow, bounded atoms with receipts; they pass the nearest executable gate and provider admission when authority changes. | Exact Issue subject, declared boundary, L controls, and R readback; an exception never becomes a second normal path. |
-| AF-06 | The locally obvious completion path reaches the nearest required physical oracle before any completion or authority claim. | L-07 feature operation/oracle evidence followed by the existing exact-head R gates. |
+| AF-06 | The locally obvious completion path reaches the nearest required physical oracle before any completion or authority claim. | L-07 mandatory baseline evidence, any Issue-declared specialized operation/oracle evidence, and the existing exact-head R gates. |
 
 ### Durable owner and writer map
 
@@ -53,7 +59,7 @@ This adapts Dune's agent-friendly design principles as noodles system laws, not 
 | Exact Issue goal, target, dependencies, and lifecycle state | GitHub Issue | Configured GitHub backlog adapter; only the trusted lander performs post-merge closure | Exact provider Issue body/state |
 | Scheduling, orders, process isolation, and worktrees | Noodle | Noodle control/runtime APIs | Exact order, stage, session, and worktree state |
 | Engineering playbook selection and route evidence | pstack | `poteto-mode` through the admitted execute Skill/provider path | Route packet remains P-class and cannot grant correctness or provider authority |
-| Feature operation and oracle contract | noodles | `feature_contract.py` and the nearest executable contract/test named by the Issue | Executed operation, observed state, artifact digest, exact candidate head |
+| Completion acceptance and optional specialized feature contract | noodles | The built-in baseline and optional Issue-declared adapter in `feature_contract.py` | Executed baseline, exact candidate head/tree, and specialized operation/state/artifact readback when declared |
 | Candidate repository source | Git in the Noodle-owned isolated worktree | The repository-mutating Agent inside that admitted worktree | Git status/tree/head plus local gate residue checks |
 | Default-branch source, merge, and Issue closure | GitHub | Trusted verify/land workflows with an expected head SHA | Verify receipt, PR/head/tree, merge parent, default-branch head, closure state |
 | Post-provider runtime reconciliation | noodles | `./noodles reconcile`, which drives the Noodle control API and configured backlog adapter after provider readback | Provider-landed ancestry, command acknowledgement, released order |
@@ -66,14 +72,13 @@ This adapts Dune's agent-friendly design principles as noodles system laws, not 
 - **Exceptions.** Bootstrap or recovery work names one exact subject, trigger, write boundary, expiry/completion condition, receipt, and unsupported case. It uses the same executable/provider admission as normal work and cannot establish a new normal route by precedent.
 - **Subtraction.** Before adding a registry, router, framework, manager, or document layer, demonstrate a physical failure that the nearest existing contract cannot close. Prefer deleting or strengthening an existing seam; another abstraction is admitted only when subtraction cannot preserve the required behavior.
 - **`poteto-mode`.** pstack selects engineering playbooks probabilistically through `poteto-mode`. It may improve investigation, implementation, review, or cleanup choices, but it owns neither correctness nor GitHub authority and cannot bypass the nearest oracle.
-- **Verification architecture.** The architecture is agent-friendly only when the easiest completion path necessarily executes the exact feature operation, checks observed state at the nearest oracle, binds evidence to the candidate head, and then reaches the provider gate. A locally convenient “done” that stops at prose, tests unrelated to the Issue, or model consensus violates AF-06.
+- **Verification architecture.** The architecture is agent-friendly only when the easiest completion path necessarily executes the mandatory repository baseline and any Issue-declared specialized operation, checks observed state at the nearest applicable oracle, binds evidence to the candidate head/tree, and then reaches the provider gate. A locally convenient “done” that stops at prose, skips the baseline, or relies on model consensus violates AF-06.
 
 ### Current mechanical coverage and follow-up gap
 
 L-06 and its controls verify the declared three-node route, resolve its static document pointers, and reject a planted fourth architecture-document hop. The direct specification readback also pins one occurrence of each AF requirement row in this file.
 
 There is no current seam that enumerates every canonical Agent-facing document and rejects a semantic duplicate of an AF durable rule or owner value. Therefore AF-03's repository-wide single-owner property is not mechanically verified by this atom. Follow-up work must first define the finite canonical document set and a deterministic ownership key/readback before adding a duplicate-owner planted negative; until that lands, do not claim more than the route and exact-row controls above.
-
 ## Claim registry
 
 | ID | Class | Exact claim | Physical boundary |
@@ -86,7 +91,7 @@ There is no current seam that enumerates every canonical Agent-facing document a
 | L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
 | L-06 | L | The declared repository document route has no more than three nodes and every static pointer resolves. | Fitness policy, direct file readback, missing-pointer control, and fourth-node control. |
-| L-07 | L | Completion is accepted only after the exact Issue's admitted feature contract runs its declared product operation and its oracle checks observed state at the exact candidate head. | `feature_contract.py` resolution, real code-surface digest/bytes readback, executed `./noodles verify --json` exit and observed state, and handoff evidence controls for missing id, missing operation/oracle, skipped verifier, stale/wrong head, self-report, and artifact-blind packets. |
+| L-07 | L | Completion always requires baseline acceptance at the exact candidate head/tree; an Issue-declared specialized feature oracle is optional and additive. | Executed `tests/run.sh` and `./noodles verify --json`, zero-residue/head/tree readback, optional real code-surface digest and operation/oracle readback, plus handoff controls for skipped baseline, unknown feature, stale evidence, self-report, and artifact-blind packets. |
 | R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
 | R-02 | R | Only the exact verified PR head is merged. | Workflow-run receipt, PR/head/tree readback, merge API SHA precondition. |
 | R-03 | R | The provider retained the PR head in a merge commit on default branch. | Merge result, PR readback, merge-parent readback, branch-head readback. |
@@ -154,7 +159,7 @@ A central repo cannot claim physical control of another repo merely because it c
 
 - Passing tests is not full task verification unless the exact task contract names those tests and readbacks.
 - Agent cross-review is not independent provider verification.
-- A verification skill existing on disk, or its output, is P-class until the declared feature operation runs and the oracle checks observed state; noodles claims no generic feature registry and verifies no capability without an admitted feature contract.
+- A verification skill existing on disk, or its output, is P-class until its optional specialized operation runs and checks observed state. The mandatory baseline proves only repository acceptance; it does not upgrade an undeclared product capability into a verified feature.
 - Architecture warnings are health signals only. They are not correctness evidence, merge permission, or a reason to compress readable code instead of creating a real seam.
 - GrepAI candidates are not source truth and misses are not absence proof.
 - Tree-sitter ranges do not prove a context compiler.

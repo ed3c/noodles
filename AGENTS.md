@@ -88,10 +88,9 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-target: owner/repo -->
 <!-- noodles-subject: owner/repo#123 -->
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
-<!-- noodles-feature: verification-skill-oracle -->
 ```
 
-The `noodles-feature` id must resolve to an admitted contract in `feature_contract.py`. Before completion is accepted, `./noodles feature verify <feature-id>` runs that contract's declared product operation and its oracle checks observed state; `./noodles issue handoff` admits only an evidence packet produced at the exact candidate head against the real code surface. A verification skill existing on disk is never L-class evidence.
+Every repository mutation runs `./noodles acceptance verify`, which binds the exact candidate head/tree to `tests/run.sh`, `./noodles verify`, and zero residue. Add one optional `<!-- noodles-feature: feature-id -->` only when the Issue needs a specialized physical oracle; run `./noodles acceptance verify --feature <feature-id>`. The specialized oracle is additive and cannot replace or weaken the baseline. Unknown feature ids fail at completion with a diagnostic instead of making the Issue disappear from scheduling.
 
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 

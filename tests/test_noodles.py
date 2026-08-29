@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -503,6 +504,43 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertIn("`AF-01` through `AF-06`", agents)
         self.assertNotIn("### Durable owner and writer map", agents)
 
+    def test_issue_template_uses_baseline_without_copying_a_specialized_feature(self) -> None:
+        body = noodles.issue_template("ed3c/noodles", 120, "Exact atom")
+        self.assertNotIn("noodles-feature", body)
+        self.assertEqual(noodles.parse_issue_contract(body, "ed3c/noodles#120")["feature"], "")
+
+    def test_adapter_sync_keeps_marker_free_and_invalid_issues_visible(self) -> None:
+        marker_free = noodles.issue_template("ed3c/noodles", 120, "Baseline atom")
+        unknown = marker_free.replace(
+            "<!-- noodles-depends-on: none -->",
+            "<!-- noodles-feature: future-specialized-oracle -->\n<!-- noodles-depends-on: none -->",
+        ).replace("#120", "#121")
+        invalid = marker_free.replace("<!-- noodles-subject: ed3c/noodles#120 -->\n", "").replace("#120", "#122")
+        issues = [
+            {"number": 120, "title": "Baseline atom", "body": marker_free, "html_url": "https://example/120"},
+            {"number": 121, "title": "Future oracle", "body": unknown, "html_url": "https://example/121"},
+            {"number": 122, "title": "Broken atom", "body": invalid, "html_url": "https://example/122"},
+        ]
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
+             mock.patch.object(noodles, "gh_api", return_value=issues), \
+             mock.patch("sys.stdout", stdout):
+            self.assertEqual(noodles.adapter_sync(), 0)
+        readback = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([item["status"] for item in readback], ["ready", "ready", "blocked"])
+        self.assertIn("missing noodles-subject marker", readback[2]["diagnostic"])
+
+    def test_acceptance_enforcement_hierarchy_has_no_issue_number_bypass(self) -> None:
+        agents = (CANDIDATE_ROOT / "AGENTS.md").read_text()
+        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        self.assertIn("Every repository mutation runs `./noodles acceptance verify`", agents)
+        self.assertIn("optional `<!-- noodles-feature: feature-id -->`", agents)
+        self.assertIn("## Enforcement hierarchy", system_contract)
+        self.assertIn("built-in baseline acceptance contract", system_contract)
+        self.assertIn("optional specialized oracle", system_contract)
+        for executable in ("noodles.py", "feature_contract.py"):
+            self.assertNotIn("#112", (CANDIDATE_ROOT / executable).read_text())
+
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
@@ -608,7 +646,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "max",
                 policy["max_tracked_files"] + 1,
                 policy["max_tracked_files"],
-                "architecture warning tracked_files=38 exceeds 37",
+                "architecture warning tracked_files=39 exceeds 38",
             ),
             ("root_surfaces", "max_root_surfaces", "max", policy["max_root_surfaces"] + 1, policy["max_root_surfaces"], "architecture warning root_surfaces=10 exceeds 9"),
         )
@@ -734,7 +772,7 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
              mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
              mock.patch.object(noodles, "provider_sync"), \
-             mock.patch.object(noodles, "skill_discovery_check"), \
+             mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
              mock.patch.object(noodles, "protection_policy", return_value=policy), \
              mock.patch.object(noodles, "protection_readback"), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
@@ -753,7 +791,7 @@ class StartUnattendedTests(unittest.TestCase):
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, None]
         policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
         process.terminate.assert_called_once()
