@@ -1,4 +1,5 @@
 # Noodle runtime and externally synchronized providers.
+.worktrees/
 .noodle/*
 !.noodle/adapters/
 !.noodle/adapters/github

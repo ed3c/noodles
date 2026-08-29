@@ -22,7 +22,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
-from skill_contract import validate_backlog_scheduler
+from skill_contract import validate_backlog_scheduler, validate_noodle_worktree_ignore
 
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
@@ -321,7 +321,6 @@ def validate_migration_ledger(root: Path) -> list[str]:
             errors.append(f"{identifier}: MIGRATE requires physical evidence")
     return errors
 
-
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
@@ -336,6 +335,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if mode not in allowed_modes:
             errors.append(f"forbidden git mode {mode}: {relative}")
     paths = {relative for _, relative in entries}
+    errors.extend(validate_noodle_worktree_ignore(root, paths))
     for required in policy["required_paths"]:
         if required not in paths:
             errors.append(f"missing required tracked path: {required}")
