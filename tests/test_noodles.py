@@ -17,6 +17,8 @@ from tests.support import (
     CANDIDATE_ROOT,
     ENGINE_ROOT,
     cmd,
+    codex_real_bin_export,
+    codex_real_bin_resolution,
     copy_tracked,
     cursor_pstack_fixture,
     handoff_fixture,
@@ -27,6 +29,7 @@ from tests.support import (
     start_entrypoint_with_delayed_listener,
     tree_digest,
     validate_script_mode_gateerror_identity,
+    write_fake_codex_stub,
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
@@ -742,6 +745,45 @@ class StartUnattendedTests(unittest.TestCase):
         result = start_entrypoint_with_delayed_listener(start_listener=False)
         with self.assertRaisesRegex(AssertionError, "listener never became reachable|listener never served snapshot readback"):
             assert_valid_start_entrypoint_receipt(result)
+
+    def test_offline_start_entrypoint_retries_delayed_listener_with_codex_real_bin_exported(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLES_OFFLINE_TESTS": "1"}, clear=False):
+            result = start_entrypoint_with_delayed_listener()
+        assert_valid_start_entrypoint_receipt(result)
+
+    def test_codex_real_bin_export_materializes_fixture_only_in_offline_mode(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-export-")
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+
+        with mock.patch.dict(os.environ, {"NOODLES_OFFLINE_TESTS": "1"}, clear=False):
+            exported = codex_real_bin_export(base)
+        self.assertIsNotNone(exported)
+        assert exported is not None
+        self.assertTrue(Path(exported).is_file())
+        self.assertTrue(os.access(exported, os.X_OK))
+
+        env = dict(os.environ)
+        env.pop("NOODLES_OFFLINE_TESTS", None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(codex_real_bin_export(base))
+
+    def test_codex_real_bin_override_is_load_bearing_for_planted_resolver(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-fixture-")
+        self.addCleanup(temp.cleanup)
+        fake_codex = Path(temp.name) / "fake-codex"
+        write_fake_codex_stub(fake_codex)
+
+        resolved = codex_real_bin_resolution(override=fake_codex)
+        self.assertEqual(resolved["returncode"], 0)
+        self.assertEqual(str(resolved["stdout"]).strip(), str(fake_codex))
+
+        unresolved = codex_real_bin_resolution(override=None)
+        self.assertNotEqual(unresolved["returncode"], 0)
+        self.assertIn(
+            "NOODLES_CODEX_WRAPPER_FAIL: cannot resolve real codex binary",
+            str(unresolved["stderr"]),
+        )
 
 
 class ProviderPhysicalTests(unittest.TestCase):
