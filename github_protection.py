@@ -29,6 +29,7 @@ REQUIRED_LAND_PHRASES = {
     "NOODLES_GITHUB_PROTECTION_TOKEN: ${{ steps.app-token.outputs.token }}": "land workflow must pass the protection-read token only to the land step",
     "NOODLES_REQUIRE_PROTECTION_READ_TOKEN: '1'": "land workflow must require a separate protection-read token",
 }
+FAILED_WORKFLOW_CONCLUSIONS = {"action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"}
 
 
 def sha256_json(value: Any) -> str:
@@ -276,10 +277,45 @@ def workflow_run_readback(
         "name": str(payload.get("name") or ""),
         "path": str(payload.get("path") or ""),
         "event": str(payload.get("event") or ""),
+        "status": str(payload.get("status") or ""),
+        "conclusion": str(payload.get("conclusion") or ""),
         "head_branch": str(payload.get("head_branch") or ""),
         "head_sha": str(payload.get("head_sha") or ""),
+        "html_url": str(payload.get("html_url") or ""),
         "workflow_id": int(payload.get("workflow_id") or 0),
     }
+
+
+def workflow_runs_for_head(
+    gh_api_fn: Callable[..., Any],
+    error_cls: type[Exception],
+    repo: str,
+    head_sha: str,
+) -> list[dict[str, Any]]:
+    payload = gh_api_fn(f"repos/{repo}/actions/runs?head_sha={head_sha}&per_page=100")
+    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        raise error_cls(f"workflow runs readback failed for {repo} head {head_sha}")
+    normalized: list[dict[str, Any]] = []
+    for item in runs:
+        if not isinstance(item, dict):
+            continue
+        run_id = int(item.get("id") or 0)
+        if run_id <= 0:
+            continue
+        normalized.append({
+            "id": run_id,
+            "name": str(item.get("name") or ""),
+            "path": str(item.get("path") or ""),
+            "event": str(item.get("event") or ""),
+            "status": str(item.get("status") or ""),
+            "conclusion": str(item.get("conclusion") or ""),
+            "head_branch": str(item.get("head_branch") or ""),
+            "head_sha": str(item.get("head_sha") or ""),
+            "html_url": str(item.get("html_url") or ""),
+            "workflow_id": int(item.get("workflow_id") or 0),
+        })
+    return normalized
 
 
 def trusted_workflow_run_readback(
@@ -315,3 +351,84 @@ def trusted_workflow_run_readback(
         "workflow": workflow,
         "provider_default_branch": str(repository.get("default_branch") or ""),
     }
+
+
+def failed_required_workflow_run_readback(
+    gh_api_fn: Callable[..., Any],
+    error_cls: type[Exception],
+    repo: str,
+    head_sha: str,
+    *,
+    name: str,
+    path: str,
+    event: str,
+    default_branch: str,
+) -> dict[str, Any]:
+    candidates = [
+        run for run in workflow_runs_for_head(gh_api_fn, error_cls, repo, head_sha)
+        if run["name"] == name
+        and run["path"] == path
+        and run["event"] == event
+        and run["head_sha"] == head_sha
+        and run["status"] == "completed"
+        and run["conclusion"] in FAILED_WORKFLOW_CONCLUSIONS
+    ]
+    if not candidates:
+        raise error_cls(f"required check {name} has no completed failed workflow run for {head_sha}")
+    selected = max(candidates, key=lambda item: item["id"])
+    source = trusted_workflow_run_readback(
+        gh_api_fn,
+        error_cls,
+        repo,
+        selected["id"],
+        name=name,
+        path=path,
+        event=event,
+        default_branch=default_branch,
+    )
+    if source["run"]["status"] != "completed" or source["run"]["conclusion"] not in FAILED_WORKFLOW_CONCLUSIONS:
+        raise error_cls(f"required check {name} is not a completed failed workflow run for {head_sha}")
+    return source
+
+
+def workflow_run_jobs_readback(
+    gh_api_fn: Callable[..., Any],
+    error_cls: type[Exception],
+    repo: str,
+    run_id: int,
+) -> list[dict[str, Any]]:
+    payload = gh_api_fn(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100")
+    jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(jobs, list):
+        raise error_cls(f"workflow jobs readback failed for {repo} run {run_id}")
+    normalized: list[dict[str, Any]] = []
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        job_id = int(item.get("id") or 0)
+        if job_id <= 0:
+            continue
+        normalized.append({
+            "id": job_id,
+            "name": str(item.get("name") or ""),
+            "status": str(item.get("status") or ""),
+            "conclusion": str(item.get("conclusion") or ""),
+            "html_url": str(item.get("html_url") or ""),
+        })
+    return normalized
+
+
+def failed_workflow_job_readback(
+    gh_api_fn: Callable[..., Any],
+    error_cls: type[Exception],
+    repo: str,
+    run_id: int,
+) -> dict[str, Any]:
+    failed = [
+        job for job in workflow_run_jobs_readback(gh_api_fn, error_cls, repo, run_id)
+        if job["status"] == "completed" and job["conclusion"] in FAILED_WORKFLOW_CONCLUSIONS
+    ]
+    if not failed:
+        raise error_cls(f"workflow run {run_id} has no completed failed jobs")
+    failed.sort(key=lambda item: (item["name"], item["id"]))
+    return failed[0]

@@ -32,7 +32,7 @@ Noodle machine reconciliation
 ./noodles start
 ```
 
-After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, and reconciles completed provider landings without a Human Verifier.
+After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree to emit deterministic repair receipts, and reconciles completed provider landings without a Human Verifier.
 
 ## Why Noodle stays `supervised`
 
@@ -88,6 +88,7 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
 ./noodles github protect audit
 ./noodles github protect apply
+./noodles repair                    # read failed awaiting_land PR lanes and emit exact repair receipts
 ./noodles reconcile                 # one machine reconciliation pass
 ./noodles start                     # unattended Noodle + reconciliation
 ```

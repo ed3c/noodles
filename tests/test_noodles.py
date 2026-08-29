@@ -636,7 +636,7 @@ class ReconcileTests(unittest.TestCase):
 
 
 class StartUnattendedTests(unittest.TestCase):
-    def test_wrapper_polls_reconcile_and_sleeps_before_clean_exit(self) -> None:
+    def test_wrapper_polls_repair_reconcile_and_sleeps_before_clean_exit(self) -> None:
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, 0, 0]
         policy = {
@@ -652,11 +652,13 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles, "protection_policy", return_value=policy), \
              mock.patch.object(noodles, "protection_readback"), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
+             mock.patch.object(noodles, "repair_pending_reviews") as repair, \
              mock.patch.object(noodles, "reconcile_once") as reconcile, \
              mock.patch.object(time, "sleep") as sleep:
             result = noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
 
         self.assertEqual(result, 0)
+        repair.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
         reconcile.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
         sleep.assert_called_once_with(0.25)
         process.terminate.assert_not_called()
