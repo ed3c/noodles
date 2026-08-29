@@ -48,6 +48,51 @@ def write_feature_evidence(
     return path
 
 
+def acceptance_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract | None = None, **overrides: object
+) -> dict[str, object]:
+    specialized: dict[str, object] | None = None
+    if feature is not None:
+        specialized = {
+            "feature_id": feature.feature_id,
+            "head": head,
+            "code_surface": feature.code_surface,
+            "code_surface_sha256": code_surface_digest(root, feature),
+            "operation": list(feature.operation),
+            "oracle": feature.oracle,
+            "observed": {"returncode": 0, "ok": True, "errors": []},
+        }
+    evidence: dict[str, object] = {
+        "schema_version": 1,
+        "head": head,
+        "tree": cmd(["git", "rev-parse", "HEAD^{tree}"], root),
+        "baseline": {
+            "contract_id": feature_contract.BASELINE_CONTRACT_ID,
+            "operations": [
+                list(feature_contract.BASELINE_TEST_OPERATION),
+                list(feature_contract.BASELINE_VERIFY_OPERATION),
+            ],
+            "observed": {
+                "tests": {"returncode": 0},
+                "verify": {"returncode": 0, "ok": True, "errors": []},
+            },
+        },
+        "specialized": specialized,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def write_acceptance_evidence(
+    root: Path, head: str, feature: feature_contract.FeatureContract | None = None, **overrides: object
+) -> Path:
+    evidence = acceptance_evidence(root, head, feature, **overrides)
+    path = root / feature_contract.ACCEPTANCE_EVIDENCE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    return path
+
+
 def cmd(argv: list[str], cwd: Path) -> str:
     result = subprocess.run(argv, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode != 0:

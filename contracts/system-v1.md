@@ -29,6 +29,12 @@ This file is the single system-level decision and claim-boundary record for v1; 
 
 Only observed invariants with an executable/readback boundary may be listed as L or R claims. An architecture decision may be recorded before its mechanism exists only when it is explicitly `HOLD` or N-class and states the physical admission criteria. Mutable Issue, PR, runtime, and provider receipts remain with their owning surfaces instead of being copied here.
 
+## Enforcement hierarchy
+
+Enforcement descends from repository shape, to static/CI gates, to mechanical diagnostics, to soft Agent guidance. Put an invariant at the strongest available layer: the shortest local path should preserve architecture by default; invalid structural states should fail in executable gates; known invalid patterns should name the supported path; rules and Skills explain choices but grant no authority.
+
+Issue structure and completion evidence therefore have separate seams. Structural parsing owns schedulability without consulting an oracle registry. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle can only add evidence at completion, never replace the baseline. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
+
 ## Claim registry
 
 | ID | Class | Exact claim | Physical boundary |
@@ -41,7 +47,7 @@ Only observed invariants with an executable/readback boundary may be listed as L
 | L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
 | L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
 | L-06 | L | The declared repository document route has no more than three nodes and every static pointer resolves. | Fitness policy, direct file readback, missing-pointer control, and fourth-node control. |
-| L-07 | L | Completion is accepted only after the exact Issue's admitted feature contract runs its declared product operation and its oracle checks observed state at the exact candidate head. | `feature_contract.py` resolution, real code-surface digest/bytes readback, executed `./noodles verify --json` exit and observed state, and handoff evidence controls for missing id, missing operation/oracle, skipped verifier, stale/wrong head, self-report, and artifact-blind packets. |
+| L-07 | L | Completion always requires baseline acceptance at the exact candidate head/tree; an Issue-declared specialized feature oracle is optional and additive. | Executed `tests/run.sh` and `./noodles verify --json`, zero-residue/head/tree readback, optional real code-surface digest and operation/oracle readback, plus handoff controls for skipped baseline, unknown feature, stale evidence, self-report, and artifact-blind packets. |
 | R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
 | R-02 | R | Only the exact verified PR head is merged. | Workflow-run receipt, PR/head/tree readback, merge API SHA precondition. |
 | R-03 | R | The provider retained the PR head in a merge commit on default branch. | Merge result, PR readback, merge-parent readback, branch-head readback. |
@@ -109,7 +115,7 @@ A central repo cannot claim physical control of another repo merely because it c
 
 - Passing tests is not full task verification unless the exact task contract names those tests and readbacks.
 - Agent cross-review is not independent provider verification.
-- A verification skill existing on disk, or its output, is P-class until the declared feature operation runs and the oracle checks observed state; noodles claims no generic feature registry and verifies no capability without an admitted feature contract.
+- A verification skill existing on disk, or its output, is P-class until its optional specialized operation runs and checks observed state. The mandatory baseline proves only repository acceptance; it does not upgrade an undeclared product capability into a verified feature.
 - Architecture warnings are health signals only. They are not correctness evidence, merge permission, or a reason to compress readable code instead of creating a real seam.
 - GrepAI candidates are not source truth and misses are not absence proof.
 - Tree-sitter ranges do not prove a context compiler.
