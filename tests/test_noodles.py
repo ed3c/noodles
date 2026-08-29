@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import tomllib
@@ -719,6 +720,57 @@ class ProviderPhysicalTests(unittest.TestCase):
                 (candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT / skill / "SKILL.md").resolve(),
             )
         self.assertEqual(cmd(["git", "status", "--short"], candidate), "")
+
+    def test_provider_check_rejects_cursor_provider_dirty_checkout_with_diagnostic(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        installed_license = candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / "pstack/LICENSE"
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            noodles.provider_sync(candidate)
+            installed_license.write_text("tampered\n")
+            with self.assertRaisesRegex(noodles.GateError, "provider cursor-pstack checkout is dirty"):
+                noodles.provider_check(candidate)
+
+    def test_provider_sync_rematerializes_only_control_cli_without_source_drift(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        compat_root = candidate / runtime_contract.PROJECT_SKILLS_ROOT
+        control_cli_root = compat_root / "control-cli"
+        deslop_root = compat_root / "deslop"
+        provider_source_root = candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
+        control_cli_source_root = provider_source_root / "control-cli"
+        control_ui_skill = provider_source_root / "control-ui/SKILL.md"
+        unrelated_skill = provider_source_root / "review-and-ship/SKILL.md"
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            noodles.provider_sync(candidate)
+            expected_source_digest = tree_digest(provider_source_root)
+            expected_deslop_digest = tree_digest(deslop_root)
+            control_ui_bytes = control_ui_skill.read_bytes()
+            unrelated_bytes = unrelated_skill.read_bytes()
+            shutil.rmtree(control_cli_root)
+            os.symlink(
+                os.path.relpath(provider_source_root, start=control_cli_root.parent),
+                control_cli_root,
+                target_is_directory=True,
+            )
+
+            self.assertTrue(control_cli_root.is_symlink())
+            self.assertEqual(control_cli_root.resolve(), provider_source_root.resolve())
+
+            noodles.provider_sync(candidate)
+
+        self.assertEqual(tree_digest(provider_source_root), expected_source_digest)
+        self.assertEqual(control_ui_skill.read_bytes(), control_ui_bytes)
+        self.assertEqual(unrelated_skill.read_bytes(), unrelated_bytes)
+        self.assertEqual(tree_digest(deslop_root), expected_deslop_digest)
+        self.assertTrue(control_cli_root.is_dir())
+        self.assertFalse(control_cli_root.is_symlink())
+        self.assertEqual(sorted(path.name for path in control_cli_root.iterdir()), sorted(path.name for path in control_cli_source_root.iterdir()))
+        for entry in control_cli_root.iterdir():
+            self.assertTrue(entry.is_symlink())
+            self.assertEqual(entry.resolve(), (control_cli_source_root / entry.name).resolve())
+        self.assertFalse((compat_root / "control-ui").exists())
+        self.assertFalse((compat_root / "review-and-ship").exists())
 
     def test_provider_check_rejects_missing_mapped_cursor_skill_file(self) -> None:
         temp, candidate = cursor_pstack_fixture()
