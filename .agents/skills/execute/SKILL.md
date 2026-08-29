@@ -25,6 +25,23 @@ This skill operates inside the Noodle-created isolated worktree.
 13. Run `./noodles issue handoff owner/repo#N --pr N`. This validates the exact PR head/body, sets the Issue to `awaiting_land`, and emits one blocking `stage_message` for the current `NOODLE_SESSION_ID`.
 14. Stop immediately after the handoff succeeds. GitHub verify/land and local machine reconciliation own completion.
 
+## Routing contract
+
+Every execute task enters `poteto-mode` before any matched playbook or leaf skill.
+Do not bypass `poteto-mode` by entering a leaf skill directly.
+Record the selected P-class route and required physical oracle in the evidence packet.
+
+Immutable route fixtures:
+
+- `investigation` -> `poteto-mode/playbooks/investigation.md`; oracle `exact issue readback plus direct source/runtime/provider readback`
+- `function-boundary feature work` -> `architect` plus `poteto-mode/playbooks/feature.md`; oracle `tests plus direct source/runtime readback`
+- `long multi-phase work` -> `show-me-your-work` plus `poteto-mode/playbooks/multi-phase-plan.md`; oracle `decision trail plus direct readback`
+- `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`
+- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`
+
+Unsupported routes fail closed: `control-ui`, Cursor `create-skill`, Cursor `/loop`, Graphite `gt`, cloud-agent infrastructure, standalone `goal`.
+If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed.
+
 ## Evidence packet
 
 The PR body must contain only:

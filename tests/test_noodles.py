@@ -2,183 +2,29 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import time
 import tomllib
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 import noodles
 import runtime_contract
 import skill_contract
-
-ENGINE_ROOT = Path(noodles.__file__).resolve().parent
-CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve()
-
-
-def cmd(argv: list[str], cwd: Path) -> str:
-    result = subprocess.run(argv, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    if result.returncode != 0:
-        raise AssertionError(f"command failed {argv}: {result.stderr or result.stdout}")
-    return result.stdout.strip()
-
-
-def initialize_repo(root: Path) -> None:
-    cmd(["git", "init", "-q", "-b", "main"], root)
-    cmd(["git", "config", "user.name", "tests"], root)
-    cmd(["git", "config", "user.email", "tests@example.invalid"], root)
-    cmd(["git", "add", "-A"], root)
-    cmd(["git", "commit", "-q", "--allow-empty", "-m", "fixture"], root)
-
-
-def copy_tracked(source: Path, destination: Path) -> None:
-    destination.mkdir(parents=True)
-    tracked = cmd(["git", "ls-files"], source).splitlines()
-    for relative in tracked:
-        src = source / relative
-        dst = destination / relative
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst, follow_symlinks=False)
-    initialize_repo(destination)
-
-
-def write_noodle_stub(path: Path, version: str) -> None:
-    path.write_text(
-        "#!/usr/bin/env python3\n"
-        "import os\n"
-        "import sys\n"
-        "args = sys.argv[1:]\n"
-        f"if args == ['--version']:\n    print({version!r})\n"
-        "elif len(args) >= 4 and args[0] == '--project-dir' and args[2:] == ['skills', 'list']:\n"
-        "    print(os.environ.get('NOODLES_TEST_SKILLS_OUTPUT', ''), end='')\n"
-        "else:\n"
-        "    raise SystemExit(f'unexpected args: {args}')\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
-
-
-def write_handoff_noodle_stub(path: Path, version: str, blocking: bool = True) -> None:
-    path.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json\n"
-        "import pathlib\n"
-        "import sys\n"
-        "args = sys.argv[1:]\n"
-        f"if args == ['--version']:\n    print({version!r})\n"
-        "elif len(args) == 9 and args[0] == '--project-dir' and args[2:5] == ['event', 'emit', 'stage_message']:\n"
-        "    root = pathlib.Path(args[1])\n"
-        "    session = args[6]\n"
-        "    payload = json.loads(args[8])\n"
-        f"    payload['blocking'] = {blocking!r}\n"
-        "    event = {'type': 'stage_message', 'payload': payload, 'timestamp': '2026-08-29T00:00:00Z', 'session_id': session}\n"
-        "    target = root / '.noodle' / 'sessions' / session / 'events.ndjson'\n"
-        "    with target.open('a', encoding='utf-8') as handle:\n"
-        "        handle.write(json.dumps(event) + '\\n')\n"
-        "else:\n"
-        "    raise SystemExit(f'unexpected args: {args}')\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o755)
-
-
-def handoff_fixture(
-    source: Path,
-    subject: str = "ed3c/noodles#33",
-    *,
-    blocking: bool = True,
-) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
-    root = Path(temp.name) / "repo"
-    copy_tracked(source, root)
-    cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
-    binary = Path(temp.name) / "noodle"
-    write_handoff_noodle_stub(binary, "v0.1.5", blocking)
-    lock_path = root / "policy/runtime.lock.json"
-    lock = json.loads(lock_path.read_text())
-    lock["runtime"]["command"] = str(binary)
-    lock["runtime"]["platforms"]["darwin_arm64"]["binary_sha256"] = runtime_contract.sha256_file(binary)
-    lock_path.write_text(json.dumps(lock))
-    session_id = "ed3c-noodles-33-0-execute-fixture"
-    session = root / ".noodle" / "sessions" / session_id
-    session.mkdir(parents=True)
-    (session / "spawn.json").write_text(json.dumps({"worktree_path": str(root)}))
-    (session / "events.ndjson").write_text(json.dumps({
-        "type": "action",
-        "payload": {"message": f"[order:{subject}] fixture"},
-        "timestamp": "2026-08-29T00:00:00Z",
-        "session_id": session_id,
-    }) + "\n")
-    return temp, root, binary, session_id
-
-
-def provider_fixture(subpath: str = "skills/engineering", license_path: str = "LICENSE") -> tuple[tempfile.TemporaryDirectory[str], Path]:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-provider-test-")
-    base = Path(temp.name)
-    candidate = base / "candidate"
-    copy_tracked(CANDIDATE_ROOT, candidate)
-    source = base / "source"
-    source.mkdir()
-    initialize_repo(source)
-    (source / "LICENSE").write_text("MIT\n")
-    (source / "skills/engineering/example").mkdir(parents=True)
-    (source / "skills/engineering/example/SKILL.md").write_text("# Example\n")
-    cmd(["git", "add", "-A"], source)
-    cmd(["git", "commit", "-q", "-m", "provider"], source)
-    commit = cmd(["git", "rev-parse", "HEAD"], source)
-    lock_path = candidate / "policy/providers.lock.json"
-    lock = json.loads(lock_path.read_text())
-    lock["providers"] = [
-        {
-            "name": "fixture",
-            "source": str(source),
-            "commit": commit,
-            "subpath": subpath,
-            "destination": ".noodle/providers/fixture",
-            "license_path": license_path,
-            "enabled": True,
-            "authority": "P",
-        }
-    ]
-    lock_path.write_text(json.dumps(lock))
-    return temp, candidate
-
-
-def runtime_release_reader(release: str, commit: str, asset_name: str, asset_sha256: str):
-    def read(endpoint: str) -> dict:
-        if endpoint == f"repos/poteto/noodle/releases/tags/{release}":
-            return {
-                "tag_name": release,
-                "assets": [{"name": asset_name, "digest": f"sha256:{asset_sha256}"}],
-            }
-        if endpoint == f"repos/poteto/noodle/git/ref/tags/{release}":
-            return {"object": {"type": "commit", "sha": commit}}
-        raise AssertionError(f"unexpected endpoint {endpoint}")
-
-    return read
-
-
-def protection_fixture() -> dict:
-    return {
-        "url": "https://api.github.com/repos/ed3c/noodles/branches/main/protection",
-        "required_status_checks": {
-            "strict": True,
-            "contexts": ["verify"],
-            "checks": [{"context": "verify", "app_id": 15368}],
-        },
-        "required_pull_request_reviews": {
-            "dismiss_stale_reviews": False,
-            "require_code_owner_reviews": False,
-            "require_last_push_approval": False,
-            "required_approving_review_count": 0,
-        },
-        "enforce_admins": {"enabled": True},
-        "allow_force_pushes": {"enabled": False},
-        "allow_deletions": {"enabled": False},
-    }
+from tests.support import (
+    CANDIDATE_ROOT,
+    ENGINE_ROOT,
+    cmd,
+    copy_tracked,
+    cursor_pstack_fixture,
+    handoff_fixture,
+    provider_fixture,
+    runtime_release_reader,
+    tree_digest,
+    write_noodle_stub,
+    write_skill_discovery_fixture,
+)
 
 
 class RepositoryGateTests(unittest.TestCase):
@@ -345,6 +191,18 @@ class RepositoryGateTests(unittest.TestCase):
         result = self.verify(root)
         self.assertFalse(result["ok"])
         self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
+
+    def test_execute_skill_without_poteto_entrypoint_contract_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/execute/SKILL.md"
+        content = path.read_text()
+        entrypoint = skill_contract.EXECUTE_ENTRYPOINT_PHRASE
+        self.assertIn(entrypoint, content)
+        path.write_text(content.replace(entrypoint, "Execute may route directly to a leaf skill.", 1))
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("poteto-mode entrypoint" in item for item in result["errors"]))
 
     def test_schedule_skill_without_self_order_ownership_contract_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -813,6 +671,62 @@ class ProviderPhysicalTests(unittest.TestCase):
             with self.assertRaisesRegex(noodles.GateError, "license path missing"):
                 noodles.provider_sync(candidate)
 
+    def test_provider_sync_materializes_exact_cursor_team_kit_mapping(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            receipts = noodles.provider_sync(candidate)
+        cursor = next(item for item in receipts if item["name"] == runtime_contract.CURSOR_PSTACK_PROVIDER)
+        compat_root = Path(cursor["compatibility_root"])
+        self.assertEqual(sorted(path.name for path in compat_root.iterdir()), list(runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS))
+        for skill in runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS:
+            mapped_root = compat_root / skill
+            self.assertTrue(mapped_root.is_dir())
+            self.assertFalse(mapped_root.is_symlink())
+            skill_file = mapped_root / "SKILL.md"
+            self.assertTrue(skill_file.is_symlink())
+            self.assertEqual(
+                skill_file.resolve(),
+                (candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT / skill / "SKILL.md").resolve(),
+            )
+
+    def test_provider_check_rejects_broadened_cursor_team_kit_root(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            noodles.provider_sync(candidate)
+            compat_root = candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT
+            runtime_contract._remove_path(compat_root)
+            os.symlink(
+                "cursor-pstack/cursor-team-kit/skills",
+                compat_root,
+                target_is_directory=True,
+            )
+            with self.assertRaisesRegex(noodles.GateError, "must not expose the entire cursor-team-kit/skills root"):
+                noodles.provider_check(candidate)
+
+    def test_provider_sync_replaces_broadened_cursor_team_kit_symlink_without_touching_provider_source(self) -> None:
+        temp, candidate = cursor_pstack_fixture()
+        self.addCleanup(temp.cleanup)
+        provider_source_root = candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT
+        compat_root = candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_ALLOW_LOCAL_PROVIDER": "1"}, clear=False):
+            noodles.provider_sync(candidate)
+            expected_digest = tree_digest(provider_source_root)
+            runtime_contract._remove_path(compat_root)
+            os.symlink("cursor-pstack/cursor-team-kit/skills", compat_root, target_is_directory=True)
+            receipts = noodles.provider_sync(candidate)
+        self.assertEqual(tree_digest(provider_source_root), expected_digest)
+        self.assertTrue((provider_source_root / "control-ui/SKILL.md").is_file())
+        self.assertTrue((provider_source_root / "review-and-ship/SKILL.md").is_file())
+        self.assertFalse(compat_root.is_symlink())
+        self.assertEqual(sorted(path.name for path in compat_root.iterdir()), list(runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS))
+        for skill in runtime_contract.CURSOR_PSTACK_COMPAT_SKILLS:
+            self.assertTrue((compat_root / skill / "SKILL.md").is_symlink())
+        self.assertFalse((compat_root / "control-ui").exists())
+        cursor = next(item for item in receipts if item["name"] == runtime_contract.CURSOR_PSTACK_PROVIDER)
+        self.assertEqual(cursor["compatibility_source_root"], str(provider_source_root.resolve()))
+
 
 class RuntimePhysicalTests(unittest.TestCase):
     def runtime_candidate(self, version: str = "v9.9.9") -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
@@ -886,21 +800,16 @@ class RuntimePhysicalTests(unittest.TestCase):
     def test_skill_discovery_reads_all_configured_paths(self) -> None:
         temp, candidate, binary, _platform_key = self.runtime_candidate()
         self.addCleanup(temp.cleanup)
+        output = write_skill_discovery_fixture(candidate)
+        compat_root = (candidate / runtime_contract.CURSOR_PSTACK_COMPAT_ROOT).resolve()
+        compat_source_root = (candidate / runtime_contract.CURSOR_PSTACK_DESTINATION / runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT).resolve()
+        cursor_root = (candidate / runtime_contract.CURSOR_PSTACK_NATIVE_ROOT).resolve()
         project_skill = (candidate / ".agents/skills/execute").resolve()
-        cursor_skill = (candidate / ".noodle/providers/cursor-pstack/pstack/skills/architect").resolve()
-        matt_skill = (candidate / ".noodle/providers/matt-engineering/skills/engineering/ask-matt").resolve()
-        cursor_skill.mkdir(parents=True)
-        matt_skill.mkdir(parents=True)
-        (cursor_skill / "SKILL.md").write_text("# Architect\n")
-        (matt_skill / "SKILL.md").write_text("# Ask Matt\n")
-        output = (
-            f"execute\t{project_skill.parent}\ttrue\t{project_skill / 'SKILL.md'}\n"
-            f"architect\t{cursor_skill.parent}\ttrue\t{cursor_skill / 'SKILL.md'}\n"
-            f"ask-matt\t{matt_skill.parent}\ttrue\t{matt_skill / 'SKILL.md'}\n"
-        )
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             receipt = runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
-        self.assertEqual(receipt["total_skills"], 3)
+        self.assertEqual(receipt["required_skill_paths"]["control-cli"]["resolved_path"], str((compat_source_root / "control-cli/SKILL.md").resolve()))
+        self.assertEqual(receipt["required_skill_paths"]["poteto-mode"]["resolved_path"], str((cursor_root / "poteto-mode/SKILL.md").resolve()))
+        self.assertEqual(receipt["skills_by_path"][str(compat_root)], 2)
         self.assertEqual(receipt["skills_by_path"][str(project_skill.parent)], 1)
         self.assertTrue((candidate / ".noodle/receipts/runtime/skills.json").exists())
 
@@ -911,6 +820,22 @@ class RuntimePhysicalTests(unittest.TestCase):
         output = f"execute\t{project_skill.parent}\ttrue\t{project_skill / 'SKILL.md'}\n"
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "missing configured paths"):
+                runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
+
+    def test_skill_discovery_rejects_unrelated_cursor_team_kit_skill(self) -> None:
+        temp, candidate, binary, _platform_key = self.runtime_candidate()
+        self.addCleanup(temp.cleanup)
+        output = write_skill_discovery_fixture(candidate, compat_skills=("control-cli", "deslop", "control-ui"))
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
+            with self.assertRaisesRegex(noodles.GateError, "compatibility discovery must expose exactly control-cli, deslop"):
+                runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
+
+    def test_skill_discovery_rejects_missing_poteto_playbook(self) -> None:
+        temp, candidate, binary, _platform_key = self.runtime_candidate()
+        self.addCleanup(temp.cleanup)
+        output = write_skill_discovery_fixture(candidate, playbooks=("investigation.md", "feature.md"))
+        with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
+            with self.assertRaisesRegex(noodles.GateError, "missing pinned playbook bytes"):
                 runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
 
 
