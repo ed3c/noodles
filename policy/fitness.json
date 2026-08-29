@@ -95,6 +95,9 @@
     "contents: write",
     "pull-requests: write",
     "issues: write",
+    "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
+    "permission-administration: read",
+    "NOODLES_GITHUB_PROTECTION_TOKEN: ${{ steps.app-token.outputs.token }}",
     "python3 noodles.py github land"
   ]
 }

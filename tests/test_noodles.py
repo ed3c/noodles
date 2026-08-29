@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import noodles
@@ -39,6 +40,26 @@ def copy_tracked(source: Path, destination: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst, follow_symlinks=False)
     initialize_repo(destination)
+
+
+def protection_fixture() -> dict:
+    return {
+        "url": "https://api.github.com/repos/ed3c/noodles/branches/main/protection",
+        "required_status_checks": {
+            "strict": True,
+            "contexts": ["verify"],
+            "checks": [{"context": "verify", "app_id": 15368}],
+        },
+        "required_pull_request_reviews": {
+            "dismiss_stale_reviews": False,
+            "require_code_owner_reviews": False,
+            "require_last_push_approval": False,
+            "required_approving_review_count": 0,
+        },
+        "enforce_admins": {"enabled": True},
+        "allow_force_pushes": {"enabled": False},
+        "allow_deletions": {"enabled": False},
+    }
 
 
 class RepositoryGateTests(unittest.TestCase):
