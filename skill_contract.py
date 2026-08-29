@@ -32,21 +32,24 @@ def _has_scheduler_frontmatter(content: str) -> bool:
     return False
 
 
-def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
-    skill_name = config.get("adapters", {}).get("backlog", {}).get("skill")
-    if not isinstance(skill_name, str) or not skill_name.strip():
-        return ["backlog adapter must configure one scheduler-capable skill"]
-    skill_file = None
+def _resolve_skill_file(root: Path, config: dict[str, Any], skill_name: str) -> Path | None:
     for raw_path in config.get("skills", {}).get("paths", []):
         if not isinstance(raw_path, str):
             continue
         skill_root = Path(os.path.expanduser(raw_path))
         if not skill_root.is_absolute():
             skill_root = root / skill_root
-        candidate = skill_root / skill_name.strip() / "SKILL.md"
+        candidate = skill_root / skill_name / "SKILL.md"
         if candidate.is_file():
-            skill_file = candidate
-            break
+            return candidate
+    return None
+
+
+def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
+    skill_name = config.get("adapters", {}).get("backlog", {}).get("skill")
+    if not isinstance(skill_name, str) or not skill_name.strip():
+        return ["backlog adapter must configure one scheduler-capable skill"]
+    skill_file = _resolve_skill_file(root, config, skill_name.strip())
     if skill_file is None:
         return [f"backlog adapter skill {skill_name!r} does not resolve from configured skill paths"]
     try:
@@ -69,6 +72,24 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
         if phrase not in content:
             errors.append(f"backlog adapter skill {skill_name!r} missing {label} contract")
     return errors
+
+
+def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
+    skill_name = "execute"
+    skill_file = _resolve_skill_file(root, config, skill_name)
+    if skill_file is None:
+        return [f"project task skill {skill_name!r} does not resolve from configured skill paths"]
+    try:
+        content = skill_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"cannot read project task skill {skill_name!r}: {exc}"]
+    if not _has_scheduler_frontmatter(content):
+        relative = os.path.relpath(skill_file, root)
+        return [
+            f"project task skill {skill_name!r} is not task-type resolvable: "
+            f"{relative} requires non-empty top-level schedule frontmatter"
+        ]
+    return []
 
 
 def _orders(payload: Any, label: str) -> tuple[list[Any], list[str]]:
@@ -113,13 +134,34 @@ def validate_schedule_output(current: Any, proposed: Any) -> list[str]:
                 "Noodle preserves its exact order/stage fields"
             )
             continue
-        stages = order.get("stages", [])
-        if isinstance(stages, list) and any(
-            isinstance(stage, dict)
-            and str(stage.get("do", stage.get("task_key", ""))).strip().casefold() == "schedule"
-            for stage in stages
-        ):
+        stages = order.get("stages")
+        if not isinstance(stages, list):
+            errors.append(f"scheduler output order {order_id!r} stages must be an array")
+            continue
+        if len(stages) != 1:
+            errors.append(
+                f"scheduler output order {order_id!r} must contain exactly one stage; found {len(stages)}"
+            )
+            continue
+        stage = stages[0]
+        if not isinstance(stage, dict):
+            errors.append(f"scheduler output order {order_id!r} stage[0] must be a JSON object")
+            continue
+        raw_do = stage.get("do")
+        if not isinstance(raw_do, str) or not raw_do.strip():
+            errors.append(
+                f"scheduler output order {order_id!r} stage[0] requires canonical non-empty do"
+            )
+            continue
+        task_key = raw_do.strip().casefold()
+        if task_key == "schedule":
             errors.append(f"scheduler output order {order_id!r} must not contain a schedule stage")
+            continue
+        if task_key != "execute":
+            errors.append(
+                f"scheduler output order {order_id!r} stage[0] has unresolved do {raw_do.strip()!r}; "
+                "expected 'execute'"
+            )
     return errors
 
 

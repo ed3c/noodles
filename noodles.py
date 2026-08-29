@@ -31,7 +31,7 @@ from runtime_contract import (
     validate_handoff_session,
     validate_runtime_lock,
 )
-from skill_contract import validate_backlog_scheduler, validate_noodle_worktree_ignore
+from skill_contract import validate_backlog_scheduler, validate_execute_task, validate_noodle_worktree_ignore
 
 SCHEMA_VERSION = 1
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
@@ -363,6 +363,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             if not str(adapter_scripts.get(action, "")).startswith(expected_adapter + " "):
                 errors.append(f"backlog adapter action {action} must route through {expected_adapter}")
         errors.extend(validate_backlog_scheduler(root, noodle_config))
+        errors.extend(validate_execute_task(root, noodle_config))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         errors.append(f"invalid .noodle.toml: {exc}")
     errors.extend(validate_runtime_lock(root))
