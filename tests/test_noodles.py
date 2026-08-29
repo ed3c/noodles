@@ -22,7 +22,11 @@ from tests.support import (
     handoff_fixture,
     provider_fixture,
     runtime_release_reader,
+    assert_valid_start_entrypoint_receipt,
+    script_mode_gateerror_identity,
+    start_entrypoint_with_delayed_listener,
     tree_digest,
+    validate_script_mode_gateerror_identity,
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
@@ -693,6 +697,28 @@ class StartUnattendedTests(unittest.TestCase):
         reconcile.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
         sleep.assert_called_once_with(0.25)
         process.terminate.assert_not_called()
+
+    def test_wrapper_does_not_swallow_non_gate_exceptions(self) -> None:
+        process = mock.Mock(returncode=0)
+        process.poll.side_effect = [None, None]
+        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+        process.terminate.assert_called_once()
+
+    def test_script_mode_repair_path_shares_one_gate_error_identity(self) -> None:
+        readback = script_mode_gateerror_identity()
+        self.assertEqual(validate_script_mode_gateerror_identity(readback), [])
+
+    def test_documented_start_entrypoint_retries_delayed_listener_in_script_mode(self) -> None:
+        result = start_entrypoint_with_delayed_listener()
+        assert_valid_start_entrypoint_receipt(result)
+
+    def test_documented_start_entrypoint_negative_control_detects_unreachable_listener(self) -> None:
+        result = start_entrypoint_with_delayed_listener(start_listener=False)
+        with self.assertRaisesRegex(AssertionError, "listener never became reachable|listener never served snapshot readback"):
+            assert_valid_start_entrypoint_receipt(result)
 
 
 class ProviderPhysicalTests(unittest.TestCase):

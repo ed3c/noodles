@@ -4,8 +4,11 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import noodles
@@ -57,15 +60,23 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def write_noodle_stub(path: Path, version: str) -> None:
+def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = None) -> None:
+    start_clause = ""
+    if start_delay is not None:
+        start_clause = (
+            "elif args == ['start']:\n"
+            f"    time.sleep({start_delay!r})\n"
+        )
     path.write_text(
         "#!/usr/bin/env python3\n"
         "import os\n"
         "import sys\n"
+        "import time\n"
         "args = sys.argv[1:]\n"
         f"if args == ['--version']:\n    print({version!r})\n"
         "elif len(args) >= 4 and args[0] == '--project-dir' and args[2:] == ['skills', 'list']:\n"
         "    print(os.environ.get('NOODLES_TEST_SKILLS_OUTPUT', ''), end='')\n"
+        f"{start_clause}"
         "else:\n"
         "    raise SystemExit(f'unexpected args: {args}')\n",
         encoding="utf-8",
@@ -270,11 +281,11 @@ def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
     return temp, candidate
 
 
-def control_checkout_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
+def control_checkout_fixture(source: Path = CANDIDATE_ROOT) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
     temp = tempfile.TemporaryDirectory(prefix="noodles-control-checkout-test-")
     base = Path(temp.name)
     provider = base / "provider"
-    copy_tracked(CANDIDATE_ROOT, provider)
+    copy_tracked(source, provider)
     control = base / "control"
     cmd(["git", "clone", "-q", str(provider), str(control)], base)
     cmd(["git", "config", "user.name", "tests"], control)
@@ -346,3 +357,255 @@ def runtime_release_reader(release: str, commit: str, asset_name: str, asset_sha
         raise AssertionError(f"unexpected endpoint {endpoint}")
 
     return read
+
+
+def script_mode_gateerror_identity(root: Path = CANDIDATE_ROOT) -> dict[str, object]:
+    script = (
+        "import importlib.util, json, sys\n"
+        "from pathlib import Path\n"
+        "root = Path(sys.argv[1]).resolve()\n"
+        "sys.modules.pop('noodles', None)\n"
+        "sys.modules.pop('repair_contract', None)\n"
+        "spec = importlib.util.spec_from_file_location('__main__', root / 'noodles.py')\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['__main__'] = module\n"
+        "sys.argv = ['noodles.py', '--root', str(root), 'verify']\n"
+        "try:\n"
+        "    spec.loader.exec_module(module)\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "import repair_contract\n"
+        "import noodles\n"
+        "engine = repair_contract._engine()\n"
+        "print(json.dumps({'main_module': module.__name__, 'engine_module': engine.__name__, 'same_gate_error_identity': module.GateError is engine.GateError, 'split_gate_error_identity': module.GateError is noodles.GateError}))\n"
+    )
+    result = subprocess.run(
+        ["python3", "-c", script, str(root)],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"script mode GateError readback failed: {result.stderr or result.stdout}")
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def validate_script_mode_gateerror_identity(readback: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    if (readback.get("main_module"), readback.get("engine_module")) != ("__main__", "__main__"):
+        errors.append(f"repair path resolved wrong module identity: {readback}")
+    if readback.get("same_gate_error_identity") is not True:
+        errors.append("repair path did not preserve one GateError identity")
+    if readback.get("split_gate_error_identity") is not False:
+        errors.append("legacy split GateError identity remains observable in script mode")
+    return errors
+
+
+def _write_fake_gh_stub(path: Path, *, release: str, commit: str, asset_name: str, asset_sha256: str) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        "args = sys.argv[1:]\n"
+        "if not args or args[0] != 'api':\n    raise SystemExit(f'unexpected args: {args}')\n"
+        "rest = args[1:]\n"
+        "include = False\n"
+        "if rest and rest[0] == '--include':\n    include = True\n    rest = rest[1:]\n"
+        "if rest[:2] != ['--method', 'GET']:\n    raise SystemExit(f'unexpected args: {args}')\n"
+        "endpoint = rest[2]\n"
+        f"release = {release!r}\ncommit = {commit!r}\nasset_name = {asset_name!r}\nasset_sha256 = {asset_sha256!r}\n"
+        "if endpoint == f'repos/poteto/noodle/releases/tags/{release}':\n"
+        "    body = {'tag_name': release, 'assets': [{'name': asset_name, 'digest': f'sha256:{asset_sha256}'}]}\n"
+        "elif endpoint == f'repos/poteto/noodle/git/ref/tags/{release}':\n"
+        "    body = {'object': {'type': 'commit', 'sha': commit}}\n"
+        "elif endpoint == 'repos/ed3c/noodles/branches/main/protection':\n"
+        "    body = {'required_status_checks': {'strict': True, 'contexts': ['verify']}, 'enforce_admins': {'enabled': True}, 'required_pull_request_reviews': {'required_approving_review_count': 0}, 'allow_force_pushes': {'enabled': False}, 'allow_deletions': {'enabled': False}}\n"
+        "else:\n    raise SystemExit(f'unexpected endpoint: {endpoint}')\n"
+        "if include:\n    sys.stdout.write('HTTP/1.1 200 OK\\nETag: test\\nX-GitHub-Request-Id: test\\n\\n')\n"
+        "sys.stdout.write(json.dumps(body))\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def _lock_start_runtime(root: Path, binary: Path, *, release: str, commit: str, asset_sha256: str) -> None:
+    platform_key = runtime_contract.resolve_platform_key(error_cls=AssertionError)
+    asset_name = f"noodle_{platform_key}.tar.gz"
+    lock_path = root / "policy/runtime.lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["runtime"] = {
+        "repository": "poteto/noodle",
+        "release": release,
+        "commit": commit,
+        "command": "noodle",
+        "platforms": {
+            platform_key: {
+                "asset_name": asset_name,
+                "asset_sha256": asset_sha256,
+                "binary_sha256": runtime_contract.sha256_file(binary),
+            }
+        },
+    }
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+
+def _free_tcp_port() -> int:
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+def start_entrypoint_with_delayed_listener(
+    delay: float = 0.25,
+    interval: float = 0.05,
+    *,
+    start_listener: bool = True,
+    runtime_start_delay: float = 0.7,
+) -> dict[str, object]:
+    temp, candidate = cursor_pstack_fixture()
+    with temp:
+        base = Path(temp.name)
+        release = "v9.9.9"
+        commit = "1" * 40
+        asset_sha256 = "2" * 64
+        bin_dir = base / "bin"
+        bin_dir.mkdir()
+        runtime = bin_dir / "noodle"
+        write_noodle_stub(runtime, release, start_delay=runtime_start_delay)
+        _lock_start_runtime(candidate, runtime, release=release, commit=commit, asset_sha256=asset_sha256)
+        cmd(["git", "add", "policy/runtime.lock.json"], candidate)
+        cmd(["git", "commit", "-q", "-m", "runtime fixture"], candidate)
+        temp_control, control, provider = control_checkout_fixture(candidate)
+        try:
+            fake_gh = bin_dir / "gh"
+            platform_key = runtime_contract.resolve_platform_key(error_cls=AssertionError)
+            _write_fake_gh_stub(
+                fake_gh,
+                release=release,
+                commit=commit,
+                asset_name=f"noodle_{platform_key}.tar.gz",
+                asset_sha256=asset_sha256,
+            )
+            output = write_skill_discovery_fixture(control)
+            port = _free_tcp_port()
+            control_url = f"http://127.0.0.1:{port}"
+            listener_ready = threading.Event()
+            listener_served = threading.Event()
+            listener_stop = threading.Event()
+            listener_state: dict[str, object] = {
+                "listener_ready": False,
+                "listener_served": False,
+                "listener_request_count": 0,
+                "listener_thread_alive": False,
+                "listener_error": None,
+                "listener_bound_port": port,
+                "entrypoint_path": str(control / "noodles"),
+                "entrypoint_exists": (control / "noodles").exists(),
+            }
+
+            def late_listener() -> None:
+                from http.server import BaseHTTPRequestHandler, HTTPServer
+
+                if not start_listener:
+                    return
+                try:
+                    time.sleep(delay)
+
+                    class Handler(BaseHTTPRequestHandler):
+                        def do_GET(self) -> None:
+                            listener_state["listener_request_count"] = int(listener_state["listener_request_count"]) + 1
+                            if self.path != "/api/snapshot":
+                                self.send_response(404)
+                                self.end_headers()
+                                return
+                            body = json.dumps({"pending_reviews": [], "unclaimed_orders": []}).encode("utf-8")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            listener_state["listener_served"] = True
+                            listener_served.set()
+
+                        def log_message(self, _format: str, *_args: object) -> None:
+                            return
+
+                    with HTTPServer(("127.0.0.1", port), Handler) as server:
+                        server.timeout = 0.05
+                        listener_state["listener_ready"] = True
+                        listener_ready.set()
+                        while not listener_stop.is_set():
+                            server.handle_request()
+                            if listener_served.is_set():
+                                break
+                except Exception as exc:
+                    listener_state["listener_error"] = f"{type(exc).__name__}: {exc}"
+                finally:
+                    listener_stop.set()
+
+            listener_thread = threading.Thread(target=late_listener, name="start-entrypoint-listener")
+            listener_thread.start()
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+            env["PYTHONPATH"] = str(CANDIDATE_ROOT)
+            env["NOODLES_TEST_ALLOW_LOCAL_PROVIDER"] = "1"
+            env["NOODLES_TEST_SKILLS_OUTPUT"] = output
+            result = subprocess.run(
+                [str(control / "noodles"), "start", "--control-url", control_url, "--interval", str(interval)],
+                cwd=control,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if start_listener:
+                listener_ready.wait(timeout=max(1.0, delay + interval))
+                listener_served.wait(timeout=max(1.0, runtime_start_delay + interval))
+            listener_stop.set()
+            listener_thread.join(timeout=2)
+            listener_state["listener_thread_alive"] = listener_thread.is_alive()
+            listener_state["listener_ready"] = listener_ready.is_set()
+            listener_state["listener_served"] = listener_served.is_set()
+            return {
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                **listener_state,
+            }
+        finally:
+            temp_control.cleanup()
+
+
+def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    if receipt.get("returncode") != 0:
+        errors.append(f"entrypoint returned {receipt.get('returncode')!r}: {receipt.get('stderr', '')}")
+    stderr = str(receipt.get("stderr") or "")
+    if "repair: Noodle control request failed" not in stderr:
+        errors.append("wrapper never diagnosed startup connection refusal on repair path")
+    if "Traceback" in stderr:
+        errors.append("wrapper terminated with traceback instead of retrying")
+    if receipt.get("entrypoint_exists") is not True:
+        errors.append(f"documented entrypoint missing at {receipt.get('entrypoint_path')}")
+    if receipt.get("listener_ready") is not True:
+        errors.append("listener never became reachable")
+    if receipt.get("listener_served") is not True:
+        errors.append("listener never served snapshot readback")
+    if int(receipt.get("listener_request_count") or 0) < 1:
+        errors.append("listener request readback missing")
+    if receipt.get("listener_thread_alive") is not False:
+        errors.append("listener thread residue remained after subprocess exit")
+    if receipt.get("listener_error") is not None:
+        errors.append(f"listener lifecycle failed: {receipt.get('listener_error')}")
+    return errors
+
+
+def assert_valid_start_entrypoint_receipt(receipt: dict[str, object]) -> None:
+    errors = validate_start_entrypoint_receipt(receipt)
+    if errors:
+        raise AssertionError("; ".join(errors))
