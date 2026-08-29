@@ -11,6 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 import noodles
+import skill_contract
 
 ENGINE_ROOT = Path(noodles.__file__).resolve().parent
 CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve()
@@ -156,6 +157,116 @@ class RepositoryGateTests(unittest.TestCase):
         result = self.verify(root)
         self.assertFalse(result["ok"])
         self.assertTrue(any("scheduler-capable" in item for item in result["errors"]))
+
+    def test_schedule_skill_without_self_order_ownership_contract_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/schedule/SKILL.md"
+        content = path.read_text()
+        ownership = "Noodle alone injects and owns the transient `schedule` order."
+        self.assertIn(ownership, content)
+        path.write_text(content.replace(ownership, "The scheduler may preserve its own order.", 1))
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("self-order ownership" in item for item in result["errors"]))
+
+    def test_schedule_skill_without_deterministic_publish_gate_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/schedule/SKILL.md"
+        content = path.read_text()
+        command = "python3 skill_contract.py publish .noodle/orders-next.candidate.json"
+        self.assertIn(command, content)
+        path.write_text(content.replace(command, "mv .noodle/orders-next.candidate.json .noodle/orders-next.json", 1))
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("deterministic publish gate" in item for item in result["errors"]))
+
+    def test_schedule_output_accepts_only_new_non_schedule_orders(self) -> None:
+        current = {
+            "orders": [{
+                "id": "ed3c/noodles#30",
+                "status": "active",
+                "stages": [{"task_key": "execute", "status": "active", "prompt": "exact"}],
+            }]
+        }
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#31",
+                "stages": [{"do": "execute", "prompt": "next"}],
+            }]
+        }
+        self.assertEqual(skill_contract.validate_schedule_output(current, proposed), [])
+
+    def test_planted_negative_schedule_self_order_fixture_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-") as temp_name:
+            root = Path(temp_name)
+            runtime = root / ".noodle"
+            runtime.mkdir()
+            (runtime / "orders.json").write_text('{"orders": []}')
+            candidate_path = runtime / "orders-next.candidate.json"
+            candidate_path.write_text(json.dumps({
+                "orders": [{
+                    "id": " schedule ",
+                    "stages": [{"do": "schedule"}],
+                }]
+            }))
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "scheduler output must not contain Noodle-owned transient schedule order 'schedule'",
+            ):
+                skill_contract.publish_schedule_output(root, candidate_path)
+
+            self.assertTrue(candidate_path.exists())
+            self.assertFalse((runtime / "orders-next.json").exists())
+
+    def test_schedule_output_cannot_rewrite_active_non_schedule_order(self) -> None:
+        current = {
+            "orders": [{
+                "id": "ed3c/noodles#30",
+                "status": "active",
+                "stages": [{"task_key": "execute", "status": "active", "prompt": "original"}],
+            }]
+        }
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#30",
+                "stages": [{"do": "execute", "prompt": "rewritten"}],
+            }]
+        }
+        errors = skill_contract.validate_schedule_output(current, proposed)
+        self.assertEqual(
+            errors,
+            [
+                "scheduler output must omit active non-schedule order 'ed3c/noodles#30'; "
+                "Noodle preserves its exact order/stage fields"
+            ],
+        )
+
+    def test_schedule_publish_is_atomic_and_does_not_mutate_active_orders(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-schedule-contract-") as temp_name:
+            root = Path(temp_name)
+            runtime = root / ".noodle"
+            runtime.mkdir()
+            current = {
+                "orders": [{
+                    "id": "ed3c/noodles#30",
+                    "status": "active",
+                    "stages": [{"task_key": "execute", "status": "active", "prompt": "exact"}],
+                }]
+            }
+            candidate = {"orders": []}
+            (runtime / "orders.json").write_text(json.dumps(current))
+            candidate_path = runtime / "orders-next.candidate.json"
+            candidate_path.write_text(json.dumps(candidate))
+
+            destination = skill_contract.publish_schedule_output(root, candidate_path)
+
+            self.assertEqual(destination, (runtime / "orders-next.json").resolve())
+            self.assertEqual(json.loads((runtime / "orders.json").read_text()), current)
+            self.assertEqual(json.loads(destination.read_text()), candidate)
+            self.assertFalse(candidate_path.exists())
 
     def test_symlink_is_rejected(self) -> None:
         temp, root = self.mutated_copy()

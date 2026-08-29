@@ -25,6 +25,20 @@ Schedule an item only when all are true:
 
 Reject or mark `blocked` when the target, subject, dependency, acceptance evidence, or non-claims are ambiguous.
 
+## Ownership boundary
+
+Noodle alone injects and owns the transient `schedule` order. Scheduler output contains only non-schedule work orders. Never emit an order whose `id` is `schedule`, and never use `schedule` as a stage.
+
+Read `.noodle/orders.json` only to identify active order IDs; never modify it. Do not re-emit any active non-schedule order. Omitting it lets Noodle preserve its exact order and stage fields, including the active cook's session and worktree identity.
+
+Write the complete proposal to `.noodle/orders-next.candidate.json`, then publish it through the deterministic repository contract:
+
+```bash
+python3 skill_contract.py publish .noodle/orders-next.candidate.json
+```
+
+Never write `.noodle/orders-next.json` directly. A rejected candidate must be corrected and published again; do not bypass the diagnostic.
+
 ## Order construction
 
 Create one order per Issue. Use the exact Issue subject as `order_id`.
@@ -57,4 +71,4 @@ Sibling Issues may run concurrently only when their target paths/contracts are d
 
 ## Output
 
-Write Noodle orders with exact IDs and dependency order. If nothing is admitted, emit no mutating order and record the fail-closed reason.
+Publish Noodle orders with exact IDs and dependency order through the ownership gate above. If nothing is admitted, publish `{"orders": []}` and record the fail-closed reason.
