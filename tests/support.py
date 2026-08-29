@@ -237,6 +237,18 @@ def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
     return temp, candidate
 
 
+def control_checkout_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
+    temp = tempfile.TemporaryDirectory(prefix="noodles-control-checkout-test-")
+    base = Path(temp.name)
+    provider = base / "provider"
+    copy_tracked(CANDIDATE_ROOT, provider)
+    control = base / "control"
+    cmd(["git", "clone", "-q", str(provider), str(control)], base)
+    cmd(["git", "config", "user.name", "tests"], control)
+    cmd(["git", "config", "user.email", "tests@example.invalid"], control)
+    return temp, control, provider
+
+
 def write_skill_discovery_fixture(
     candidate: Path,
     *,

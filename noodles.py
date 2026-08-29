@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
+    control_checkout_admission as runtime_control_checkout_admission,
     emit_blocking_handoff,
+    gh_repo_from_git as runtime_gh_repo_from_git,
     provider_check as runtime_provider_check,
     provider_sync as runtime_provider_sync,
     resolve_locked_runtime_binary,
@@ -459,14 +461,6 @@ def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, to
     return body
 
 
-def gh_repo_from_git(root: Path) -> str:
-    url = git(root, "remote", "get-url", "origin")
-    match = re.search(r"github\.com[/:]([^/]+/[^/.]+)(?:\.git)?$", url)
-    if not match:
-        raise GateError(f"cannot derive GitHub repository from origin: {url}")
-    return match.group(1)
-
-
 def issue_read(subject_value: str) -> dict[str, Any]:
     subject = parse_subject(subject_value)
     issue = gh_api(f"repos/{subject.repo}/issues/{subject.number}")
@@ -492,7 +486,7 @@ def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
 
 def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str, Any]) -> dict[str, Any]:
     subject = parse_subject(subject_value)
-    if subject.repo != gh_repo_from_git(root):
+    if subject.repo != runtime_gh_repo_from_git(root, error_cls=GateError):
         raise GateError("handoff subject repository does not match current worktree")
     if pr.get("state") != "open" or pr.get("draft"):
         raise GateError("handoff PR must be open and non-draft")
@@ -524,6 +518,10 @@ def protection_readback(repo: str, branch: str, required_check: str) -> dict[str
         branch,
         required_check,
     )
+
+
+def control_checkout_admission(root: Path) -> dict[str, Any]:
+    return runtime_control_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
 
 
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
@@ -716,6 +714,7 @@ def provider_landed(subject_value: str) -> tuple[int, str, str]:
 
 
 def reconcile_once(root: Path, control_url: str) -> list[str]:
+    branch = str(control_checkout_admission(root)["branch"])
     snapshot = http_json(control_url.rstrip("/") + "/api/snapshot")
     completed: list[str] = []
     for review in snapshot.get("pending_reviews") or []:
@@ -725,8 +724,8 @@ def reconcile_once(root: Path, control_url: str) -> list[str]:
             provider_landed(order_id)
         except GateError:
             continue
-        git(root, "fetch", "--quiet", "origin", "main")
-        git(root, "merge", "--ff-only", "origin/main")
+        git(root, "fetch", "--quiet", "origin", branch)
+        git(root, "merge", "--ff-only", f"origin/{branch}")
         command_id = f"noodles-reconcile-{hashlib.sha256(order_id.encode()).hexdigest()[:12]}"
         ack = http_json(
             control_url.rstrip("/") + "/api/control",
@@ -757,7 +756,7 @@ def issue_template(repo: str, number: int, title: str) -> str:
 def adapter_sync() -> int:
     repositories = [item.strip() for item in os.getenv("NOODLES_REPOSITORIES", "").split(",") if item.strip()]
     if not repositories:
-        repositories = [gh_repo_from_git(repo_root())]
+        repositories = [runtime_gh_repo_from_git(repo_root(), error_cls=GateError)]
     output: list[dict[str, Any]] = []
     for repository in repositories:
         issues = gh_api(f"repos/{repository}/issues?state=open&per_page=100")
@@ -783,7 +782,7 @@ def adapter_sync() -> int:
 
 def adapter_add(title: str) -> int:
     root = repo_root()
-    repository = os.getenv("NOODLES_TARGET_REPOSITORY") or gh_repo_from_git(root)
+    repository = os.getenv("NOODLES_TARGET_REPOSITORY") or runtime_gh_repo_from_git(root, error_cls=GateError)
     provisional = {
         "title": title,
         "body": "<!-- noodles-role: repository-mutating-atom -->\n"
@@ -827,6 +826,7 @@ def adapter_main(argv: Sequence[str] | None = None) -> int:
 
 
 def start_unattended(root: Path, control_url: str, interval: float) -> int:
+    control_checkout_admission(root)
     verified = verify_repository(root)
     if not verified["ok"]:
         raise GateError("repository verification failed: " + "; ".join(verified["errors"]))
