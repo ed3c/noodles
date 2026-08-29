@@ -1,6 +1,7 @@
 ---
 name: schedule
 description: Convert exact GitHub Issue contracts into minimal dependency-aware Noodle orders.
+schedule: "When provider-backed backlog state requires new or revised orders"
 ---
 
 # Schedule

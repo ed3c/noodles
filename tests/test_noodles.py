@@ -89,6 +89,32 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("routing model must be" in item for item in result["errors"]))
 
+    def test_scheduler_frontmatter_positive_fixture_passes(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/schedule/SKILL.md"
+        content = path.read_text()
+        if "\nschedule:" not in content:
+            content = content.replace(
+                "description: Convert exact GitHub Issue contracts into minimal dependency-aware Noodle orders.\n",
+                "description: Convert exact GitHub Issue contracts into minimal dependency-aware Noodle orders.\n"
+                'schedule: "When provider-backed backlog state requires new or revised orders"\n',
+                1,
+            )
+        path.write_text(content)
+        result = self.verify(root)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_backlog_skill_without_scheduler_frontmatter_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/schedule/SKILL.md"
+        content = path.read_text()
+        path.write_text("\n".join(line for line in content.splitlines() if not line.startswith("schedule:")) + "\n")
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("scheduler-capable" in item for item in result["errors"]))
+
     def test_symlink_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
