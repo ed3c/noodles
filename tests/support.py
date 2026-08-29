@@ -6,6 +6,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -450,6 +451,99 @@ def _lock_start_runtime(root: Path, binary: Path, *, release: str, commit: str, 
     lock_path.write_text(json.dumps(lock), encoding="utf-8")
 
 
+def write_fake_codex_stub(path: Path) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "cwd = Path.cwd().resolve()\n"
+        "home = Path(os.environ.get('HOME', '~')).expanduser().resolve()\n"
+        "codex_home = Path(os.environ.get('CODEX_HOME', str(home))).resolve()\n"
+        "skill_rows = []\n"
+        "roots = []\n"
+        "for idx, root in enumerate([codex_home / 'skills', home / '.agents' / 'skills', cwd / '.agents' / 'skills']):\n"
+        "    roots.append((f'r{idx}', str(root.resolve())))\n"
+        "    if not root.is_dir():\n"
+        "        continue\n"
+        "    for skill in sorted(root.iterdir()):\n"
+        "        if (skill / 'SKILL.md').is_file():\n"
+        "            skill_rows.append((skill.name, f'r{idx}/{skill.name}/SKILL.md'))\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['debug', 'prompt-input']:\n"
+        "    skills_block = '\\n'.join(f'- {name}: planted (file: {raw})' for name, raw in skill_rows)\n"
+        "    roots_block = '\\n'.join(f'- `{name}` = `{root}`' for name, root in roots)\n"
+        "    text = '### Skill roots\\n' + roots_block + '\\n### Available skills\\n' + skills_block + '\\n</skills_instructions>'\n"
+        "    print(json.dumps([{'role': 'developer', 'content': [{'type': 'input_text', 'text': text}]}]))\n"
+        "elif args == ['plugin', 'list', '--json']:\n"
+        "    print(json.dumps({'installed': [], 'available': []}))\n"
+        "else:\n"
+        "    raise SystemExit(f'unexpected args: {args}')\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def write_codex_real_bin_probe(path: Path) -> None:
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "self_path = Path(__file__).resolve()\n"
+        "override = os.environ.get('NOODLES_CODEX_REAL_BIN', '').strip()\n"
+        "if override:\n"
+        "    print(override)\n"
+        "    raise SystemExit(0)\n"
+        "for entry in os.environ.get('PATH', '').split(os.pathsep):\n"
+        "    candidate = Path(entry or '.') / 'codex'\n"
+        "    try:\n"
+        "        resolved = candidate.resolve()\n"
+        "    except OSError:\n"
+        "        continue\n"
+        "    if resolved == self_path:\n"
+        "        continue\n"
+        "    if candidate.is_file() and os.access(candidate, os.X_OK):\n"
+        "        print(str(candidate))\n"
+        "        raise SystemExit(0)\n"
+        "raise SystemExit('NOODLES_CODEX_WRAPPER_FAIL: cannot resolve real codex binary')\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
+def codex_real_bin_export(base: Path) -> str | None:
+    if os.getenv("NOODLES_OFFLINE_TESTS") != "1":
+        return None
+    fake_codex = base / "codex-real-fixture"
+    write_fake_codex_stub(fake_codex)
+    return str(fake_codex)
+
+
+def codex_real_bin_resolution(*, override: Path | None) -> dict[str, object]:
+    with tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-probe-") as temp_name:
+        base = Path(temp_name)
+        probe = base / "resolve_codex.py"
+        write_codex_real_bin_probe(probe)
+        env = os.environ.copy()
+        env["PATH"] = str(base)
+        if override is not None:
+            env["NOODLES_CODEX_REAL_BIN"] = str(override)
+        else:
+            env.pop("NOODLES_CODEX_REAL_BIN", None)
+        result = subprocess.run(
+            [sys.executable, str(probe)],
+            cwd=base,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+
+
 def _free_tcp_port() -> int:
     sock = socket.socket()
     try:
@@ -554,6 +648,9 @@ def start_entrypoint_with_delayed_listener(
             env["PYTHONPATH"] = str(CANDIDATE_ROOT)
             env["NOODLES_TEST_ALLOW_LOCAL_PROVIDER"] = "1"
             env["NOODLES_TEST_SKILLS_OUTPUT"] = output
+            codex_real_bin = codex_real_bin_export(base)
+            if codex_real_bin is not None:
+                env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
             result = subprocess.run(
                 [str(control / "noodles"), "start", "--control-url", control_url, "--interval", str(interval)],
                 cwd=control,
