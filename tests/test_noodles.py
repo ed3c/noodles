@@ -31,7 +31,6 @@ from tests.support import (
     write_skill_discovery_fixture,
 )
 
-
 class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
         return noodles.verify_repository(root, ENGINE_ROOT)
@@ -84,12 +83,18 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("mode must be" in item for item in result["errors"]))
 
-    def test_codex_routing_model_is_admitted(self) -> None:
+    def test_codex_routing_transition_states_are_exact(self) -> None:
         with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
             config = tomllib.load(handle)
         self.assertEqual(config["routing"]["defaults"]["model"], "gpt-5.4")
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
+        expected = [{"model": "gpt-5.4", "codex_path": "~/.codex"}, {"model": "gpt-5.6-luna", "codex_path": ".agents/bin"}]; self.assertEqual(json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_routing_transition"], expected)
+        for state in expected[1:] + [{"model": model, "codex_path": path} for model, path in (("gpt-5.6-luna", "~/.codex"), ("gpt-5.6-pro", ".agents/bin"), ("gpt-5.6", ".agents/bin"), ("claude-opus-4-1", ".agents/bin"), ("gpt-5.6-luna", "./other"))]:
+            with self.subTest(state=state):
+                temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / ".noodle.toml"; content = path.read_text(); content = content.replace('model = "gpt-5.4"', f'model = "{state["model"]}"', 1).replace('path = "~/.codex"', f'path = "{state["codex_path"]}"', 1); carrier = root / ".agents/bin/codex"; (carrier.parent.mkdir(parents=True, exist_ok=True), carrier.write_text("#!/bin/sh\nexit 0\n"), carrier.chmod(0o755)) if state["codex_path"] == ".agents/bin" else None
+                path.write_text(content); self.commit(root); result = self.verify(root); self.assertEqual(result["ok"], state in expected, result["errors"])
+        temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / "policy/fitness.json"; policy = json.loads(path.read_text()); policy["required_codex_routing_transition"] = None; path.write_text(json.dumps(policy)); self.commit(root); result = noodles.verify_repository(root, root); self.assertFalse(result["ok"], result)
 
     def test_runtime_lock_pins_expected_release(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/runtime.lock.json").read_text())
@@ -171,7 +176,7 @@ class RepositoryGateTests(unittest.TestCase):
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
-        self.assertTrue(any("routing model must be" in item for item in result["errors"]))
+        self.assertTrue(any("Codex routing must be" in item for item in result["errors"]))
 
     def test_scheduler_frontmatter_positive_fixture_passes(self) -> None:
         temp, root = self.mutated_copy()
