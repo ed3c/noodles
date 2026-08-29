@@ -869,6 +869,9 @@ def build_parser() -> argparse.ArgumentParser:
     issue_handoff = issue_sub.add_parser("handoff")
     issue_handoff.add_argument("subject")
     issue_handoff.add_argument("--pr", type=int, required=True)
+    eval_sub = sub.add_parser("eval").add_subparsers(dest="eval_action", required=True)
+    eval_gh = eval_sub.add_parser("gh-boundary")
+    eval_gh.add_argument("--tool", action="append", default=[]); eval_gh.add_argument("child_command", nargs=argparse.REMAINDER)
     github = sub.add_parser("github")
     github_sub = github.add_subparsers(dest="github_action", required=True)
     protect = github_sub.add_parser("protect")
@@ -928,6 +931,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pr = gh_api(f"repos/{subject.repo}/pulls/{args.pr}")
                 print(json.dumps(execute_handoff(root, args.subject, args.pr, pr)))
                 return 0
+        if args.command == "eval":
+            if args.eval_action != "gh-boundary":
+                raise GateError(f"unsupported eval action: {args.eval_action}")
+            command = list(args.child_command[1:] if args.child_command[:1] == ["--"] else args.child_command)
+            print(json.dumps(github_protection.run_bounded_gh_admission_eval(root, command, required_tools=args.tool, error_cls=GateError), indent=2, sort_keys=True))
+            return 0
         if args.command == "github":
             if args.github_action == "protect":
                 policy = protection_policy(root)
