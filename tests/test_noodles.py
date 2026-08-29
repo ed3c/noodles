@@ -75,9 +75,22 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(result["errors"] == [] and all(w.startswith("architecture warning ") for w in result["warnings"]), result)
 
     def test_untagged_comment_variants_fail_with_distinct_diagnostics(self) -> None:
-        temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup)
-        shell_path = root / "tests/run.sh"; shell_lines = shell_path.read_text().splitlines(); shell_lines.insert(2, "# reminder: keep this fast"); shell_path.write_text("\n".join(shell_lines) + "\n"); phrase = 'SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."'; py_path = root / "skill_contract.py"; py_mutated = py_path.read_text().replace(phrase, f"# {phrase}", 1); py_path.write_text(py_mutated); lineno = py_mutated.splitlines().index(f"# {phrase}") + 1
-        self.commit(root); result = self.verify(root); self.assertFalse(result["ok"]); self.assertTrue(any("tests/run.sh:3" in item for item in result["errors"])); self.assertTrue(any(f"skill_contract.py:{lineno}" in item for item in result["errors"]))
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        shell_path = root / "tests/run.sh"
+        shell_lines = shell_path.read_text().splitlines()
+        shell_lines.insert(2, "# reminder: keep this fast")
+        shell_path.write_text("\n".join(shell_lines) + "\n")
+        phrase = 'SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."'
+        py_path = root / "skill_contract.py"
+        py_mutated = py_path.read_text().replace(phrase, f"# {phrase}", 1)
+        py_path.write_text(py_mutated)
+        lineno = py_mutated.splitlines().index(f"# {phrase}") + 1
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("tests/run.sh:3" in item for item in result["errors"]))
+        self.assertTrue(any(f"skill_contract.py:{lineno}" in item for item in result["errors"]))
 
     def test_auto_mode_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
@@ -376,11 +389,13 @@ class RepositoryGateTests(unittest.TestCase):
                     "stages": [{"do": "schedule"}],
                 }]
             }))
+
             with self.assertRaisesRegex(
                 ValueError,
                 "scheduler output must not contain Noodle-owned transient schedule order 'schedule'",
             ):
                 skill_contract.publish_schedule_output(root, candidate_path)
+
             self.assertTrue(candidate_path.exists())
             self.assertFalse((runtime / "orders-next.json").exists())
 
@@ -424,7 +439,9 @@ class RepositoryGateTests(unittest.TestCase):
             (runtime / "orders.json").write_text(json.dumps(current))
             candidate_path = runtime / "orders-next.candidate.json"
             candidate_path.write_text(json.dumps(candidate))
+
             destination = skill_contract.publish_schedule_output(root, candidate_path)
+
             self.assertEqual(destination, (runtime / "orders-next.json").resolve())
             self.assertEqual(json.loads((runtime / "orders.json").read_text()), current)
             self.assertEqual(json.loads(destination.read_text()), candidate)
@@ -697,6 +714,7 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles, "reconcile_once") as reconcile, \
              mock.patch.object(time, "sleep") as sleep:
             result = noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+
         self.assertEqual(result, 0)
         repair.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
         reconcile.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")

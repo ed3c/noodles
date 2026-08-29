@@ -15,7 +15,8 @@ import stat
 import subprocess
 import sys
 import time
-import tokenize, tomllib
+import tokenize
+import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -58,7 +59,8 @@ REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
-EXEC_SUFFIXES = {".py", ".sh"}; ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
+EXEC_SUFFIXES = {".py", ".sh"}
+ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
 @dataclass(frozen=True)
@@ -340,7 +342,8 @@ def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
         try:
             lines = (root / other_path).read_text(encoding="utf-8").splitlines()
         except OSError as exc:
-            errors.append(f"comment scan failed for {other_path}: {exc}"); continue
+            errors.append(f"comment scan failed for {other_path}: {exc}")
+            continue
         for lineno, line in enumerate(lines, start=1):
             stripped = line.lstrip()
             if stripped.startswith("#") and not (lineno == 1 and stripped.startswith("#!")) and not stripped.startswith(ALLOWED_COMMENT_TAGS):
