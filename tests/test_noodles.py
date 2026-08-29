@@ -336,6 +336,16 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("scheduler-capable" in item for item in result["errors"]))
 
+    def test_execute_skill_without_task_frontmatter_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".agents/skills/execute/SKILL.md"
+        content = path.read_text()
+        path.write_text("\n".join(line for line in content.splitlines() if not line.startswith("schedule:")) + "\n")
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
+
     def test_schedule_skill_without_self_order_ownership_contract_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
@@ -375,6 +385,60 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(skill_contract.validate_schedule_output(current, proposed), [])
+
+    def test_schedule_output_rejects_stage_without_do(self) -> None:
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#37",
+                "stages": [{"prompt": "untyped ad-hoc stage"}],
+            }]
+        }
+        self.assertEqual(
+            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            ["scheduler output order 'ed3c/noodles#37' stage[0] requires canonical non-empty do"],
+        )
+
+    def test_schedule_output_rejects_unresolved_do(self) -> None:
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#37",
+                "stages": [{"do": "review", "prompt": "wrong task type"}],
+            }]
+        }
+        self.assertEqual(
+            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            [
+                "scheduler output order 'ed3c/noodles#37' stage[0] has unresolved do 'review'; "
+                "expected 'execute'"
+            ],
+        )
+
+    def test_schedule_output_rejects_multiple_execute_stages(self) -> None:
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#37",
+                "stages": [
+                    {"do": "execute", "prompt": "first"},
+                    {"do": "execute", "prompt": "second"},
+                ],
+            }]
+        }
+        self.assertEqual(
+            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            ["scheduler output order 'ed3c/noodles#37' must contain exactly one stage; found 2"],
+        )
+
+    def test_schedule_output_rejects_schedule_stage(self) -> None:
+        proposed = {
+            "orders": [{
+                "id": "ed3c/noodles#37",
+                "stages": [{"do": "schedule", "prompt": "self-owned"}],
+            }]
+        }
+        self.assertEqual(
+            skill_contract.validate_schedule_output({"orders": []}, proposed),
+            ["scheduler output order 'ed3c/noodles#37' must not contain a schedule stage"],
+        )
 
     def test_planted_negative_schedule_self_order_fixture_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-") as temp_name:

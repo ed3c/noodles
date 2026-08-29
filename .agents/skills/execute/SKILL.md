@@ -1,6 +1,7 @@
 ---
 name: execute
 description: Implement one exact GitHub Issue atom, produce physical evidence, and hand off one PR to the provider lander.
+schedule: "When one exact admitted GitHub Issue atom is ready for implementation"
 ---
 
 # Execute

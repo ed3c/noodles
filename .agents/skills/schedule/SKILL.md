@@ -43,7 +43,7 @@ Never write `.noodle/orders-next.json` directly. A rejected candidate must be co
 
 Create one order per Issue. Use the exact Issue subject as `order_id`.
 
-The order must have one `execute` stage unless the Issue itself proves that a second physical stage is necessary. Do not create generic planning, review, shipping, or human-approval stages. pstack performs engineering lifecycle routing inside the execute stage.
+The order must have exactly one `execute` stage. Do not create generic planning, review, shipping, or human-approval stages. pstack performs engineering lifecycle routing inside the execute stage.
 
 Pass this context verbatim:
 
