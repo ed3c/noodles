@@ -105,6 +105,27 @@ class RepositoryGateTests(unittest.TestCase):
         result = self.verify(root)
         self.assertTrue(result["ok"], result["errors"])
 
+    def test_noodle_worktree_root_positive_fixture_passes(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".gitignore"
+        content = path.read_text()
+        if ".worktrees/\n" not in content:
+            path.write_text(content + ".worktrees/\n")
+            self.commit(root)
+        result = self.verify(root)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_missing_noodle_worktree_ignore_is_rejected(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / ".gitignore"
+        content = path.read_text()
+        path.write_text("\n".join(line for line in content.splitlines() if line != ".worktrees/") + "\n")
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("Noodle worktree root .worktrees" in item for item in result["errors"]))
+
     def test_backlog_skill_without_scheduler_frontmatter_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)

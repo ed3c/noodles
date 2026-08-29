@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -53,3 +54,19 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
             f"{relative} requires non-empty top-level schedule frontmatter"
         ]
     return []
+
+
+def validate_noodle_worktree_ignore(root: Path, tracked_paths: set[str]) -> list[str]:
+    diagnostic = "Noodle worktree root .worktrees requires exact tracked ignore rule .worktrees/"
+    if ".gitignore" not in tracked_paths:
+        return [diagnostic]
+    try:
+        ignore_lines = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return [diagnostic]
+    if ".worktrees/" not in ignore_lines:
+        return [diagnostic]
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", ".worktrees/"], cwd=root, check=False
+    )
+    return [] if result.returncode == 0 else [diagnostic]
