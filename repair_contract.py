@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -16,6 +17,9 @@ REPAIR_MAX_ATTEMPTS = 3
 
 
 def _engine():
+    main = sys.modules.get("__main__")
+    if main is not None and Path(getattr(main, "__file__", "")).resolve() == (Path(__file__).resolve().with_name("noodles.py")):
+        return main
     import noodles as engine
     return engine
 
