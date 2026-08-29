@@ -502,6 +502,8 @@ class RepositoryGateTests(unittest.TestCase):
             self.assertEqual(system_contract.count(f"| {requirement_id} |"), 1)
         self.assertIn("contracts/system-v1.md", agents)
         self.assertIn("`AF-01` through `AF-06`", agents)
+        self.assertIn("Run `./noodles acceptance verify`", agents)
+        self.assertIn("handoff alone sets `awaiting_land`", agents)
         self.assertNotIn("### Durable owner and writer map", agents)
 
     def test_issue_template_uses_baseline_without_copying_a_specialized_feature(self) -> None:

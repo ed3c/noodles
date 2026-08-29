@@ -9,9 +9,10 @@
 3. Load external engineering knowledge through pinned provider paths.
 4. Route the task with pstack; read only the nearest relevant contract and test.
 5. Implement the smallest independently useful atom in the Noodle worktree.
-6. Run `./noodles verify`, commit, push, set the Issue to `awaiting_land`, then open one PR with exactly one `Refs owner/repo#N` line.
-7. Let trusted GitHub workflows verify the exact head, merge with that head SHA, read back the merge event, then close the exact Issue.
-8. Let `./noodles reconcile` fast-forward local `main` and release Noodle's supervised containment point after provider readback.
+6. Run focused controls and `./noodles verify`, commit and push the exact candidate, then open one PR with exactly one `Refs owner/repo#N` line.
+7. Run `./noodles acceptance verify` at that committed head, adding `--feature <id>` only when the Issue declares one, then run `./noodles issue handoff owner/repo#N --pr N`; handoff alone sets `awaiting_land`.
+8. Let trusted GitHub workflows verify the exact head, merge with that head SHA, read back the merge event, then close the exact Issue.
+9. Let `./noodles reconcile` fast-forward local `main` and release Noodle's supervised containment point after provider readback.
 
 Human Verifier is not an operational state. A person may set goals, change constraints, or handle an admitted escalation; a person is never the routine correctness oracle or merge gate.
 
