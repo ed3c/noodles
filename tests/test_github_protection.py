@@ -77,6 +77,17 @@ class ProtectionContractTests(unittest.TestCase):
         gh_path = shutil.which("gh")
         self.assertIsNotNone(gh_path)
         return Path(str(gh_path)).resolve()
+    def workflow_boundary(self, mutate) -> tuple[list[str], dict]:
+        with tempfile.TemporaryDirectory(prefix="noodles-gh-protect-") as temp_name:
+            root = Path(temp_name)
+            workflow_dir = root / ".github/workflows"
+            workflow_dir.mkdir(parents=True)
+            verify_path = workflow_dir / "verify.yml"
+            land_path = workflow_dir / "land.yml"
+            shutil.copy2(ENGINE_ROOT / ".github/workflows/verify.yml", verify_path)
+            shutil.copy2(ENGINE_ROOT / ".github/workflows/land.yml", land_path)
+            mutate(verify_path, land_path)
+            return github_protection.workflow_boundary_readback(root, sha256_file)
 
     def assert_model_eval_rejected_before_spawn(
         self,
@@ -158,13 +169,7 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertEqual(audit["provider_response"]["accepted_github_permissions"], "administration=read")
 
     def test_workflow_boundary_rejects_candidate_secret_exposure(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-gh-protect-") as temp_name:
-            root = Path(temp_name)
-            verify_dir = root / ".github/workflows"
-            verify_dir.mkdir(parents=True)
-            shutil.copy2(ENGINE_ROOT / ".github/workflows/verify.yml", verify_dir / "verify.yml")
-            shutil.copy2(ENGINE_ROOT / ".github/workflows/land.yml", verify_dir / "land.yml")
-            verify_path = verify_dir / "verify.yml"
+        def mutate(verify_path: Path, _land_path: Path) -> None:
             verify_path.write_text(
                 verify_path.read_text(encoding="utf-8").replace(
                     "      contents: read\n",
@@ -173,18 +178,66 @@ class ProtectionContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            errors, evidence = github_protection.workflow_boundary_readback(root, sha256_file)
-        self.assertTrue(any("candidate self-tests must not receive trusted token material: GH_TOKEN" in item for item in errors))
-        self.assertFalse(evidence["candidate_self_tests_secret_free"])
+        errors, evidence = self.workflow_boundary(mutate)
+        self.assertIn("candidate-self-tests job permissions must stay contents: read", errors)
+        self.assertTrue(evidence["candidate_self_tests_secret_free"])
+    def test_workflow_boundary_rejects_phrase_moved_to_comment(self) -> None:
+        def mutate(verify_path: Path, _land_path: Path) -> None:
+            verify_path.write_text(
+                verify_path.read_text(encoding="utf-8").replace(
+                    "          persist-credentials: false\n",
+                    "          # persist-credentials: false\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+        errors, _evidence = self.workflow_boundary(mutate)
+        self.assertIn("candidate-self-tests checkout must disable persisted credentials", errors)
+    def test_workflow_boundary_rejects_phrase_moved_to_unrelated_job(self) -> None:
+        def mutate(verify_path: Path, _land_path: Path) -> None:
+            workflow = verify_path.read_text(encoding="utf-8")
+            workflow = workflow.replace(
+                '          python3 .trusted/noodles.py github verify-pr\n          --event "$GITHUB_EVENT_PATH"\n          --candidate "$GITHUB_WORKSPACE/.candidate"\n          --receipt "$GITHUB_WORKSPACE/noodles-receipt.json"\n',
+                "          echo drift\n",
+                1,
+            )
+            workflow += (
+                "\n  shadow:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - name: Detached trusted receipt phrase\n"
+                "        run: >-\n"
+                "          python3 .trusted/noodles.py github verify-pr\n"
+                "          --event \"$GITHUB_EVENT_PATH\"\n"
+                "          --candidate \"$GITHUB_WORKSPACE/.candidate\"\n"
+                "          --receipt \"$GITHUB_WORKSPACE/noodles-receipt.json\"\n"
+            )
+            verify_path.write_text(workflow, encoding="utf-8")
+        errors, _evidence = self.workflow_boundary(mutate)
+        self.assertIn("trusted verify receipt step must execute noodles.py github verify-pr against the exact candidate checkout", errors)
+    def test_workflow_boundary_rejects_disabled_required_step(self) -> None:
+        def mutate(verify_path: Path, _land_path: Path) -> None:
+            verify_path.write_text(
+                verify_path.read_text(encoding="utf-8").replace(
+                    "      - name: Produce exact-head trusted receipt\n",
+                    "      - name: Produce exact-head trusted receipt\n        if: ${{ false }}\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+        errors, _evidence = self.workflow_boundary(mutate)
+        self.assertIn("trusted verify exact-head receipt step must stay enabled", errors)
+    def test_workflow_boundary_rejects_wrong_permission_scope_with_phrase_preserved(self) -> None:
+        def mutate(_verify_path: Path, land_path: Path) -> None:
+            workflow = land_path.read_text(encoding="utf-8")
+            workflow = workflow.replace("          permission-administration: read\n", "          permission-administration: write\n", 1)
+            workflow = workflow.replace("    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    env:\n      permission-administration: read\n", 1)
+            land_path.write_text(workflow, encoding="utf-8")
+        errors, _evidence = self.workflow_boundary(mutate)
+        self.assertIn("land workflow app token must be scoped to Administration: read", errors)
 
     def test_workflow_boundary_rejects_missing_repo_scope(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-gh-protect-") as temp_name:
-            root = Path(temp_name)
-            verify_dir = root / ".github/workflows"
-            verify_dir.mkdir(parents=True)
-            shutil.copy2(ENGINE_ROOT / ".github/workflows/verify.yml", verify_dir / "verify.yml")
-            shutil.copy2(ENGINE_ROOT / ".github/workflows/land.yml", verify_dir / "land.yml")
-            land_path = verify_dir / "land.yml"
+        def mutate(_verify_path: Path, land_path: Path) -> None:
             land_path.write_text(
                 land_path.read_text(encoding="utf-8").replace(
                     "          repositories: ${{ github.event.repository.name }}\n",
@@ -193,7 +246,7 @@ class ProtectionContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            errors, evidence = github_protection.workflow_boundary_readback(root, sha256_file)
+        errors, evidence = self.workflow_boundary(mutate)
         self.assertIn("land workflow app token must be scoped to the current repository", errors)
         self.assertTrue(evidence["candidate_self_tests_secret_free"])
 
