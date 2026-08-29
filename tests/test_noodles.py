@@ -86,13 +86,13 @@ class RepositoryGateTests(unittest.TestCase):
     def test_codex_routing_transition_states_are_exact(self) -> None:
         with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
             config = tomllib.load(handle)
-        self.assertEqual(config["routing"]["defaults"]["model"], "gpt-5.4")
+        candidate_state = {"model": config["routing"]["defaults"]["model"], "codex_path": config["agents"]["codex"]["path"]}; expected = [{"model": "gpt-5.4", "codex_path": "~/.codex"}, {"model": "gpt-5.6-luna", "codex_path": ".agents/bin"}]; self.assertIn(candidate_state, expected)
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
-        expected = [{"model": "gpt-5.4", "codex_path": "~/.codex"}, {"model": "gpt-5.6-luna", "codex_path": ".agents/bin"}]; self.assertEqual(json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_routing_transition"], expected)
-        for state in expected[1:] + [{"model": model, "codex_path": path} for model, path in (("gpt-5.6-luna", "~/.codex"), ("gpt-5.6-pro", ".agents/bin"), ("gpt-5.6", ".agents/bin"), ("claude-opus-4-1", ".agents/bin"), ("gpt-5.6-luna", "./other"))]:
+        self.assertEqual(json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_routing_transition"], expected)
+        for state in [item for item in expected if item != candidate_state] + [{"model": model, "codex_path": path} for model, path in (("gpt-5.6-luna", "~/.codex"), ("gpt-5.6-pro", ".agents/bin"), ("gpt-5.6", ".agents/bin"), ("claude-opus-4-1", ".agents/bin"), ("gpt-5.6-luna", "./other"))]:
             with self.subTest(state=state):
-                temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / ".noodle.toml"; content = path.read_text(); content = content.replace('model = "gpt-5.4"', f'model = "{state["model"]}"', 1).replace('path = "~/.codex"', f'path = "{state["codex_path"]}"', 1); carrier = root / ".agents/bin/codex"; (carrier.parent.mkdir(parents=True, exist_ok=True), carrier.write_text("#!/bin/sh\nexit 0\n"), carrier.chmod(0o755)) if state["codex_path"] == ".agents/bin" else None
+                temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / ".noodle.toml"; content = path.read_text(); content = content.replace(f'model = "{candidate_state["model"]}"', f'model = "{state["model"]}"', 1).replace(f'path = "{candidate_state["codex_path"]}"', f'path = "{state["codex_path"]}"', 1); carrier = root / ".agents/bin/codex"; (carrier.parent.mkdir(parents=True, exist_ok=True), carrier.write_text("#!/bin/sh\nexit 0\n"), carrier.chmod(0o755)) if state["codex_path"] == ".agents/bin" else None
                 path.write_text(content); self.commit(root); result = self.verify(root); self.assertEqual(result["ok"], state in expected, result["errors"])
         temp, root = self.mutated_copy(); self.addCleanup(temp.cleanup); path = root / "policy/fitness.json"; policy = json.loads(path.read_text()); policy["required_codex_routing_transition"] = None; path.write_text(json.dumps(policy)); self.commit(root); result = noodles.verify_repository(root, root); self.assertFalse(result["ok"], result)
 
@@ -562,7 +562,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "max",
                 policy["max_tracked_files"] + 1,
                 policy["max_tracked_files"],
-                "architecture warning tracked_files=33 exceeds 32",
+                "architecture warning tracked_files=34 exceeds 33",
             ),
         )
         for metric_key, policy_key, direction, planted_value, threshold, warning in cases:
