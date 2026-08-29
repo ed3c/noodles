@@ -2,7 +2,6 @@
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
 from __future__ import annotations
 import argparse
-import fitness_contract
 import hashlib
 import github_protection
 import json
@@ -11,6 +10,7 @@ import os
 import re
 import runtime_contract
 import signal
+import skill_contract
 import stat
 import subprocess
 import sys
@@ -254,7 +254,7 @@ def repository_metrics(root: Path) -> dict[str, Any]:
 def metrics_readback(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
-    return fitness_contract.metrics_readback(
+    return skill_contract.metrics_readback(
         repository_metrics(root),
         load_json(policy_root / "policy/fitness.json"),
     )
@@ -420,11 +420,11 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     errors.extend(workflow_boundary_errors)
     metrics_result = metrics_readback(root, policy_root)
     metrics = {key: value for key, value in metrics_result.items() if key not in {"warnings", "warning_readback"}}
-    for key, (direction, policy_key) in fitness_contract.FAILING_FITNESS_LIMITS.items():
+    for key, (direction, policy_key) in skill_contract.FAILING_FITNESS_LIMITS.items():
         threshold = policy[policy_key]
         value = metrics[key]
-        if fitness_contract.threshold_exceeded(value, direction, threshold):
-            errors.append(fitness_contract.failing_fitness_message(key, value, direction, threshold))
+        if skill_contract.threshold_exceeded(value, direction, threshold):
+            errors.append(skill_contract.failing_fitness_message(key, value, direction, threshold))
     return {
         "ok": not errors,
         "errors": errors,
