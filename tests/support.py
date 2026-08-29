@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 
 import feature_contract
@@ -141,7 +140,37 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
     if start_delay is not None:
         start_clause = (
             "elif args == ['start']:\n"
+            "    import http.server\n"
+            "    import json\n"
+            "    import pathlib\n"
+            "    import threading\n"
+            "    project = pathlib.Path(os.environ['NOODLES_TEST_START_PROJECT'])\n"
+            "    (project / '.noodle').mkdir(parents=True, exist_ok=True)\n"
+            "    (project / '.noodle' / 'noodle.lock').write_text(str(os.getpid()))\n"
             f"    time.sleep({start_delay!r})\n"
+            "    (project / '.noodle' / 'status.json').write_text(\n"
+            "        json.dumps({'loop_state': 'running', 'mode': 'supervised', 'max_concurrency': 4})\n"
+            "    )\n"
+            "    if os.environ.get('NOODLES_TEST_START_SERVE') == '1':\n"
+            "        class Handler(http.server.BaseHTTPRequestHandler):\n"
+            "            def do_GET(self):\n"
+            "                if self.path != '/api/snapshot':\n"
+            "                    self.send_response(404)\n"
+            "                    self.end_headers()\n"
+            "                    return\n"
+            "                body = json.dumps({'pending_reviews': [], 'unclaimed_orders': []}).encode('utf-8')\n"
+            "                self.send_response(200)\n"
+            "                self.send_header('Content-Type', 'application/json')\n"
+            "                self.send_header('Content-Length', str(len(body)))\n"
+            "                self.end_headers()\n"
+            "                self.wfile.write(body)\n"
+            "            def log_message(self, *ignored):\n"
+            "                return\n"
+            "        server = http.server.HTTPServer(\n"
+            "            ('127.0.0.1', int(os.environ['NOODLES_TEST_START_PORT'])), Handler\n"
+            "        )\n"
+            "        threading.Thread(target=server.serve_forever, daemon=True).start()\n"
+            "        time.sleep(float(os.environ.get('NOODLES_TEST_START_DURATION', '1')))\n"
         )
     path.write_text(
         "#!/usr/bin/env python3\n"
@@ -672,57 +701,50 @@ def start_entrypoint_with_delayed_listener(
                 "listener_thread_alive": False,
                 "listener_error": None,
                 "listener_bound_port": port,
+                "listener_response": None,
                 "entrypoint_path": str(control / "noodles"),
                 "entrypoint_exists": (control / "noodles").exists(),
             }
 
-            def late_listener() -> None:
-                from http.server import BaseHTTPRequestHandler, HTTPServer
+            def poll_listener() -> None:
+                import urllib.error
+                import urllib.request
 
                 if not start_listener:
                     return
                 try:
-                    time.sleep(delay)
-
-                    class Handler(BaseHTTPRequestHandler):
-                        def do_GET(self) -> None:
-                            listener_state["listener_request_count"] = int(listener_state["listener_request_count"]) + 1
-                            if self.path != "/api/snapshot":
-                                self.send_response(404)
-                                self.end_headers()
+                    while not listener_stop.is_set():
+                        try:
+                            with urllib.request.urlopen(f"{control_url}/api/snapshot", timeout=0.05) as response:
+                                listener_state["listener_ready"] = True
+                                listener_ready.set()
+                                body = json.loads(response.read().decode("utf-8"))
+                                listener_state["listener_request_count"] = (
+                                    int(listener_state["listener_request_count"]) + 1
+                                )
+                                listener_state["listener_response"] = body
+                                listener_state["listener_served"] = True
+                                listener_served.set()
                                 return
-                            body = json.dumps({"pending_reviews": [], "unclaimed_orders": []}).encode("utf-8")
-                            self.send_response(200)
-                            self.send_header("Content-Type", "application/json")
-                            self.send_header("Content-Length", str(len(body)))
-                            self.end_headers()
-                            self.wfile.write(body)
-                            listener_state["listener_served"] = True
-                            listener_served.set()
-
-                        def log_message(self, _format: str, *_args: object) -> None:
-                            return
-
-                    with HTTPServer(("127.0.0.1", port), Handler) as server:
-                        server.timeout = 0.05
-                        listener_state["listener_ready"] = True
-                        listener_ready.set()
-                        while not listener_stop.is_set():
-                            server.handle_request()
-                            if listener_served.is_set():
-                                break
+                        except (urllib.error.URLError, OSError):
+                            pass
+                        listener_stop.wait(0.02)
                 except Exception as exc:
                     listener_state["listener_error"] = f"{type(exc).__name__}: {exc}"
                 finally:
                     listener_stop.set()
 
-            listener_thread = threading.Thread(target=late_listener, name="start-entrypoint-listener")
+            listener_thread = threading.Thread(target=poll_listener, name="start-entrypoint-listener")
             listener_thread.start()
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
             env["PYTHONPATH"] = str(CANDIDATE_ROOT)
             env["NOODLES_TEST_ALLOW_LOCAL_PROVIDER"] = "1"
             env["NOODLES_TEST_SKILLS_OUTPUT"] = output
+            env["NOODLES_TEST_START_PROJECT"] = str(control)
+            env["NOODLES_TEST_START_PORT"] = str(port)
+            env["NOODLES_TEST_START_SERVE"] = "1" if start_listener else "0"
+            env["NOODLES_TEST_START_DURATION"] = str(max(0.3, interval * 6))
             codex_real_bin = codex_real_bin_export(base)
             if codex_real_bin is not None:
                 env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
@@ -735,18 +757,19 @@ def start_entrypoint_with_delayed_listener(
                 stderr=subprocess.PIPE,
                 check=False,
             )
-            if start_listener:
-                listener_ready.wait(timeout=max(1.0, delay + interval))
-                listener_served.wait(timeout=max(1.0, runtime_start_delay + interval))
             listener_stop.set()
             listener_thread.join(timeout=2)
             listener_state["listener_thread_alive"] = listener_thread.is_alive()
-            listener_state["listener_ready"] = listener_ready.is_set()
-            listener_state["listener_served"] = listener_served.is_set()
+            lock_path = control / ".noodle" / "noodle.lock"
+            status_path = control / ".noodle" / "status.json"
+            runtime_lock_pid = lock_path.read_text().strip() if lock_path.exists() else None
+            runtime_status = json.loads(status_path.read_text()) if status_path.exists() else None
             return {
                 "returncode": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "runtime_lock_pid": runtime_lock_pid,
+                "runtime_status": runtime_status,
                 **listener_state,
             }
         finally:
