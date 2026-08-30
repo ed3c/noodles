@@ -27,6 +27,7 @@ FAILED_WORKFLOW_CONCLUSIONS = {"action_required", "cancelled", "failure", "stale
 EXPECTED_VERIFY_TRIGGER_TYPES = ["opened", "synchronize", "reopened", "ready_for_review"]
 EXPECTED_VERIFY_WORKFLOW_PERMISSIONS = {"contents": "read"}
 EXPECTED_CANDIDATE_JOB_PERMISSIONS = {"contents": "read"}
+EXPECTED_TRUSTED_CONTROLS_JOB_PERMISSIONS = {"contents": "read"}
 EXPECTED_TRUSTED_VERIFY_JOB_PERMISSIONS = {"actions": "read", "contents": "read", "issues": "read", "pull-requests": "read"}
 EXPECTED_LAND_TRIGGER_TYPES = ["completed"]
 EXPECTED_LAND_TRIGGER_WORKFLOWS = ["verify"]
@@ -254,6 +255,8 @@ def _workflow_checkout(step: dict[str, Any], errors: list[str], *, prefix: str, 
         errors.append(f"{prefix} must materialize into {path}")
 def _workflow_leaks(job: dict[str, Any], phrase: str, *, include_uses: bool = False) -> bool:
     return phrase in job.get("env", {}) or any(phrase in step.get("env", {}) or (include_uses and phrase == step.get("uses")) for step in job.get("steps", []))
+def _workflow_contains(job: dict[str, Any], phrase: str) -> bool:
+    return phrase in json.dumps(job, sort_keys=True)
 def gh_api_response(
     run_fn: Callable[..., Any],
     error_cls: type[Exception],
@@ -656,18 +659,58 @@ def workflow_boundary_readback(
             _workflow_checks(errors, [(self_tests.get("working-directory"), ".candidate", "candidate self-tests must run from .candidate"), (self_tests.get("run"), "tests/run.sh", "candidate self-tests must execute tests/run.sh")], normalize=True)
         for phrase in CANDIDATE_SECRET_PHRASES:
             if _workflow_leaks(candidate_job, phrase): errors.append(f"candidate self-tests must not receive trusted token material: {phrase}")
+    trusted_controls_job = verify_model.get("jobs", {}).get("trusted-controls")
+    if trusted_controls_job is None: errors.append("verify workflow missing trusted-controls job")
+    else:
+        if not _workflow_enabled(trusted_controls_job): errors.append("trusted-controls job must stay enabled")
+        _workflow_checks(errors, [
+            (trusted_controls_job.get("needs"), ["candidate-self-tests"], "trusted-controls job must depend only on candidate-self-tests"),
+            (trusted_controls_job.get("permissions"), EXPECTED_TRUSTED_CONTROLS_JOB_PERMISSIONS, "trusted-controls job permissions must stay contents: read"),
+            (trusted_controls_job.get("runs-on"), "ubuntu-latest", "trusted-controls job runs-on drifted from ubuntu-latest"),
+            (trusted_controls_job.get("timeout-minutes"), 15, "trusted-controls timeout must stay 15 minutes"),
+            ([step.get("name") for step in trusted_controls_job.get("steps", [])], [
+                "Checkout trusted verifier from default branch",
+                "Checkout exact candidate head as data without credentials",
+                "Set up Python",
+                "Run trusted positive and planted-negative controls",
+            ], "trusted-controls job must contain only the admitted checkout, Python setup, and final unittest steps"),
+        ])
+        controls_trusted_checkout = _workflow_step(trusted_controls_job, "Checkout trusted verifier from default branch", errors, "trusted-controls job missing trusted checkout step", "trusted-controls trusted checkout step must stay enabled")
+        if controls_trusted_checkout is not None: _workflow_checkout(controls_trusted_checkout, errors, prefix="trusted-controls trusted checkout", ref="${{ github.event.repository.default_branch }}", path=".trusted", repo=None)
+        controls_candidate_checkout = _workflow_step(trusted_controls_job, "Checkout exact candidate head as data without credentials", errors, "trusted-controls job missing candidate data checkout step", "trusted-controls candidate data checkout step must stay enabled")
+        if controls_candidate_checkout is not None: _workflow_checkout(controls_candidate_checkout, errors, prefix="trusted-controls candidate checkout", ref="${{ github.event.pull_request.head.sha }}", path=".candidate", repo="${{ github.event.pull_request.head.repo.full_name }}")
+        controls_python = _workflow_step(trusted_controls_job, "Set up Python", errors, "trusted-controls job missing Python setup step", "trusted-controls Python setup step must stay enabled")
+        if controls_python is not None:
+            _workflow_checks(errors, [
+                (controls_python.get("uses"), "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065", "trusted-controls must use the pinned Python setup action"),
+                (controls_python.get("with", {}).get("python-version"), "3.12", "trusted-controls must use Python 3.12"),
+            ])
+        controls = _workflow_step(trusted_controls_job, "Run trusted positive and planted-negative controls", errors, "trusted-controls job missing trusted controls step", "trusted-controls step must stay enabled")
+        if controls is not None:
+            _workflow_checks(errors, [
+                (controls.get("env"), {
+                    "NOODLES_CANDIDATE_ROOT": "${{ github.workspace }}/.candidate",
+                    "PYTHONPATH": "${{ github.workspace }}/.trusted",
+                    "NOODLES_OFFLINE_TESTS": "1",
+                }, "trusted-controls must use only the exact candidate-root, trusted-PYTHONPATH, and offline-test environment"),
+                (controls.get("run"), "python3 -m unittest discover -s .trusted/tests -v", "trusted-controls must execute the trusted unittest suite"),
+            ], normalize=False)
+            if not trusted_controls_job.get("steps") or trusted_controls_job["steps"][-1] is not controls:
+                errors.append("trusted-controls unittest command must be the final job step")
+        for phrase in (*CANDIDATE_SECRET_PHRASES, "GITHUB_TOKEN", "secrets.", "actions/create-github-app-token@"):
+            if _workflow_contains(trusted_controls_job, phrase):
+                errors.append(f"trusted-controls job must not receive trusted token material: {phrase}")
     trusted_verify_job = verify_model.get("jobs", {}).get("verify")
     if trusted_verify_job is None: errors.append("verify workflow missing trusted verify job")
     else:
         if not _workflow_enabled(trusted_verify_job): errors.append("trusted verify job must stay enabled")
-        _workflow_checks(errors, [(trusted_verify_job.get("needs"), ["candidate-self-tests"], "trusted verify job must depend only on candidate-self-tests"), (trusted_verify_job.get("permissions"), EXPECTED_TRUSTED_VERIFY_JOB_PERMISSIONS, "trusted verify job permissions must stay read-only on the admitted scopes"), (trusted_verify_job.get("runs-on"), "ubuntu-latest", "trusted verify job runs-on drifted from ubuntu-latest"), (trusted_verify_job.get("timeout-minutes"), 15, "trusted verify timeout must stay 15 minutes")])
+        _workflow_checks(errors, [(trusted_verify_job.get("needs"), ["trusted-controls"], "trusted verify job must depend only on trusted-controls"), (trusted_verify_job.get("permissions"), EXPECTED_TRUSTED_VERIFY_JOB_PERMISSIONS, "trusted verify job permissions must stay read-only on the admitted scopes"), (trusted_verify_job.get("runs-on"), "ubuntu-latest", "trusted verify job runs-on drifted from ubuntu-latest"), (trusted_verify_job.get("timeout-minutes"), 15, "trusted verify timeout must stay 15 minutes")])
         trusted_checkout = _workflow_step(trusted_verify_job, "Checkout trusted verifier from default branch", errors, "trusted verify job missing trusted checkout step", "trusted verify checkout step must stay enabled")
         if trusted_checkout is not None: _workflow_checkout(trusted_checkout, errors, prefix="trusted verify checkout", ref="${{ github.event.repository.default_branch }}", path=".trusted", repo=None)
         candidate_data_checkout = _workflow_step(trusted_verify_job, "Checkout exact candidate head as data without credentials", errors, "trusted verify job missing candidate data checkout step", "trusted verify candidate data checkout step must stay enabled")
         if candidate_data_checkout is not None: _workflow_checkout(candidate_data_checkout, errors, prefix="trusted verify candidate checkout", ref="${{ github.event.pull_request.head.sha }}", path=".candidate", repo="${{ github.event.pull_request.head.repo.full_name }}")
-        controls = _workflow_step(trusted_verify_job, "Run trusted positive and planted-negative controls", errors, "trusted verify job missing trusted controls step", "trusted verify controls step must stay enabled")
-        if controls is not None:
-            _workflow_checks(errors, [(controls.get("env", {}).get("NOODLES_CANDIDATE_ROOT"), "${{ github.workspace }}/.candidate", "trusted verify controls must point NOODLES_CANDIDATE_ROOT at the candidate checkout"), (controls.get("env", {}).get("PYTHONPATH"), "${{ github.workspace }}/.trusted", "trusted verify controls must point PYTHONPATH at the trusted checkout"), (controls.get("run"), "python3 -m unittest discover -s .trusted/tests -v", "trusted verify controls must execute the trusted unittest suite")], normalize=True)
+        if any(step.get("name") == "Run trusted positive and planted-negative controls" for step in trusted_verify_job.get("steps", [])):
+            errors.append("trusted verify receipt job must not execute candidate-facing trusted controls")
         receipt_step = _workflow_step(trusted_verify_job, "Produce exact-head trusted receipt", errors, "trusted verify job missing exact-head receipt step", "trusted verify exact-head receipt step must stay enabled")
         if receipt_step is not None:
             _workflow_checks(errors, [(receipt_step.get("env", {}).get("GH_TOKEN"), "${{ github.token }}", "trusted verify receipt step must receive GH_TOKEN from github.token"), (receipt_step.get("run"), 'python3 .trusted/noodles.py github verify-pr --event "$GITHUB_EVENT_PATH" --candidate "$GITHUB_WORKSPACE/.candidate" --receipt "$GITHUB_WORKSPACE/noodles-receipt.json"', "trusted verify receipt step must execute noodles.py github verify-pr against the exact candidate checkout")], normalize=True)
@@ -716,6 +759,10 @@ def workflow_boundary_readback(
         "candidate_self_tests_secret_free": candidate_job is not None and not any(
             phrase in candidate_job.get("env", {}) or any(phrase in step.get("env", {}) for step in candidate_job.get("steps", []))
             for phrase in CANDIDATE_SECRET_PHRASES
+        ),
+        "trusted_controls_secret_free": trusted_controls_job is not None and not any(
+            _workflow_contains(trusted_controls_job, phrase)
+            for phrase in (*CANDIDATE_SECRET_PHRASES, "GITHUB_TOKEN", "secrets.", "actions/create-github-app-token@")
         ),
         "trusted_verify_job_free_of_app_secrets": trusted_verify_job is not None and not any(
             phrase in trusted_verify_job.get("env", {}) or any(phrase in step.get("env", {}) or phrase == step.get("uses") for step in trusted_verify_job.get("steps", []))

@@ -81,9 +81,22 @@ class AgentFriendlyArchitectureTests(unittest.TestCase):
             "CROSS_REPO.AUTHORITY.001",
             "COMPLEXITY.SUBTRACT.001",
             "REQUIREMENT.EVOLUTION.001",
+            "ISSUE_CONTRACT.TIGHTENING_OWNS_MIGRATION.001",
             "REQUIREMENT.PROJECTION.001",
         ):
             self.assertEqual(system_contract.count(f"### {requirement_id}"), 1)
+
+        for phrase in (
+            "MUST own that backlog migration in the same atom",
+            "tests/fixtures/issue-contract-ready-backlog.json",
+            "exact candidate `noodles.parse_issue_contract`",
+            "credential-free `trusted-controls` job",
+            "A separate runner owns the later `GH_TOKEN` receipt job",
+            "migration obligation",
+            "intake-normalizer seam `ed3c/noodles#157`",
+            "No live-provider scan is required",
+        ):
+            self.assertIn(phrase, system_contract)
 
         mutable_fact_patterns = (
             r"(?im)^\s*(?:current\s+)?(?:pr|pull request)\s*#\d+",
