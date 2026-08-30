@@ -839,23 +839,44 @@ class StartUnattendedTests(unittest.TestCase):
             "admission receipt line took as long to notice as a silent entrypoint would",
         )
 
-    def test_start_entrypoint_terminates_at_grace_deadline_when_admission_receipt_never_arrives(self) -> None:
-        # constraint: planted control - stub stays silent (current main's ./noodles start never prints the line), so termination must fall back to the grace deadline rather than hang or race
-        result = start_entrypoint_with_delayed_listener()
-        assert_valid_start_entrypoint_receipt(result)
-        self.assertIs(result.get("admission_receipt_seen"), False)
+    def _assert_admission_termination_shape(self, result) -> None:
+        # constraint: two-state oracle - an entrypoint with real admission (ed3c/noodles#45 candidate) admits against the serving stub and emits its receipt, so termination must be receipt-triggered; one without (current main) never prints the line, so termination must fall back to the grace deadline
         wait_seconds = result.get("admission_wait_seconds")
         assert isinstance(wait_seconds, float)
-        self.assertGreaterEqual(
-            wait_seconds,
-            ADMISSION_RECEIPT_GRACE_SECONDS - 0.5,
-            "silent entrypoint was terminated before the grace ceiling elapsed",
-        )
-        self.assertLess(
-            wait_seconds,
-            ADMISSION_RECEIPT_GRACE_SECONDS + 2,
-            "terminator overran the grace ceiling by more than scheduling slack accounts for",
-        )
+        if result.get("admission_receipt_seen") is True:
+            self.assertLess(
+                wait_seconds,
+                ADMISSION_RECEIPT_GRACE_SECONDS / 2,
+                "entrypoint emitted an admission receipt yet termination waited for the grace ceiling",
+            )
+        else:
+            self.assertIs(result.get("admission_receipt_seen"), False)
+            self.assertGreaterEqual(
+                wait_seconds,
+                ADMISSION_RECEIPT_GRACE_SECONDS - 0.5,
+                "silent entrypoint was terminated before the grace ceiling elapsed",
+            )
+            self.assertLess(
+                wait_seconds,
+                ADMISSION_RECEIPT_GRACE_SECONDS + 2,
+                "terminator overran the grace ceiling by more than scheduling slack accounts for",
+            )
+
+    def test_start_entrypoint_terminates_at_grace_deadline_when_admission_receipt_never_arrives(self) -> None:
+        result = start_entrypoint_with_delayed_listener()
+        assert_valid_start_entrypoint_receipt(result)
+        self._assert_admission_termination_shape(result)
+
+    def test_admission_termination_shape_rejects_mismatched_states(self) -> None:
+        # constraint: planted control - proves both branches of the two-state oracle are falsifiable rather than vacuous
+        with self.assertRaises(AssertionError):
+            self._assert_admission_termination_shape(
+                {"admission_receipt_seen": True, "admission_wait_seconds": ADMISSION_RECEIPT_GRACE_SECONDS + 0.1}
+            )
+        with self.assertRaises(AssertionError):
+            self._assert_admission_termination_shape(
+                {"admission_receipt_seen": False, "admission_wait_seconds": 0.1}
+            )
 
     def test_start_entrypoint_receipt_accepts_admission_evidence_without_legacy_repair_diagnostic(self) -> None:
         # constraint: planted control - the ed3c/noodles#45 lease-admission candidate replaces the repair-retry path entirely, so this stderr never carries the legacy diagnostic
