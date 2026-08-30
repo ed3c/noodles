@@ -31,6 +31,7 @@ from tests.support import (
     start_entrypoint_with_delayed_listener,
     tree_digest,
     validate_script_mode_gateerror_identity,
+    validate_start_entrypoint_receipt,
     write_fake_codex_stub,
     write_noodle_stub,
     write_skill_discovery_fixture,
@@ -857,6 +858,37 @@ class StartUnattendedTests(unittest.TestCase):
             wait_seconds,
             ADMISSION_RECEIPT_GRACE_SECONDS + 2,
             "terminator overran the grace ceiling by more than scheduling slack accounts for",
+        )
+
+    def test_start_entrypoint_receipt_accepts_admission_evidence_without_legacy_repair_diagnostic(self) -> None:
+        # constraint: planted control - the ed3c/noodles#45 lease-admission candidate replaces the repair-retry path entirely, so this stderr never carries the legacy diagnostic
+        receipt = {
+            "returncode": 0,
+            "stderr": '{"admitted": true}\n',
+            "entrypoint_exists": True,
+            "listener_ready": True,
+            "listener_served": True,
+            "listener_request_count": 1,
+            "listener_thread_alive": False,
+            "listener_error": None,
+        }
+        self.assertEqual(validate_start_entrypoint_receipt(receipt), [])
+
+    def test_start_entrypoint_receipt_rejects_stderr_with_neither_diagnostic(self) -> None:
+        # constraint: planted control - stderr carries neither the legacy repair diagnostic nor admission-path evidence, so the check must still fail
+        receipt = {
+            "returncode": 0,
+            "stderr": "nothing relevant here\n",
+            "entrypoint_exists": True,
+            "listener_ready": True,
+            "listener_served": True,
+            "listener_request_count": 1,
+            "listener_thread_alive": False,
+            "listener_error": None,
+        }
+        self.assertEqual(
+            validate_start_entrypoint_receipt(receipt),
+            ["wrapper never diagnosed startup connection refusal on repair path"],
         )
 
     def test_start_entrypoint_stub_materializes_live_looking_runtime_surface(self) -> None:
