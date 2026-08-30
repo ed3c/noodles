@@ -137,9 +137,14 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = None) -> None:
+def write_noodle_stub(
+    path: Path, version: str, *, start_delay: float | None = None, emit_admission_receipt: bool = False
+) -> None:
     start_clause = ""
     if start_delay is not None:
+        admission_clause = (
+            "    print('{\"admitted\": true}', file=sys.stderr, flush=True)\n" if emit_admission_receipt else ""
+        )
         start_clause = (
             "elif args == ['start']:\n"
             "    import http.server\n"
@@ -155,6 +160,7 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "    (project / '.noodle' / 'status.json').write_text(\n"
             "        json.dumps({'loop_state': 'running', 'mode': 'supervised', 'max_concurrency': 4})\n"
             "    )\n"
+            f"{admission_clause}"
             "    if os.environ.get('NOODLES_TEST_START_SERVE') == '1':\n"
             "        class Handler(http.server.BaseHTTPRequestHandler):\n"
             "            def do_GET(self):\n"
@@ -669,12 +675,17 @@ def _free_tcp_port() -> int:
         sock.close()
 
 
+# constraint: 3s grace bounds the wait for the entrypoint's own admission receipt line after the harness poller already saw a served readback - long enough for a genuinely admitting entrypoint's line to land, short enough to keep the suite fast when it never does
+ADMISSION_RECEIPT_GRACE_SECONDS = 3.0
+
+
 def start_entrypoint_with_delayed_listener(
     delay: float = 0.25,
     interval: float = 0.05,
     *,
     start_listener: bool = True,
     runtime_start_delay: float = 0.7,
+    emit_admission_receipt: bool = False,
 ) -> dict[str, object]:
     temp, candidate = cursor_pstack_fixture()
     with temp:
@@ -685,7 +696,9 @@ def start_entrypoint_with_delayed_listener(
         bin_dir = base / "bin"
         bin_dir.mkdir()
         runtime = bin_dir / "noodle"
-        write_noodle_stub(runtime, release, start_delay=runtime_start_delay)
+        write_noodle_stub(
+            runtime, release, start_delay=runtime_start_delay, emit_admission_receipt=emit_admission_receipt
+        )
         _lock_start_runtime(candidate, runtime, release=release, commit=commit, asset_sha256=asset_sha256)
         cmd(["git", "add", "policy/runtime.lock.json"], candidate)
         cmd(["git", "commit", "-q", "-m", "runtime fixture"], candidate)
@@ -747,6 +760,10 @@ def start_entrypoint_with_delayed_listener(
                     listener_stop.set()
 
             terminator_stop = threading.Event()
+            stderr_path = base / "start-entrypoint.stderr"
+            stderr_path.write_text("", encoding="utf-8")
+            listener_state["admission_receipt_seen"] = False
+            listener_state["admission_wait_seconds"] = None
 
             def terminate_runtime_when_ready() -> None:
                 # constraint: 15s ceiling only guards a genuinely broken (never-serving) listener from hanging the suite; happy path returns in well under a second
@@ -757,6 +774,18 @@ def start_entrypoint_with_delayed_listener(
                     and time.monotonic() < deadline
                 ):
                     time.sleep(0.02)
+                if terminator_stop.is_set():
+                    return
+                # constraint: see ADMISSION_RECEIPT_GRACE_SECONDS above for the grace ceiling rationale
+                grace_start = time.monotonic()
+                grace_deadline = grace_start + ADMISSION_RECEIPT_GRACE_SECONDS
+                while not terminator_stop.is_set() and time.monotonic() < grace_deadline:
+                    stderr_so_far = stderr_path.read_text(encoding="utf-8", errors="replace").replace(" ", "")
+                    if '"admitted":true' in stderr_so_far:
+                        listener_state["admission_receipt_seen"] = True
+                        break
+                    time.sleep(0.02)
+                listener_state["admission_wait_seconds"] = time.monotonic() - grace_start
                 if terminator_stop.is_set():
                     return
                 lock_path = control / ".noodle" / "noodle.lock"
@@ -788,15 +817,16 @@ def start_entrypoint_with_delayed_listener(
             codex_real_bin = codex_real_bin_export(base)
             if codex_real_bin is not None:
                 env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
-            result = subprocess.run(
-                [str(control / "noodles"), "start", "--control-url", control_url, "--interval", str(interval)],
-                cwd=control,
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
+            with stderr_path.open("w", encoding="utf-8") as stderr_sink:
+                result = subprocess.run(
+                    [str(control / "noodles"), "start", "--control-url", control_url, "--interval", str(interval)],
+                    cwd=control,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_sink,
+                    check=False,
+                )
             listener_stop.set()
             terminator_stop.set()
             listener_thread.join(timeout=2)
@@ -809,7 +839,7 @@ def start_entrypoint_with_delayed_listener(
             return {
                 "returncode": result.returncode,
                 "stdout": result.stdout,
-                "stderr": result.stderr,
+                "stderr": stderr_path.read_text(encoding="utf-8", errors="replace"),
                 "runtime_lock_pid": runtime_lock_pid,
                 "runtime_status": runtime_status,
                 **listener_state,
