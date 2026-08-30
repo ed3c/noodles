@@ -149,7 +149,14 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
         failed_run = {
-            "run": {"id": 91, "head_sha": self.head, "status": "completed", "conclusion": "failure"}
+            "run": {
+                "id": 91,
+                "head_sha": self.head,
+                "status": "completed",
+                "conclusion": "failure",
+                "run_attempt": 1,
+                "pull_request_numbers": [44],
+            }
         }
         self.failed_run_patch = mock.patch.object(
             github_protection,
@@ -157,9 +164,16 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
             return_value=failed_run,
         )
         self.gh_api_patch = mock.patch.object(noodles, "gh_api", return_value=None)
+        self.trusted_run_patch = mock.patch.object(
+            github_protection,
+            "trusted_workflow_run_readback",
+            return_value=failed_run,
+        )
         self.failed_run_patch.start()
+        self.trusted_run_patch.start()
         self.gh_api_patch.start()
         self.addCleanup(self.failed_run_patch.stop)
+        self.addCleanup(self.trusted_run_patch.stop)
         self.addCleanup(self.gh_api_patch.stop)
         self.pr = {
             "state": "open",
