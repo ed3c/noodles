@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "ready-optional-feature-absent",
+      "subject": "ed3c/noodles#900001",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900001 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: none -->\n\n## Goal\n\nPreserve a ready repository atom whose optional feature marker is absent.\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom.\n\n## Non-claims\n\n- This fixture is not a mirror of current provider state.\n"
+    },
+    {
+      "id": "ready-feature-present",
+      "subject": "ed3c/noodles#900002",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900002 -->\n<!-- noodles-state: ready -->\n<!-- noodles-feature: verification-skill-oracle -->\n<!-- noodles-depends-on: none -->\n\n## Goal\n\nPreserve a ready repository atom that declares its additive feature oracle.\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom with its feature identity.\n\n## Non-claims\n\n- The fixture does not execute or replace the feature oracle.\n"
+    },
+    {
+      "id": "ready-typed-dependency-present",
+      "subject": "ed3c/noodles#900003",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900003 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: ed3c/noodles#900000 -->\n\n## Goal\n\nPreserve a ready repository atom with one exact same-repository dependency subject.\n\n## Physical acceptance\n\n- The exact issue contract parses the typed dependency without mirrored waiting state.\n\n## Non-claims\n\n- This fixture does not claim the predecessor is currently landed.\n"
+    },
+    {
+      "id": "ready-feature-one-dependency",
+      "subject": "ed3c/noodles#900004",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900004 -->\n<!-- noodles-state: ready -->\n<!-- noodles-feature: verification-skill-oracle -->\n<!-- noodles-depends-on: ed3c/noodles#900000 -->\n\n## Goal\n\nPreserve a ready repository atom with an additive feature oracle and one exact same-repository dependency.\n\n## Physical acceptance\n\n- The exact issue contract parses both optional marker shapes together.\n\n## Non-claims\n\n- This fixture does not claim the predecessor is currently landed.\n"
+    },
+    {
+      "id": "ready-feature-two-dependencies",
+      "subject": "ed3c/noodles#900005",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900005 -->\n<!-- noodles-state: ready -->\n<!-- noodles-feature: verification-skill-oracle -->\n<!-- noodles-depends-on: ed3c/noodles#900000, ed3c/noodles#900010 -->\n\n## Goal\n\nPreserve a ready repository atom with an additive feature oracle and two exact same-repository dependencies.\n\n## Physical acceptance\n\n- The exact issue contract parses the feature and dependency cardinality together.\n\n## Non-claims\n\n- This fixture does not claim either predecessor is currently landed.\n"
+    },
+    {
+      "id": "ready-no-feature-three-dependencies",
+      "subject": "ed3c/noodles#900006",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900006 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: ed3c/noodles#900000, ed3c/noodles#900010, ed3c/noodles#900020 -->\n\n## Goal\n\nPreserve a ready repository atom without a feature oracle and with three exact same-repository dependencies.\n\n## Physical acceptance\n\n- The exact issue contract parses the larger dependency cardinality without a feature marker.\n\n## Non-claims\n\n- This fixture does not claim any predecessor is currently landed.\n"
+    }
+  ]
+}

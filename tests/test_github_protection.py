@@ -181,6 +181,84 @@ class ProtectionContractTests(unittest.TestCase):
         errors, evidence = self.workflow_boundary(mutate)
         self.assertIn("candidate-self-tests job permissions must stay contents: read", errors)
         self.assertTrue(evidence["candidate_self_tests_secret_free"])
+
+    def test_trusted_controls_job_is_credential_free_and_precedes_receipt(self) -> None:
+        errors, evidence = self.workflow_boundary(lambda _verify_path, _land_path: None)
+        self.assertEqual(errors, [])
+        self.assertEqual(evidence["verify_jobs"], ["candidate-self-tests", "trusted-controls", "verify"])
+        self.assertTrue(evidence["trusted_controls_secret_free"])
+
+    def test_trusted_controls_boundary_rejects_dependency_permission_and_checkout_drift(self) -> None:
+        cases = (
+            (
+                "    needs: candidate-self-tests\n    permissions:\n      contents: read\n",
+                "    needs: shadow\n    permissions:\n      contents: read\n",
+                "trusted-controls job must depend only on candidate-self-tests",
+            ),
+            (
+                "    needs: candidate-self-tests\n    permissions:\n      contents: read\n",
+                "    needs: candidate-self-tests\n    permissions:\n      issues: read\n",
+                "trusted-controls job permissions must stay contents: read",
+            ),
+            (
+                "          path: .trusted\n          fetch-depth: 1\n          persist-credentials: false\n",
+                "          path: .trusted\n          fetch-depth: 1\n          persist-credentials: true\n",
+                "trusted-controls trusted checkout must disable persisted credentials",
+            ),
+            (
+                "          path: .candidate\n          fetch-depth: 1\n          persist-credentials: false\n",
+                "          path: .candidate\n          fetch-depth: 1\n          persist-credentials: true\n",
+                "trusted-controls candidate checkout must disable persisted credentials",
+            ),
+        )
+        for needle, replacement, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                def mutate(verify_path: Path, _land_path: Path) -> None:
+                    workflow = verify_path.read_text(encoding="utf-8")
+                    controls = workflow.index("  trusted-controls:\n")
+                    receipt = workflow.index("  verify:\n", controls)
+                    block = workflow[controls:receipt]
+                    self.assertIn(needle, block)
+                    verify_path.write_text(workflow[:controls] + block.replace(needle, replacement, 1) + workflow[receipt:], encoding="utf-8")
+                errors, _evidence = self.workflow_boundary(mutate)
+                self.assertIn(diagnostic, errors)
+
+    def test_trusted_controls_boundary_rejects_command_environment_last_step_and_token_drift(self) -> None:
+        cases = (
+            (
+                "          NOODLES_OFFLINE_TESTS: '1'\n",
+                "          NOODLES_OFFLINE_TESTS: '0'\n",
+                "trusted-controls must use only the exact candidate-root, trusted-PYTHONPATH, and offline-test environment",
+            ),
+            (
+                "        run: python3 -m unittest discover -s .trusted/tests -v\n",
+                "        run: python3 -m unittest discover -s .candidate/tests -v\n",
+                "trusted-controls must execute the trusted unittest suite",
+            ),
+            (
+                "        run: python3 -m unittest discover -s .trusted/tests -v\n",
+                "        run: python3 -m unittest discover -s .trusted/tests -v\n\n      - name: Planted later step\n        run: echo later\n",
+                "trusted-controls unittest command must be the final job step",
+            ),
+            (
+                "    timeout-minutes: 15\n    steps:\n",
+                "    timeout-minutes: 15\n    env:\n      GH_TOKEN: ${{ github.token }}\n    steps:\n",
+                "trusted-controls job must not receive trusted token material: GH_TOKEN",
+            ),
+        )
+        for needle, replacement, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                def mutate(verify_path: Path, _land_path: Path) -> None:
+                    workflow = verify_path.read_text(encoding="utf-8")
+                    controls = workflow.index("  trusted-controls:\n")
+                    receipt = workflow.index("  verify:\n", controls)
+                    block = workflow[controls:receipt]
+                    self.assertIn(needle, block)
+                    verify_path.write_text(workflow[:controls] + block.replace(needle, replacement, 1) + workflow[receipt:], encoding="utf-8")
+                errors, evidence = self.workflow_boundary(mutate)
+                self.assertIn(diagnostic, errors)
+                if "token material" in diagnostic:
+                    self.assertFalse(evidence["trusted_controls_secret_free"])
     def test_workflow_boundary_rejects_phrase_moved_to_comment(self) -> None:
         def mutate(verify_path: Path, _land_path: Path) -> None:
             verify_path.write_text(

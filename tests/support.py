@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import daemon_lease
@@ -23,6 +24,229 @@ CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve(
 FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
 ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
 ISSUE_DEPENDS_ON_MARKER = "<!-- noodles-depends-on: none -->"
+READY_BACKLOG_FIXTURE = Path("tests/fixtures/issue-contract-ready-backlog.json")
+MIGRATION_DIAGNOSTIC = (
+    "migration obligation: update the durable ready-backlog fixture in this same atom; "
+    "mechanically derivable live intake repair belongs at intake-normalizer seam ed3c/noodles#157"
+)
+
+
+@dataclass(frozen=True)
+class ReadyBacklogFixture:
+    id: str
+    subject: str
+    body: str
+
+
+@dataclass(frozen=True)
+class CandidateParse:
+    id: str
+    subject: str
+    accepted: bool
+    error_type: str | None
+    error: str | None
+    state: str | None
+
+
+_CANDIDATE_ISSUE_CONTRACT_PROBE = r"""
+import json
+import pathlib
+import sys
+
+candidate_root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(candidate_root))
+import noodles
+
+request = json.load(sys.stdin)
+results = []
+for item in request["fixtures"]:
+    try:
+        contract = noodles.parse_issue_contract(item["body"], item["subject"])
+    except Exception as exc:
+        results.append({
+            "id": item["id"],
+            "subject": item["subject"],
+            "accepted": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "state": None,
+        })
+    else:
+        results.append({
+            "id": item["id"],
+            "subject": contract.get("subject"),
+            "accepted": True,
+            "error_type": None,
+            "error": None,
+            "state": contract.get("state"),
+        })
+print(json.dumps({"module_file": noodles.__file__, "results": results}, sort_keys=True))
+"""
+
+
+def load_ready_backlog_fixtures(root: Path) -> tuple[ReadyBacklogFixture, ...]:
+    path = root / READY_BACKLOG_FIXTURE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture corpus unreadable: {exc}") from exc
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "fixtures"}:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture corpus must contain schema_version and fixtures")
+    if payload["schema_version"] != 1 or isinstance(payload["schema_version"], bool):
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture corpus schema_version must be 1")
+    raw_fixtures = payload["fixtures"]
+    if not isinstance(raw_fixtures, list) or not raw_fixtures:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture corpus fixtures must be a non-empty list")
+    fixtures: list[ReadyBacklogFixture] = []
+    ids: set[str] = set()
+    subjects: set[str] = set()
+    for raw in raw_fixtures:
+        if not isinstance(raw, dict) or set(raw) != {"id", "subject", "body"}:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; every fixture must contain only id, subject, and body")
+        if not all(isinstance(raw[field], str) and raw[field] for field in ("id", "subject", "body")):
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture id, subject, and body must be non-empty strings")
+        fixture = ReadyBacklogFixture(raw["id"], raw["subject"], raw["body"])
+        if fixture.id in ids or fixture.subject in subjects:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; duplicate fixture id or subject: {fixture.id}")
+        if fixture.body.count(f"<!-- noodles-subject: {fixture.subject} -->") != 1:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture {fixture.id} body does not bind {fixture.subject}")
+        ids.add(fixture.id)
+        subjects.add(fixture.subject)
+        fixtures.append(fixture)
+    return tuple(fixtures)
+
+
+def candidate_parse(
+    candidate_root: Path, fixtures: tuple[ReadyBacklogFixture, ...]
+) -> dict[str, CandidateParse]:
+    request = {
+        "fixtures": [
+            {"id": fixture.id, "subject": fixture.subject, "body": fixture.body}
+            for fixture in fixtures
+        ]
+    }
+    env = {"NOODLES_OFFLINE_TESTS": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", _CANDIDATE_ISSUE_CONTRACT_PROBE, str(candidate_root.resolve())],
+            cwd=candidate_root,
+            env=env,
+            input=json.dumps(request),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; candidate parser probe failed: {exc}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise AssertionError(
+            f"{MIGRATION_DIAGNOSTIC}; candidate parser probe exited {completed.returncode}: {detail}"
+        )
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; candidate parser probe emitted malformed JSON: {exc}") from exc
+    if not isinstance(response, dict) or set(response) != {"module_file", "results"}:
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; candidate parser probe response shape is invalid")
+    try:
+        module_file = Path(response["module_file"]).resolve()
+    except (TypeError, ValueError, OSError):
+        module_file = None
+    expected_module = (candidate_root / "noodles.py").resolve()
+    if module_file != expected_module:
+        raise AssertionError(
+            f"{MIGRATION_DIAGNOSTIC}; candidate parser provenance {response.get('module_file')!r} "
+            f"is not the exact candidate parser {expected_module}"
+        ) from None
+    raw_results = response["results"]
+    if not isinstance(raw_results, list):
+        raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; candidate parser results must be a list")
+    expected_ids = {fixture.id for fixture in fixtures}
+    results: dict[str, CandidateParse] = {}
+    for raw in raw_results:
+        if not isinstance(raw, dict) or set(raw) != {
+            "id", "subject", "accepted", "error_type", "error", "state"
+        }:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; candidate parser result shape is invalid")
+        if raw["id"] in results:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; duplicate candidate parser result id {raw['id']!r}")
+        results[raw["id"]] = CandidateParse(
+            id=raw["id"],
+            subject=raw["subject"],
+            accepted=raw["accepted"],
+            error_type=raw["error_type"],
+            error=raw["error"],
+            state=raw["state"],
+        )
+    if set(results) != expected_ids:
+        raise AssertionError(
+            f"{MIGRATION_DIAGNOSTIC}; candidate parser result ids differ: "
+            f"expected {sorted(expected_ids)}, observed {sorted(results)}"
+        )
+    return results
+
+
+def assert_tightening_migrates_fixture_set(
+    trusted: tuple[ReadyBacklogFixture, ...],
+    candidate: tuple[ReadyBacklogFixture, ...],
+    baseline: dict[str, CandidateParse],
+    migrated: dict[str, CandidateParse],
+) -> None:
+    trusted_by_id = {fixture.id: fixture for fixture in trusted}
+    candidate_by_id = {fixture.id: fixture for fixture in candidate}
+    for fixture in trusted:
+        try:
+            parsed = noodles.parse_issue_contract(fixture.body, fixture.subject)
+        except Exception as exc:
+            raise AssertionError(
+                f"{MIGRATION_DIAGNOSTIC}; trusted fixture {fixture.id} is invalid: {type(exc).__name__}: {exc}"
+            ) from exc
+        if parsed.get("state") != "ready" or parsed.get("subject") != fixture.subject:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; trusted fixture {fixture.id} is not ready")
+    for fixture_id, trusted_fixture in trusted_by_id.items():
+        candidate_fixture = candidate_by_id.get(fixture_id)
+        if candidate_fixture is None:
+            raise AssertionError(f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} disappeared")
+        if candidate_fixture.subject != trusted_fixture.subject:
+            raise AssertionError(
+                f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} rebound subject "
+                f"from {trusted_fixture.subject} to {candidate_fixture.subject}"
+            )
+        baseline_result = baseline[fixture_id]
+        migrated_result = migrated[fixture_id]
+        if baseline_result.accepted:
+            if candidate_fixture.body != trusted_fixture.body:
+                raise AssertionError(
+                    f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} changed although the candidate parser accepts its baseline"
+                )
+        elif candidate_fixture.body == trusted_fixture.body:
+            raise AssertionError(
+                f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} newly rejected by candidate parser: "
+                f"{baseline_result.error_type}: {baseline_result.error}"
+            )
+        elif not migrated_result.accepted or migrated_result.state != "ready" or migrated_result.subject != trusted_fixture.subject:
+            raise AssertionError(
+                f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} migration is not accepted as ready: "
+                f"{migrated_result.error_type}: {migrated_result.error}"
+            )
+    for fixture_id, candidate_fixture in candidate_by_id.items():
+        result = migrated[fixture_id]
+        if not result.accepted or result.state != "ready" or result.subject != candidate_fixture.subject:
+            raise AssertionError(
+                f"{MIGRATION_DIAGNOSTIC}; fixture {fixture_id} candidate body is not accepted as ready: "
+                f"{result.error_type}: {result.error}"
+            )
+
+
+def assert_candidate_preserves_or_migrates_ready_backlog(trusted_root: Path, candidate_root: Path) -> None:
+    trusted = load_ready_backlog_fixtures(trusted_root)
+    candidate = load_ready_backlog_fixtures(candidate_root)
+    baseline = candidate_parse(candidate_root, trusted)
+    migrated = candidate_parse(candidate_root, candidate)
+    assert_tightening_migrates_fixture_set(trusted, candidate, baseline, migrated)
 
 
 def code_surface_digest(root: Path, feature: feature_contract.FeatureContract = FEATURE) -> str:
