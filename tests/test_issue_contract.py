@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import issue_contract
 import noodles
-from tests.support import ISSUE_DEPENDS_ON_MARKER, ISSUE_FEATURE_MARKER
+from tests.support import (
+    CANDIDATE_ROOT,
+    ENGINE_ROOT,
+    ISSUE_FEATURE_MARKER,
+    READY_BACKLOG_FIXTURE,
+    assert_candidate_preserves_or_migrates_ready_backlog,
+    copy_tracked,
+    load_ready_backlog_fixtures,
+)
 
 SUBJECT = "ed3c/noodles#82"
 PREDECESSOR = "ed3c/noodles#81"
@@ -44,6 +54,75 @@ def issue_body(
 
 def predecessor_body(state: str = "landed") -> str:
     return issue_body(subject=PREDECESSOR, state=state)
+
+
+class ReadyBacklogFixtureGateTests(unittest.TestCase):
+    def tightened_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-tightening-")
+        root = Path(temp.name) / "candidate"
+        copy_tracked(CANDIDATE_ROOT, root)
+        parser_path = root / "noodles.py"
+        parser = parser_path.read_text(encoding="utf-8")
+        seam = '    feature_value = one_marker(body, "feature", required=False)\n'
+        tightening = (
+            seam
+            + '    if "<!-- noodles-priority: p0 -->" not in body:\n'
+            + '        raise GateError("missing noodles-priority marker")\n'
+        )
+        self.assertEqual(parser.count(seam), 1)
+        parser_path.write_text(parser.replace(seam, tightening), encoding="utf-8")
+        helper_path = root / "tests/test_issue_contract.py"
+        helper = helper_path.read_text(encoding="utf-8")
+        helper_seam = '        f"{ISSUE_FEATURE_MARKER}\\n"\n'
+        self.assertEqual(helper.count(helper_seam), 1)
+        helper_path.write_text(
+            helper.replace(helper_seam, helper_seam + '        "<!-- noodles-priority: p0 -->\\n"\n'),
+            encoding="utf-8",
+        )
+        return temp, root
+
+    def test_candidate_preserves_or_migrates_durable_ready_backlog_shapes(self) -> None:
+        assert_candidate_preserves_or_migrates_ready_backlog(ENGINE_ROOT, CANDIDATE_ROOT)
+
+    def test_durable_corpus_covers_observed_feature_dependency_cardinalities(self) -> None:
+        fixtures = {fixture.id: fixture for fixture in load_ready_backlog_fixtures(CANDIDATE_ROOT)}
+        expected = {
+            "ready-feature-one-dependency": ("verification-skill-oracle", 1),
+            "ready-feature-two-dependencies": ("verification-skill-oracle", 2),
+            "ready-no-feature-three-dependencies": ("", 3),
+        }
+        for fixture_id, (feature, dependency_count) in expected.items():
+            with self.subTest(fixture_id=fixture_id):
+                fixture = fixtures[fixture_id]
+                contract = noodles.parse_issue_contract(fixture.body, fixture.subject)
+                self.assertEqual(contract["feature"], feature)
+                self.assertEqual(len(contract["dependencies"]), dependency_count)
+
+    def test_planted_tightening_fails_even_when_generated_helper_changes(self) -> None:
+        temp, root = self.tightened_candidate()
+        self.addCleanup(temp.cleanup)
+        self.assertIn("noodles-priority: p0", (root / "tests/test_issue_contract.py").read_text(encoding="utf-8"))
+        with self.assertRaises(AssertionError) as raised:
+            assert_candidate_preserves_or_migrates_ready_backlog(ENGINE_ROOT, root)
+        diagnostic = str(raised.exception)
+        self.assertIn("migration obligation", diagnostic)
+        self.assertIn("intake-normalizer seam ed3c/noodles#157", diagnostic)
+        self.assertIn("ready-optional-feature-absent", diagnostic)
+        self.assertIn("missing noodles-priority marker", diagnostic)
+
+    def test_same_id_accepted_fixture_migration_recovers_planted_tightening(self) -> None:
+        temp, root = self.tightened_candidate()
+        self.addCleanup(temp.cleanup)
+        fixture_path = root / READY_BACKLOG_FIXTURE
+        corpus = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for fixture in corpus["fixtures"]:
+            fixture["body"] = fixture["body"].replace(
+                "<!-- noodles-state: ready -->\n",
+                "<!-- noodles-state: ready -->\n<!-- noodles-priority: p0 -->\n",
+                1,
+            )
+        fixture_path.write_text(json.dumps(corpus, indent=2) + "\n", encoding="utf-8")
+        assert_candidate_preserves_or_migrates_ready_backlog(ENGINE_ROOT, root)
 
 
 class DependencyMarkerTests(unittest.TestCase):

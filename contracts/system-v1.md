@@ -197,6 +197,14 @@ Stable requirement IDs are semantic identities. Once referenced by an Issue or r
 
 Requirement definitions live only in this specification for system-level invariants. Feature-local or Issue-local invariants remain at the nearest executable contract/test and are not promoted here merely because they are important to one change.
 
+### ISSUE_CONTRACT.TIGHTENING_OWNS_MIGRATION.001
+
+An Issue-contract parser tightening that newly disqualifies a previously conforming ready backlog shape MUST own that backlog migration in the same atom. The stable fixture ID and exact subject remain bound; when the candidate parser rejects the trusted literal body, the candidate corpus must carry a changed same-ID body that the candidate parser accepts as ready.
+
+The L admission boundary is the trusted fixture gate in `tests/test_issue_contract.py` over `tests/fixtures/issue-contract-ready-backlog.json`. The trusted controls step runs before the later receipt step receives its step-scoped `GH_TOKEN`. Within the suite, the gate executes the exact candidate `noodles.parse_issue_contract` against trusted and candidate literal bodies in an isolated child, then reads back the exact candidate `noodles.py` provenance. Its migration obligation diagnostic directs mechanically derivable live repair to the intake-normalizer seam `ed3c/noodles#157`.
+
+No live-provider scan is required at this boundary; the fixtures represent durable backlog shapes rather than current provider state. Runtime automatic migration remains owned by `ed3c/noodles#157`, and scheduler no-op or memoization behavior for unchanged backlogs remains owned by `ed3c/noodles#85`.
+
 ### REQUIREMENT.PROJECTION.001
 
 LANDED/PARTIAL/HOLD or similar implementation status is derived provider state, not specification truth. Any future `requirements status` view must reconstruct status from this specification plus exact provider Issue/PR/merge/closure facts and must not create a second mutable source of truth.
