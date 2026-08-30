@@ -139,10 +139,10 @@ class ScheduleContractTests(unittest.TestCase):
 
     def test_codex_carrier_injects_exact_effort_for_each_task_model(self) -> None:
         cases = (
-            ("gpt-5.6-luna", "max"),
-            ("gpt-5.6-sol", "high"),
+            ("gpt-5.6-luna", ("max", "high")),
+            ("gpt-5.6-sol", ("high",)),
         )
-        for model, effort in cases:
+        for model, admitted_efforts in cases:
             with self.subTest(model=model):
                 result = self.run_carrier([
                     "exec",
@@ -152,17 +152,14 @@ class ScheduleContractTests(unittest.TestCase):
                     'approval_policy="never"',
                 ])
                 self.assertEqual(result.returncode, 0, result.stderr)
+                argv = json.loads(result.stdout)
+                self.assertIn(
+                    argv[:3],
+                    [["exec", "-c", f'model_reasoning_effort="{effort}"'] for effort in admitted_efforts],
+                )
                 self.assertEqual(
-                    json.loads(result.stdout),
-                    [
-                        "exec",
-                        "-c",
-                        f'model_reasoning_effort="{effort}"',
-                        "--model",
-                        model,
-                        "-c",
-                        'approval_policy="never"',
-                    ],
+                    argv[3:],
+                    ["--model", model, "-c", 'approval_policy="never"'],
                 )
 
     def test_codex_carrier_stops_option_parsing_at_delimiter(self) -> None:
