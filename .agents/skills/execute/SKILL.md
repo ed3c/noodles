@@ -24,7 +24,8 @@ This skill operates inside the Noodle-created isolated worktree.
 12. Open exactly one non-draft PR to `main` with exactly one line `Refs owner/repo#N`.
 13. Run `./noodles feature verify <feature-id>` for the exact Issue's `noodles-feature` id at the pushed head.
 14. Run `./noodles issue handoff owner/repo#N --pr N`. This validates the exact PR head/body, sets the Issue to `awaiting_land`, and emits one blocking `stage_message` for the current `NOODLE_SESSION_ID`.
-15. Stop immediately after the handoff succeeds. GitHub verify/land and local machine reconciliation own completion.
+15. Confirm the provider verification run for the exact pushed head started after the Issue reached `awaiting_land`; the run triggered by the push necessarily predates the handoff, so re-run that exact workflow run once and confirm it is queued or running.
+16. Stop immediately after the handoff succeeds and the post-handoff verification is underway. GitHub verify/land and local machine reconciliation own completion.
 
 ## Routing contract
 
@@ -71,6 +72,8 @@ Fail closed and return a blocking stage message when:
 - source/provider readback differs from the tested subject;
 - the worktree contains unrelated changes or residue;
 - the task would require inventing a scheduler, worktree manager, generic registry, or unproven dependency.
+
+When the atom is committed but PR creation or handoff is blocked, push the branch first and name the exact missing capability in the blocking stage message: committed-but-unpushed work strands the atom locally and invites an unauthorized local merge of an unverified branch.
 
 A failure becomes a new rule/test candidate only after independent repeated evidence; do not edit `AGENTS.md` from one anecdote.
 
