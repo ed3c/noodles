@@ -243,19 +243,27 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(brief["max_useful_workers"], 0)
         self.assertEqual(brief["claims"], [{"subject": f"{REPOSITORY}#82", "status": "not_frontier"}])
 
-    def test_exact_active_ref_blocks_when_claimed_issue_is_absent_or_malformed(self) -> None:
+    def test_exact_active_ref_blocks_when_claimed_open_issue_is_malformed(self) -> None:
         malformed = issue(81)
         malformed["body"] = "missing exact contract"
-        for open_issues in ([issue(82)], [malformed, issue(82)]):
-            with self.subTest(claimed_issue_present=len(open_issues) == 2):
-                provider = FakeProvider(open_issues)
-                provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
-                candidate = self.write_candidate([f"{REPOSITORY}#82"])
-                with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
-                    brief = noodles.schedule_publish(self.root, candidate)
-                self.assertEqual(provider.posts, 0)
-                self.assertEqual(self.published_orders(), [])
-                self.assertEqual(brief["max_useful_workers"], 0)
+        provider = FakeProvider([malformed, issue(82)])
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(self.published_orders(), [])
+        self.assertEqual(brief["max_useful_workers"], 0)
+
+    def test_historical_ref_for_closed_issue_does_not_block_repository(self) -> None:
+        provider = FakeProvider([issue(82)])
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 1)
+        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
+        self.assertEqual(brief["max_useful_workers"], 1)
 
     def test_unrelated_branch_names_do_not_block_the_repository(self) -> None:
         provider = FakeProvider([issue(82)])

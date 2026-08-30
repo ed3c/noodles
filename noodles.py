@@ -1212,7 +1212,13 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
     dependency_cache: dict[str, dict[str, Any]] = {}
     snapshot: list[schedule_domain.ScheduleIssue] = []
     emitted_subjects: set[str] = set()
-    for issue in open_issues(repository):
+    provider_issues = open_issues(repository)
+    open_subjects = {
+        f"{repository}#{issue['number']}"
+        for issue in provider_issues
+        if "pull_request" not in issue
+    }
+    for issue in provider_issues:
         if "pull_request" in issue:
             continue
         number = issue.get("number")
@@ -1234,7 +1240,8 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
                 claimed=subject_value in claimed_subjects,
             )
         )
-    for subject_value in sorted(claimed_subjects - emitted_subjects, key=lambda value: parse_subject(value).number):
+    malformed_claims = claimed_subjects.intersection(open_subjects) - emitted_subjects
+    for subject_value in sorted(malformed_claims, key=lambda value: parse_subject(value).number):
         snapshot.append(
             schedule_domain.ScheduleIssue(
                 subject=subject_value,
