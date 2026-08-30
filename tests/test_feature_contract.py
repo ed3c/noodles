@@ -66,6 +66,22 @@ class FeatureVerifierTests(unittest.TestCase):
         self.assertEqual(admitted, evidence)
         self.assertEqual(cmd(["git", "status", "--porcelain=v1", "--untracked-files=all"], root), "")
 
+    def test_committed_skill_canary_rebinds_head_and_artifact_digest(self) -> None:
+        root = self.candidate_copy()
+        original_digest = code_surface_digest(root)
+        surface = root / FEATURE.code_surface
+        surface.write_text(surface.read_text() + "\n<!-- bounded canary fixture -->\n", encoding="utf-8")
+        cmd(["git", "add", FEATURE.code_surface], root)
+        cmd(["git", "commit", "-q", "-m", "test: plant bounded skill canary"], root)
+
+        evidence = feature_contract.verify_feature(root, FEATURE.feature_id, error_cls=noodles.GateError)
+
+        self.assertEqual(evidence["head"], cmd(["git", "rev-parse", "HEAD"], root))
+        self.assertEqual(evidence["code_surface_sha256"], code_surface_digest(root))
+        self.assertNotEqual(evidence["code_surface_sha256"], original_digest)
+        self.assertEqual(evidence["observed"], {"returncode": 0, "ok": True, "errors": []})
+        self.assertEqual(cmd(["git", "status", "--porcelain=v1", "--untracked-files=all"], root), "")
+
     def test_operation_that_never_touches_the_real_artifact_fails_closed(self) -> None:
         root = self.candidate_copy()
         surface = root / FEATURE.code_surface
