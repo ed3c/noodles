@@ -25,7 +25,7 @@ paths = [
 
 [agents.codex]
 path = ".agents/bin"
-args = ["--ignore-user-config", "--sandbox", "workspace-write", "-c", "approval_policy=\"never\"", "-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.writable_roots=[\"/Users/neon/noodles/.git\"]"]
+args = ["--ignore-user-config", "-c", "approval_policy=\"never\"", "-c", "default_permissions=\"noodles-cook\"", "-c", "permissions.noodles-cook.extends=\":workspace\"", "-c", "permissions.noodles-cook.workspace_roots={\"/Users/neon/noodles/.git\"=true}", "-c", "permissions.noodles-cook.filesystem={\":workspace_roots\"={\".agents/skills\"=\"write\"}}", "-c", "permissions.noodles-cook.network.enabled=true"]
 
 [adapters.backlog]
 skill = "schedule"

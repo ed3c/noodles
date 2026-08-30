@@ -13,6 +13,23 @@ import noodles
 from tests.support import CANDIDATE_ROOT, copy_tracked, write_fake_codex_stub
 
 
+PERMISSION_PROFILE_ARGS = [
+    "--ignore-user-config",
+    "-c",
+    'approval_policy="never"',
+    "-c",
+    'default_permissions="noodles-cook"',
+    "-c",
+    'permissions.noodles-cook.extends=":workspace"',
+    "-c",
+    'permissions.noodles-cook.workspace_roots={"/Users/neon/noodles/.git"=true}',
+    "-c",
+    'permissions.noodles-cook.filesystem={":workspace_roots"={".agents/skills"="write"}}',
+    "-c",
+    "permissions.noodles-cook.network.enabled=true",
+]
+
+
 class CodexIsolationTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp = tempfile.TemporaryDirectory(prefix="noodles-codex-isolation-")
@@ -99,6 +116,26 @@ class CodexIsolationTests(unittest.TestCase):
             result["errors"],
         )
 
+    def test_codex_agent_config_accepts_narrow_skill_permission_profile(self) -> None:
+        config = {"agents": {"codex": {"path": ".agents/bin", "args": PERMISSION_PROFILE_ARGS}}}
+        self.assertEqual(codex_isolation.validate_codex_agent_config(CANDIDATE_ROOT, config), [])
+
+    def test_codex_agent_config_rejects_broader_agents_write(self) -> None:
+        args = [value.replace('".agents/skills"="write"', '".agents"="write"') for value in PERMISSION_PROFILE_ARGS]
+        config = {"agents": {"codex": {"path": ".agents/bin", "args": args}}}
+        self.assertIn(
+            ".noodle.toml agents.codex.args must grant write only to '.agents/skills' inside workspace roots",
+            codex_isolation.validate_codex_agent_config(CANDIDATE_ROOT, config),
+        )
+
+    def test_codex_agent_config_rejects_legacy_sandbox_with_permission_profile(self) -> None:
+        args = [*PERMISSION_PROFILE_ARGS, "--sandbox", "workspace-write"]
+        config = {"agents": {"codex": {"path": ".agents/bin", "args": args}}}
+        self.assertIn(
+            ".noodle.toml agents.codex.args must not combine the permission profile with legacy sandbox settings",
+            codex_isolation.validate_codex_agent_config(CANDIDATE_ROOT, config),
+        )
+
     def test_wrapper_isolates_home_and_strips_forbidden_flag(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
@@ -122,10 +159,7 @@ class CodexIsolationTests(unittest.TestCase):
                 "use execute skill",
                 codex_isolation.FORBIDDEN_FORWARD_ARG,
                 "--ignore-user-config",
-                "--sandbox",
-                "workspace-write",
-                "-c",
-                'approval_policy="never"',
+                *PERMISSION_PROFILE_ARGS[1:],
             ],
             cwd=root,
             env=env,
@@ -136,6 +170,7 @@ class CodexIsolationTests(unittest.TestCase):
         )
         receipt = json.loads(trace.read_text(encoding="utf-8"))
         self.assertNotIn(codex_isolation.FORBIDDEN_FORWARD_ARG, receipt["forwarded_argv"])
+        self.assertEqual(receipt["forwarded_argv"][-len(PERMISSION_PROFILE_ARGS):], PERMISSION_PROFILE_ARGS)
         self.assertEqual(receipt["incoming_argv"][0:3], ["debug", "prompt-input", "use execute skill"])
         self.assertEqual(Path(receipt["isolated_home"]).resolve(), (root / codex_isolation.ISOLATED_HOME).resolve())
         self.assertEqual(Path(receipt["isolated_codex_home"]).resolve(), (root / codex_isolation.ISOLATED_CODEX_HOME).resolve())
