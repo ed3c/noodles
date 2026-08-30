@@ -139,7 +139,7 @@ class ScheduleContractTests(unittest.TestCase):
 
     def test_codex_carrier_injects_exact_effort_for_each_task_model(self) -> None:
         cases = (
-            ("gpt-5.6-luna", ("max", "high")),
+            ("gpt-5.6-luna", ("high",)),
             ("gpt-5.6-sol", ("high",)),
         )
         for model, admitted_efforts in cases:
