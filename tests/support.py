@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+import daemon_lease
 import feature_contract
 import noodles
 import runtime_contract
@@ -760,6 +761,7 @@ def start_entrypoint_with_delayed_listener(
                     listener_stop.set()
 
             terminator_stop = threading.Event()
+            admission_timeout = max(5.0, delay * 8)
             stderr_path = base / "start-entrypoint.stderr"
             stderr_path.write_text("", encoding="utf-8")
             listener_state["admission_receipt_seen"] = False
@@ -819,7 +821,16 @@ def start_entrypoint_with_delayed_listener(
                 env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
             with stderr_path.open("w", encoding="utf-8") as stderr_sink:
                 result = subprocess.run(
-                    [str(control / "noodles"), "start", "--control-url", control_url, "--interval", str(interval)],
+                    [
+                        str(control / "noodles"),
+                        "start",
+                        "--control-url",
+                        control_url,
+                        "--interval",
+                        str(interval),
+                        "--admission-timeout",
+                        str(admission_timeout),
+                    ],
                     cwd=control,
                     env=env,
                     text=True,
@@ -842,6 +853,9 @@ def start_entrypoint_with_delayed_listener(
                 "stderr": stderr_path.read_text(encoding="utf-8", errors="replace"),
                 "runtime_lock_pid": runtime_lock_pid,
                 "runtime_status": runtime_status,
+                "control_port": port,
+                "listener_after_exit": daemon_lease.listener_pids("127.0.0.1", port),
+                "lease_after_exit": daemon_lease.read_lease(control)[1],
                 **listener_state,
             }
         finally:
@@ -860,20 +874,22 @@ def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
     )
     if not connection_refusal_diagnosed:
         errors.append("wrapper never diagnosed startup connection refusal on repair path")
+    if '"admitted":true' not in stderr.replace(" ", ""):
+        errors.append("wrapper never admitted a truthful Noodle daemon lease")
+    if f'"listener_pids":[' not in stderr.replace(" ", ""):
+        errors.append("listener ownership readback missing from the admission receipt")
+    if "listener-absent" in stderr or "admission-timeout" in stderr:
+        errors.append("listener never became reachable within bounded admission")
+    if '"loop_state":"running"' not in stderr.replace(" ", ""):
+        errors.append("listener never served snapshot readback with a live runtime status")
     if "Traceback" in stderr:
-        errors.append("wrapper terminated with traceback instead of retrying")
+        errors.append("wrapper terminated with traceback instead of failing closed")
     if receipt.get("entrypoint_exists") is not True:
         errors.append(f"documented entrypoint missing at {receipt.get('entrypoint_path')}")
-    if receipt.get("listener_ready") is not True:
-        errors.append("listener never became reachable")
-    if receipt.get("listener_served") is not True:
-        errors.append("listener never served snapshot readback")
-    if int(receipt.get("listener_request_count") or 0) < 1:
-        errors.append("listener request readback missing")
-    if receipt.get("listener_thread_alive") is not False:
-        errors.append("listener thread residue remained after subprocess exit")
-    if receipt.get("listener_error") is not None:
-        errors.append(f"listener lifecycle failed: {receipt.get('listener_error')}")
+    if receipt.get("listener_after_exit") != []:
+        errors.append(f"listener residue remained after subprocess exit: {receipt.get('listener_after_exit')}")
+    if not str(receipt.get("lease_after_exit") or ""):
+        errors.append("failed startup did not preserve the runtime lease evidence")
     return errors
 
 

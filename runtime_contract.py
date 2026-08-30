@@ -522,7 +522,7 @@ def resolve_locked_runtime_binary(root: Path, *, error_cls: type[Exception]) -> 
     return binary
 
 
-def _noodle_project_root(root: Path, *, error_cls: type[Exception]) -> Path:
+def noodle_project_root(root: Path, *, error_cls: type[Exception]) -> Path:
     configured = os.getenv("NOODLE_PROJECT_DIR", "").strip()
     if configured:
         project = Path(configured).expanduser().resolve()
@@ -567,7 +567,7 @@ def validate_handoff_session(
     session_id = session_id.strip()
     if not session_id or Path(session_id).name != session_id:
         raise error_cls("current NOODLE_SESSION_ID is missing or unsafe")
-    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    project = noodle_project_root(root.resolve(), error_cls=error_cls)
     session = project / ".noodle" / "sessions" / session_id
     if not session.is_dir():
         raise error_cls(f"current Noodle session does not exist: {session_id}")
@@ -593,7 +593,7 @@ def validate_pending_review_session(
     *,
     error_cls: type[Exception],
 ) -> dict[str, Any]:
-    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    project = noodle_project_root(root.resolve(), error_cls=error_cls)
     session_id = str(review.get("session_id") or "").strip()
     if not session_id or Path(session_id).name != session_id:
         raise error_cls("pending review session_id is missing or unsafe")
@@ -648,7 +648,7 @@ def emit_session_event(
         raise error_cls("current NOODLE_SESSION_ID is missing or unsafe")
     if not event_type:
         raise error_cls("session event type is required")
-    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    project = noodle_project_root(root.resolve(), error_cls=error_cls)
     binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
     run(
         [
@@ -680,7 +680,7 @@ def worktree_exec(
         raise error_cls("pending review worktree_name is missing")
     if not command:
         raise error_cls("worktree exec requires a command")
-    project = _noodle_project_root(root.resolve(), error_cls=error_cls)
+    project = noodle_project_root(root.resolve(), error_cls=error_cls)
     binary = resolve_locked_runtime_binary(root, error_cls=error_cls)
     result = run(
         [str(binary), "worktree", "exec", worktree_name, *command],

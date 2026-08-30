@@ -171,6 +171,10 @@ Correctness MUST NOT depend on a fixed numeric `max_concurrency`. It depends on 
 
 Start-readiness and completion-readiness are distinct. A task may start independently while still requiring provider-landed predecessor facts before it may complete or land.
 
+### CONCURRENCY.RUNTIME_LEASE.001
+
+`./noodles start` MUST admit at most one truthful upstream Noodle daemon per repository; a ghost `status.json`, stale lease, foreign lease owner, listener-less child, or unrelated `127.0.0.1:3210` occupant fails closed with a distinct diagnostic. Admission boundary: upstream `.noodle/noodle.lock` readback, exact spawned-child pid identity, `lsof` listener ownership, live `/api/snapshot` response, `.noodle/status.json` loop state, planted fake-alive controls, and own-child-only termination with orphan/listener residue readback.
+
 ## 10. Cross-repository model
 
 ### CROSS_REPO.AUTHORITY.001
@@ -213,4 +217,5 @@ The default delivery topology is one repository-mutating atom → one PR to the 
 - Derived schedulability is scheduler admission input, not merge/closure authority.
 - Tool-specific historical claims and migration-specific evidence belong to their Issue, migration ledger, or nearest executable boundary, not this system specification.
 - External Skills may describe what to verify but cannot verify themselves or mutate provider authority.
+- A daemon health receipt proves the observation instant, not future liveness; noodles implements no supervisor, generic lease service, retry framework, or replacement Noodle lock, and a process name or stale status file alone is not health evidence.
 - This specification does not implement typed Issue completeness, Feature Map runtime, organizational-learning runtime, concurrency machinery, cross-repository execution, or a requirement registry.
