@@ -139,10 +139,7 @@ class RepositoryGateTests(unittest.TestCase):
     def test_provider_lock_pins_expected_external_skills(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/providers.lock.json").read_text())
         pstack_source = payload["providers"][0].get("source")
-        self.assertIn(
-            pstack_source,
-            {"https://github.com/cursor/plugins.git", "https://github.com/ed3c/plugins.git"},
-        )
+        self.assertEqual(pstack_source, "https://github.com/ed3c/plugins.git")
         self.assertEqual(
             payload["providers"],
             [
