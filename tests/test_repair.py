@@ -68,6 +68,8 @@ class RepairTests(unittest.TestCase):
                     "head_sha": self.head,
                     "html_url": "https://example.invalid/runs/777",
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }]
             },
             "repos/ed3c/noodles/actions/runs/777": {
@@ -80,6 +82,8 @@ class RepairTests(unittest.TestCase):
                 "head_sha": self.head,
                 "html_url": "https://example.invalid/runs/777",
                 "workflow_id": 11,
+                "run_attempt": 1,
+                "pull_requests": [{"number": 44}],
             },
             "repos/ed3c/noodles": {"full_name": "ed3c/noodles", "default_branch": "main"},
             "repos/ed3c/noodles/actions/workflows/verify.yml": {

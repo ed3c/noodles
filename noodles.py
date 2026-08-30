@@ -29,9 +29,12 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
+    blocking_handoff_readback,
     control_checkout_admission as runtime_control_checkout_admission,
     emit_blocking_handoff,
+    emit_handoff_rerun_intent,
     gh_repo_from_git as runtime_gh_repo_from_git,
+    handoff_rerun_intent_readback,
     provider_check as runtime_provider_check,
     provider_sync as runtime_provider_sync,
     reconcile_checkout_admission as runtime_reconcile_checkout_admission,
@@ -573,7 +576,72 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
     issue_set_state(subject_value, "awaiting_land")
-    receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
+    receipt = blocking_handoff_readback(root, subject_value, pr_number, head, session_id, error_cls=GateError)
+    if receipt is None:
+        intent = handoff_rerun_intent_readback(
+            root, subject_value, pr_number, head, session_id, error_cls=GateError
+        )
+        if intent is None:
+            failed_run = github_protection.failed_required_workflow_run_readback(
+                gh_api,
+                GateError,
+                subject.repo,
+                head,
+                name=str(policy["required_check"]),
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch=str(policy["default_branch"]),
+                pr_number=pr_number,
+            )
+            intent = emit_handoff_rerun_intent(
+                root,
+                subject_value,
+                pr_number,
+                head,
+                int(failed_run["run"]["id"]),
+                int(failed_run["run"]["run_attempt"]),
+                session_id,
+                error_cls=GateError,
+            )
+        source = github_protection.trusted_workflow_run_readback(
+            gh_api,
+            GateError,
+            subject.repo,
+            int(intent["workflow_run_id"]),
+            name=str(policy["required_check"]),
+            path=".github/workflows/verify.yml",
+            event="pull_request_target",
+            default_branch=str(policy["default_branch"]),
+        )
+        run = source["run"]
+        if run["head_sha"] != head or pr_number not in run["pull_request_numbers"]:
+            raise GateError("execute handoff verify rerun intent workflow head or PR drifted")
+        baseline_attempt = int(intent["baseline_run_attempt"])
+        current_attempt = int(run["run_attempt"])
+        if current_attempt == baseline_attempt:
+            if run["status"] != "completed" or run["conclusion"] not in github_protection.FAILED_WORKFLOW_CONCLUSIONS:
+                raise GateError("execute handoff verify rerun baseline is not a completed failed workflow run")
+            gh_api(f"repos/{subject.repo}/actions/runs/{run['id']}/rerun", method="POST")
+        elif current_attempt == baseline_attempt + 1:
+            active_states = {"queued", "in_progress", "requested", "waiting", "pending"}
+            if run["status"] not in active_states | {"completed"}:
+                raise GateError("execute handoff verify rerun adopted workflow state is invalid")
+            if run["status"] == "completed" and not run["conclusion"]:
+                raise GateError("execute handoff verify rerun completed attempt has no conclusion")
+            if run["status"] != "completed" and run["conclusion"]:
+                raise GateError("execute handoff verify rerun active attempt has a conclusion")
+        else:
+            raise GateError("execute handoff verify rerun attempt drifted from its durable intent")
+        receipt = emit_blocking_handoff(
+            root,
+            subject_value,
+            pr_number,
+            head,
+            int(intent["workflow_run_id"]),
+            baseline_attempt,
+            session_id,
+            error_cls=GateError,
+        )
     specialized = evidence["specialized"]
     return {
         "subject": subject_value,
