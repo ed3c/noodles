@@ -822,6 +822,26 @@ class StartUnattendedTests(unittest.TestCase):
             result = start_entrypoint_with_delayed_listener()
         assert_valid_start_entrypoint_receipt(result)
 
+    def test_start_entrypoint_stub_materializes_live_looking_runtime_surface(self) -> None:
+        def assert_materialized(receipt: dict[str, object]) -> None:
+            lock_pid = receipt.get("runtime_lock_pid")
+            self.assertIsNotNone(lock_pid, "stub never claimed a runtime lock")
+            self.assertTrue(str(lock_pid).isdigit(), f"lock did not name a pid: {lock_pid!r}")
+            status = receipt.get("runtime_status")
+            self.assertIsInstance(status, dict, f"stub never published status.json: {status!r}")
+            assert isinstance(status, dict)
+            self.assertEqual(status.get("loop_state"), "running")
+            self.assertEqual(
+                receipt.get("listener_response"),
+                {"pending_reviews": [], "unclaimed_orders": []},
+                "stub never served a valid /api/snapshot response",
+            )
+
+        assert_materialized(start_entrypoint_with_delayed_listener())
+
+        with self.assertRaises(AssertionError):
+            assert_materialized(start_entrypoint_with_delayed_listener(start_listener=False))
+
     def test_codex_real_bin_export_materializes_fixture_only_in_offline_mode(self) -> None:
         temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-export-")
         self.addCleanup(temp.cleanup)
