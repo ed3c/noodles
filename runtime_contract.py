@@ -705,21 +705,23 @@ def blocking_handoff_readback(
         if item.get("type") == "stage_message"
         and isinstance(item.get("payload"), dict)
         and item["payload"].get("issue_subject") == subject
-        and item["payload"].get("pr_number") == pr_number
-        and item["payload"].get("head_sha") == head
     ]
     if len(existing) > 1:
         raise error_cls("execute handoff has duplicate blocking stage messages")
     if not existing:
         return None
     event = existing[0]
+    if event["payload"].get("pr_number") != pr_number or event["payload"].get("head_sha") != head:
+        raise error_cls("execute handoff stage message PR or head drifted")
     run_id = int(event["payload"].get("workflow_run_id") or 0)
-    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {run_id}; park until trusted provider landing readback."
+    baseline_attempt = int(event["payload"].get("baseline_run_attempt") or 0)
+    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {run_id} after attempt {baseline_attempt}; park until trusted provider landing readback."
     stage_messages = [item for item in context["events"] if item.get("type") == "stage_message"]
     if event.get("session_id") != session_id or event["payload"].get("blocking") is not True:
         raise error_cls("execute handoff stage message is not blocking for the exact session")
     if (
         run_id <= 0
+        or baseline_attempt <= 0
         or event["payload"].get("message") != message
         or not stage_messages
         or stage_messages[-1] is not event
@@ -730,8 +732,91 @@ def blocking_handoff_readback(
         "head": head,
         "message": message,
         "blocking": True,
-        "verification_rerun": {"workflow_run_id": run_id, "head_sha": head},
+        "verification_rerun": {
+            "workflow_run_id": run_id,
+            "head_sha": head,
+            "baseline_run_attempt": baseline_attempt,
+        },
     }
+
+
+def handoff_rerun_intent_readback(
+    root: Path,
+    subject: str,
+    pr_number: int,
+    head: str,
+    session_id: str,
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any] | None:
+    context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
+    existing = [item for item in context["events"] if item.get("type") == "handoff_verify_rerun_intent"]
+    if len(existing) > 1:
+        raise error_cls("execute handoff has duplicate verify rerun intents")
+    if not existing:
+        return None
+    event = existing[0]
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        raise error_cls("execute handoff verify rerun intent payload is invalid")
+    if (
+        event.get("session_id") != session_id
+        or payload.get("issue_subject") != subject
+        or payload.get("pr_number") != pr_number
+        or payload.get("head_sha") != head
+    ):
+        raise error_cls("execute handoff verify rerun intent subject, PR, or head drifted")
+    run_id = int(payload.get("workflow_run_id") or 0)
+    baseline_attempt = int(payload.get("baseline_run_attempt") or 0)
+    if run_id <= 0 or baseline_attempt <= 0:
+        raise error_cls("execute handoff verify rerun intent run identity is invalid")
+    return {
+        "issue_subject": subject,
+        "pr_number": pr_number,
+        "head_sha": head,
+        "workflow_run_id": run_id,
+        "baseline_run_attempt": baseline_attempt,
+    }
+
+
+def emit_handoff_rerun_intent(
+    root: Path,
+    subject: str,
+    pr_number: int,
+    head: str,
+    workflow_run_id: int,
+    baseline_run_attempt: int,
+    session_id: str,
+    *,
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    existing = handoff_rerun_intent_readback(
+        root, subject, pr_number, head, session_id, error_cls=error_cls
+    )
+    expected = {
+        "issue_subject": subject,
+        "pr_number": pr_number,
+        "head_sha": head,
+        "workflow_run_id": workflow_run_id,
+        "baseline_run_attempt": baseline_run_attempt,
+    }
+    if existing is not None:
+        if existing != expected:
+            raise error_cls("execute handoff verify rerun intent run identity drifted")
+        return existing
+    emit_session_event(
+        root,
+        session_id,
+        "handoff_verify_rerun_intent",
+        expected,
+        error_cls=error_cls,
+    )
+    observed = handoff_rerun_intent_readback(
+        root, subject, pr_number, head, session_id, error_cls=error_cls
+    )
+    if observed != expected:
+        raise error_cls("execute handoff verify rerun intent direct readback failed")
+    return observed
 
 
 def emit_blocking_handoff(
@@ -740,6 +825,7 @@ def emit_blocking_handoff(
     pr_number: int,
     head: str,
     workflow_run_id: int,
+    baseline_run_attempt: int,
     session_id: str,
     *,
     error_cls: type[Exception],
@@ -748,9 +834,11 @@ def emit_blocking_handoff(
     if existing is not None:
         if existing["verification_rerun"]["workflow_run_id"] != workflow_run_id:
             raise error_cls("execute handoff stage message workflow run id drifted")
+        if existing["verification_rerun"]["baseline_run_attempt"] != baseline_run_attempt:
+            raise error_cls("execute handoff stage message baseline run attempt drifted")
         return existing
     context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
-    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {workflow_run_id}; park until trusted provider landing readback."
+    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {workflow_run_id} after attempt {baseline_run_attempt}; park until trusted provider landing readback."
     payload = {
         "message": message,
         "blocking": True,
@@ -758,6 +846,7 @@ def emit_blocking_handoff(
         "pr_number": pr_number,
         "head_sha": head,
         "workflow_run_id": workflow_run_id,
+        "baseline_run_attempt": baseline_run_attempt,
     }
 
     def matching(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -767,6 +856,7 @@ def emit_blocking_handoff(
             and isinstance(item.get("payload"), dict)
             and item["payload"].get("message") == message
             and item["payload"].get("workflow_run_id") == workflow_run_id
+            and item["payload"].get("baseline_run_attempt") == baseline_run_attempt
         ]
 
     existing = matching(context["events"])
@@ -785,7 +875,11 @@ def emit_blocking_handoff(
     if len(observed) != 1 or not stage_messages or stage_messages[-1] is not observed[0]:
         raise error_cls("execute handoff stage message direct readback failed")
     receipt = blocking_handoff_readback(root, subject, pr_number, head, session_id, error_cls=error_cls)
-    if receipt is None or receipt["verification_rerun"]["workflow_run_id"] != workflow_run_id:
+    if (
+        receipt is None
+        or receipt["verification_rerun"]["workflow_run_id"] != workflow_run_id
+        or receipt["verification_rerun"]["baseline_run_attempt"] != baseline_run_attempt
+    ):
         raise error_cls("execute handoff stage message direct readback failed")
     return receipt
 

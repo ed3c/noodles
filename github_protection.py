@@ -739,6 +739,17 @@ def workflow_run_readback(
     payload = gh_api_fn(f"repos/{repo}/actions/runs/{run_id}")
     if not isinstance(payload, dict) or int(payload.get("id") or 0) != run_id:
         raise error_cls(f"workflow run readback failed for {repo} run {run_id}")
+    run_attempt = int(payload.get("run_attempt") or 0)
+    if run_attempt <= 0:
+        raise error_cls(f"workflow run {run_id} has no positive run attempt")
+    pull_requests = payload.get("pull_requests")
+    if not isinstance(pull_requests, list):
+        raise error_cls(f"workflow run {run_id} pull request membership readback failed")
+    pull_request_numbers = sorted({
+        int(item.get("number") or 0)
+        for item in pull_requests
+        if isinstance(item, dict) and int(item.get("number") or 0) > 0
+    })
     return {
         "id": run_id,
         "name": str(payload.get("name") or ""),
@@ -750,6 +761,8 @@ def workflow_run_readback(
         "head_sha": str(payload.get("head_sha") or ""),
         "html_url": str(payload.get("html_url") or ""),
         "workflow_id": int(payload.get("workflow_id") or 0),
+        "run_attempt": run_attempt,
+        "pull_request_numbers": pull_request_numbers,
     }
 def workflow_runs_for_head(
     gh_api_fn: Callable[..., Any],
@@ -768,6 +781,17 @@ def workflow_runs_for_head(
         run_id = int(item.get("id") or 0)
         if run_id <= 0:
             continue
+        run_attempt = int(item.get("run_attempt") or 0)
+        if run_attempt <= 0:
+            continue
+        pull_requests = item.get("pull_requests")
+        if not isinstance(pull_requests, list):
+            continue
+        pull_request_numbers = sorted({
+            int(pr.get("number") or 0)
+            for pr in pull_requests
+            if isinstance(pr, dict) and int(pr.get("number") or 0) > 0
+        })
         normalized.append({
             "id": run_id,
             "name": str(item.get("name") or ""),
@@ -779,6 +803,8 @@ def workflow_runs_for_head(
             "head_sha": str(item.get("head_sha") or ""),
             "html_url": str(item.get("html_url") or ""),
             "workflow_id": int(item.get("workflow_id") or 0),
+            "run_attempt": run_attempt,
+            "pull_request_numbers": pull_request_numbers,
         })
     return normalized
 def trusted_workflow_run_readback(
@@ -824,13 +850,17 @@ def failed_required_workflow_run_readback(
     path: str,
     event: str,
     default_branch: str,
+    pr_number: int | None = None,
 ) -> dict[str, Any]:
+    if pr_number is not None and pr_number <= 0:
+        raise error_cls("workflow run PR number must be a positive integer")
     candidates = [
         run for run in workflow_runs_for_head(gh_api_fn, error_cls, repo, head_sha)
         if run["name"] == name
         and run["path"] == path
         and run["event"] == event
         and run["head_sha"] == head_sha
+        and (pr_number is None or pr_number in run["pull_request_numbers"])
         and run["status"] == "completed"
         and run["conclusion"] in FAILED_WORKFLOW_CONCLUSIONS
     ]
@@ -849,6 +879,8 @@ def failed_required_workflow_run_readback(
     )
     if source["run"]["head_sha"] != head_sha:
         raise error_cls(f"required check {name} workflow run head drifted from {head_sha}")
+    if pr_number is not None and pr_number not in source["run"]["pull_request_numbers"]:
+        raise error_cls(f"required check {name} workflow run does not belong to PR #{pr_number}")
     if source["run"]["status"] != "completed" or source["run"]["conclusion"] not in FAILED_WORKFLOW_CONCLUSIONS:
         raise error_cls(f"required check {name} is not a completed failed workflow run for {head_sha}")
     return source
