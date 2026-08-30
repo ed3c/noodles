@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import github_protection
 import noodles
 from tests.support import (
     CANDIDATE_ROOT,
@@ -107,26 +108,125 @@ class ExecuteHandoffTests(unittest.TestCase):
         payload.update(overrides)
         return payload
 
-    def test_positive_handoff_emits_one_blocking_message_for_exact_session(self) -> None:
+    def failed_verify_source(self) -> dict:
+        return {"run": {"id": 91, "head_sha": self.head, "status": "completed", "conclusion": "failure"}}
+
+    def test_legacy_stage_does_not_suppress_exact_rerun_receipt_or_duplicate_post(self) -> None:
         pr = self.pr()
+        events_path = self.root / ".noodle" / "sessions" / self.session_id / "events.ndjson"
+        message = f"Provider handoff ready: {self.SUBJECT} PR #44 exact head {self.head}; park until trusted provider landing readback."
+        with events_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "type": "stage_message",
+                "payload": {"message": message, "blocking": True},
+                "timestamp": "2026-08-29T00:00:00Z",
+                "session_id": self.session_id,
+            }) + "\n")
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", return_value=self.failed_verify_source()) as failed_run, \
+             mock.patch.object(noodles, "gh_api", return_value=None) as api:
             receipt = noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
 
         self.assertEqual(receipt["session_id"], self.session_id)
         self.assertEqual(receipt["head"], self.head)
-        events_path = self.root / ".noodle" / "sessions" / self.session_id / "events.ndjson"
+        self.assertEqual(receipt["verification_rerun"]["workflow_run_id"], 91)
+        self.assertEqual(receipt["verification_rerun"]["head_sha"], self.head)
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         handoffs = [item for item in events if item["type"] == "stage_message"]
+        reruns = [item for item in events if item["type"] == "verification_rerun_receipt"]
         self.assertEqual(len(handoffs), 1)
+        self.assertEqual(len(reruns), 1)
         self.assertIs(handoffs[0]["payload"]["blocking"], True)
         self.assertIn(self.SUBJECT, handoffs[0]["payload"]["message"])
+        failed_run.assert_called_once_with(
+            api,
+            noodles.GateError,
+            "ed3c/noodles",
+            self.head,
+            name="verify",
+            path=".github/workflows/verify.yml",
+            event="pull_request_target",
+            default_branch="main",
+        )
+        api.assert_called_once_with("repos/ed3c/noodles/actions/runs/91/rerun", method="POST")
 
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback") as repeated_failed_run, \
+             mock.patch.object(noodles, "gh_api") as repeated_api:
             noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         self.assertEqual(sum(item["type"] == "stage_message" for item in events), 1)
+        repeated_failed_run.assert_not_called()
+        repeated_api.assert_not_called()
+
+    def test_first_handoff_orders_state_admission_rerun_and_stage_emission(self) -> None:
+        calls: list[str] = []
+
+        def select(*_args: object, **_kwargs: object) -> dict:
+            calls.append("select")
+            return self.failed_verify_source()
+
+        def post(endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> None:
+            self.assertEqual((endpoint, method, payload, token), ("repos/ed3c/noodles/actions/runs/91/rerun", "POST", None, None))
+            calls.append("post")
+
+        def emit(*_args: object, **_kwargs: object) -> dict:
+            calls.append("stage")
+            return {"session_id": self.session_id, "head": self.head, "message": "handoff", "blocking": True}
+
+        def emit_rerun(*_args: object, **_kwargs: object) -> dict:
+            calls.append("receipt")
+            return {"issue_subject": self.SUBJECT, "pr_number": 44, "head_sha": self.head, "workflow_run_id": 91}
+
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state", side_effect=lambda *_args: calls.append("state")), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", side_effect=select), \
+             mock.patch.object(noodles, "gh_api", side_effect=post), \
+             mock.patch.object(noodles, "emit_verification_rerun_receipt", side_effect=emit_rerun), \
+             mock.patch.object(noodles, "emit_blocking_handoff", side_effect=emit):
+            noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+
+        self.assertEqual(calls, ["state", "select", "post", "receipt", "stage"])
+
+    def test_state_admission_failure_queries_no_workflow_and_emits_no_stage(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state", side_effect=noodles.GateError("state admission failed")), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback") as failed_run, \
+             mock.patch.object(noodles, "gh_api") as api, \
+             mock.patch.object(noodles, "emit_blocking_handoff") as emit:
+            with self.assertRaisesRegex(noodles.GateError, "state admission failed"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+
+        failed_run.assert_not_called()
+        api.assert_not_called()
+        emit.assert_not_called()
+
+    def test_wrong_head_failed_run_causes_no_post_or_stage(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", side_effect=noodles.GateError("no completed failed workflow run")), \
+             mock.patch.object(noodles, "gh_api") as api, \
+             mock.patch.object(noodles, "emit_blocking_handoff") as emit:
+            with self.assertRaisesRegex(noodles.GateError, "no completed failed workflow run"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+
+        api.assert_not_called()
+        emit.assert_not_called()
+
+    def test_rerun_post_failure_emits_no_blocking_stage(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", return_value=self.failed_verify_source()), \
+             mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("rerun failed")), \
+             mock.patch.object(noodles, "emit_verification_rerun_receipt") as emit_rerun, \
+             mock.patch.object(noodles, "emit_blocking_handoff") as emit:
+            with self.assertRaisesRegex(noodles.GateError, "rerun failed"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+
+        emit_rerun.assert_not_called()
+        emit.assert_not_called()
 
     def test_wrong_session_id_fails_before_emission(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": "wrong-session"}, clear=False), \
@@ -142,19 +242,25 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
         write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", return_value=self.failed_verify_source()), \
+             mock.patch.object(noodles, "gh_api", return_value=None):
             with self.assertRaisesRegex(noodles.GateError, "blocking"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
 
     def test_wrong_pr_body_head_or_base_fails_closed(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
-             mock.patch.object(noodles, "issue_set_state"):
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback") as failed_run, \
+             mock.patch.object(noodles, "gh_api") as api:
             with self.assertRaises(noodles.GateError):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(body="Claim\nRefs ed3c/noodles#33"))
             with self.assertRaisesRegex(noodles.GateError, "head"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": "f" * 40}))
             with self.assertRaisesRegex(noodles.GateError, "base"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(base={"ref": "dependent-feature"}))
+        failed_run.assert_not_called()
+        api.assert_not_called()
 
     def test_handoff_citing_n_class_path_as_evidence_fails_before_emission(self) -> None:
         body = (
