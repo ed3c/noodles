@@ -134,11 +134,11 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.assertEqual(receipt["verification_rerun"]["head_sha"], self.head)
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         handoffs = [item for item in events if item["type"] == "stage_message"]
-        reruns = [item for item in events if item["type"] == "verification_rerun_receipt"]
-        self.assertEqual(len(handoffs), 1)
+        reruns = [item for item in handoffs if item["payload"].get("workflow_run_id") == 91]
+        self.assertEqual(len(handoffs), 2)
         self.assertEqual(len(reruns), 1)
-        self.assertIs(handoffs[0]["payload"]["blocking"], True)
-        self.assertIn(self.SUBJECT, handoffs[0]["payload"]["message"])
+        self.assertIs(reruns[0]["payload"]["blocking"], True)
+        self.assertIn(self.SUBJECT, reruns[0]["payload"]["message"])
         failed_run.assert_called_once_with(
             api,
             noodles.GateError,
@@ -157,7 +157,7 @@ class ExecuteHandoffTests(unittest.TestCase):
              mock.patch.object(noodles, "gh_api") as repeated_api:
             noodles.execute_handoff(self.root, self.SUBJECT, 44, pr)
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
-        self.assertEqual(sum(item["type"] == "stage_message" for item in events), 1)
+        self.assertEqual(sum(item["type"] == "stage_message" for item in events), 2)
         repeated_failed_run.assert_not_called()
         repeated_api.assert_not_called()
 
@@ -174,21 +174,22 @@ class ExecuteHandoffTests(unittest.TestCase):
 
         def emit(*_args: object, **_kwargs: object) -> dict:
             calls.append("stage")
-            return {"session_id": self.session_id, "head": self.head, "message": "handoff", "blocking": True}
-
-        def emit_rerun(*_args: object, **_kwargs: object) -> dict:
-            calls.append("receipt")
-            return {"issue_subject": self.SUBJECT, "pr_number": 44, "head_sha": self.head, "workflow_run_id": 91}
+            return {
+                "session_id": self.session_id,
+                "head": self.head,
+                "message": "handoff",
+                "blocking": True,
+                "verification_rerun": {"workflow_run_id": 91, "head_sha": self.head},
+            }
 
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_set_state", side_effect=lambda *_args: calls.append("state")), \
              mock.patch.object(github_protection, "failed_required_workflow_run_readback", side_effect=select), \
              mock.patch.object(noodles, "gh_api", side_effect=post), \
-             mock.patch.object(noodles, "emit_verification_rerun_receipt", side_effect=emit_rerun), \
              mock.patch.object(noodles, "emit_blocking_handoff", side_effect=emit):
             noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
 
-        self.assertEqual(calls, ["state", "select", "post", "receipt", "stage"])
+        self.assertEqual(calls, ["state", "select", "post", "stage"])
 
     def test_state_admission_failure_queries_no_workflow_and_emits_no_stage(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
@@ -220,12 +221,9 @@ class ExecuteHandoffTests(unittest.TestCase):
              mock.patch.object(noodles, "issue_set_state"), \
              mock.patch.object(github_protection, "failed_required_workflow_run_readback", return_value=self.failed_verify_source()), \
              mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("rerun failed")), \
-             mock.patch.object(noodles, "emit_verification_rerun_receipt") as emit_rerun, \
              mock.patch.object(noodles, "emit_blocking_handoff") as emit:
             with self.assertRaisesRegex(noodles.GateError, "rerun failed"):
                 noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
-
-        emit_rerun.assert_not_called()
         emit.assert_not_called()
 
     def test_wrong_session_id_fails_before_emission(self) -> None:
