@@ -38,6 +38,61 @@ class CodexIsolationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn(".noodle.toml agents.codex.args must include '--ignore-user-config'", result["errors"])
 
+    SANDBOX_SHAPE_ARGS = (
+        '["--ignore-user-config", "--sandbox", "workspace-write", "-c", "approval_policy=\\"never\\"", '
+        '"-c", "sandbox_workspace_write.network_access=true", '
+        '"-c", "sandbox_workspace_write.writable_roots=[\\"/Users/neon/noodles/.git\\"]"]'
+    )
+    PROFILE_SHAPE_ARGS = (
+        '["--ignore-user-config", "-c", "approval_policy=\\"never\\"", '
+        '"-c", "default_permissions=\\"noodles-cook\\"", '
+        '"-c", "permissions.noodles-cook.extends=\\":workspace\\"", '
+        '"-c", "permissions.noodles-cook.workspace_roots={\\"/Users/neon/noodles/.git\\"=true}", '
+        '"-c", "permissions.noodles-cook.filesystem={\\":workspace_roots\\"={\\".agents/skills\\"=\\"write\\"}}", '
+        '"-c", "permissions.noodles-cook.network.enabled=true"]'
+    )
+
+    def rewrite_args(self, root: Path, new_args: str) -> None:
+        path = root / ".noodle.toml"
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(self.SANDBOX_SHAPE_ARGS, text)
+        path.write_text(text.replace(self.SANDBOX_SHAPE_ARGS, new_args, 1), encoding="utf-8")
+
+    def test_permissions_profile_shape_is_accepted_during_staging_window(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        self.rewrite_args(root, self.PROFILE_SHAPE_ARGS)
+        result = noodles.verify_repository(root, CANDIDATE_ROOT)
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_neither_sandbox_shape_fails_closed(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        self.rewrite_args(root, '["--ignore-user-config", "-c", "approval_policy=\\"never\\""]')
+        result = noodles.verify_repository(root, CANDIDATE_ROOT)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("either '--sandbox workspace-write' or the complete noodles-cook permissions profile" in error for error in result["errors"]),
+            result["errors"],
+        )
+
+    def test_partial_permissions_profile_fails_closed(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        partial = self.PROFILE_SHAPE_ARGS.replace(
+            '"-c", "permissions.noodles-cook.filesystem={\\":workspace_roots\\"={\\".agents/skills\\"=\\"write\\"}}", ',
+            "",
+            1,
+        )
+        self.assertNotEqual(partial, self.PROFILE_SHAPE_ARGS)
+        self.rewrite_args(root, partial)
+        result = noodles.verify_repository(root, CANDIDATE_ROOT)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any(".agents/skills write" in error for error in result["errors"]),
+            result["errors"],
+        )
+
     def test_wrapper_isolates_home_and_strips_forbidden_flag(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)

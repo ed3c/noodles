@@ -30,8 +30,7 @@ def validate_codex_agent_config(root: Path, noodle_config: Mapping[str, Any]) ->
     args = list(codex.get("args") or [])
     if "--ignore-user-config" not in args:
         errors.append(".noodle.toml agents.codex.args must include '--ignore-user-config'")
-    if _flag_value(args, "--sandbox") != "workspace-write":
-        errors.append(".noodle.toml agents.codex.args must preserve '--sandbox workspace-write'")
+    errors.extend(_sandbox_shape_errors(args))
     if _flag_value(args, "-c") != 'approval_policy="never"':
         errors.append('.noodle.toml agents.codex.args must preserve \'-c approval_policy="never"\'')
     wrapper = root / CODEX_WRAPPER
@@ -74,6 +73,50 @@ def _flag_value(args: list[Any], flag: str) -> str | None:
         if str(value) == flag and index + 1 < len(args):
             return str(args[index + 1])
     return None
+
+
+def _all_flag_values(args: list[Any], flag: str) -> list[str]:
+    return [str(args[index + 1]) for index, value in enumerate(args) if str(value) == flag and index + 1 < len(args)]
+
+
+# constraint: staging window (ed3c/noodles#180) - args may carry either the
+# constraint: sandbox-flag shape or the complete noodles-cook permissions
+# constraint: profile; the profile was proven load-bearing against the pinned
+# constraint: codex binary (2026-08-30); the retire step pins one shape after
+# constraint: ed3c/noodles#172 lands.
+_PROFILE_REQUIRED_EXACT = (
+    'default_permissions="noodles-cook"',
+    'permissions.noodles-cook.extends=":workspace"',
+    "permissions.noodles-cook.network.enabled=true",
+)
+
+
+def _sandbox_shape_errors(args: list[Any]) -> list[str]:
+    if _flag_value(args, "--sandbox") == "workspace-write":
+        return []
+    values = _all_flag_values(args, "-c")
+    if not any(value.startswith("default_permissions=") for value in values):
+        return [
+            ".noodle.toml agents.codex.args must carry either '--sandbox workspace-write' "
+            "or the complete noodles-cook permissions profile (staging window, ed3c/noodles#180)"
+        ]
+    errors = [
+        f".noodle.toml agents.codex.args profile shape missing '-c {required}'"
+        for required in _PROFILE_REQUIRED_EXACT
+        if required not in values
+    ]
+    if not any(value.startswith("permissions.noodles-cook.workspace_roots=") and ".git" in value for value in values):
+        errors.append(
+            ".noodle.toml agents.codex.args profile shape must grant the noodles .git root via permissions.noodles-cook.workspace_roots"
+        )
+    if not any(
+        value.startswith("permissions.noodles-cook.filesystem=") and ".agents/skills" in value and "write" in value
+        for value in values
+    ):
+        errors.append(
+            ".noodle.toml agents.codex.args profile shape must grant .agents/skills write via permissions.noodles-cook.filesystem"
+        )
+    return errors
 
 
 def _run_canary_command(
