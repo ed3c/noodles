@@ -1,171 +1,216 @@
-# System Contract v1
+# noodles System Specification v1
 
-This file defines claim boundaries. Executable authority lives in `noodles.py`, trusted workflows, tests, Git, and GitHub readback.
+This file is the canonical, low-change owner for system-level intent, invariants, authority boundaries, and stable requirement definitions in noodles. It is a constitution, not a project wiki, mutable status store, execution transcript, or correctness oracle.
 
-## State machine
+Executable authority remains in the nearest executable contract/test, trusted workflows, Git, and GitHub readback. Mutable Issue, PR, branch, commit, workflow-run, receipt, and runtime state stays with its owning provider surface and MUST NOT be copied here as current truth.
+
+The repository document route is `AGENTS.md` → this file → `issue-named executable contract/test`, with three nodes maximum. Concretely:
 
 ```text
-READY Issue
-  → Noodle order
-  → isolated worktree
-  → implementation
-  → local L gate
-  → PR exact head
-  → Issue AWAITING_LAND
-  → blocking execute handoff
-  → Noodle pending review
-  → trusted verify receipt
-  → GitHub R gate
-  → merged PR readback
-  → Issue LANDED + closed readback
-  → Noodle machine reconciliation
+AGENTS.md
+  → contracts/system-v1.md when the exact Issue names a system requirement
+  → issue-named executable contract/test
+  → stop document traversal
 ```
 
-Any missing subject, stale head, absent control, failed test, dirty provider checkout, missing protection, ambiguous PR reference, or provider drift fails closed.
+The exact Issue selects that final executable boundary. A fourth architecture-document hop is not part of the Golden Path.
 
-## Decision record policy
+## 1. Purpose and non-goals
 
-This file is the single system-level decision and claim-boundary record for v1; noodles does not maintain a second ADR hierarchy. The repository document route is `AGENTS.md` → this file → `issue-named executable contract/test`, with three nodes maximum. The final node must lead to implementation or physical evidence rather than another architecture document.
+noodles exists to let exact GitHub Issues progress through isolated Agent execution, physical verification, and provider landing without making a Human Verifier the routine correctness oracle. The system optimizes for bounded autonomy, exact provenance, target-local verification, and low architectural entropy.
 
-Only observed invariants with an executable/readback boundary may be listed as L or R claims. An architecture decision may be recorded before its mechanism exists only when it is explicitly `HOLD` or N-class and states the physical admission criteria. Mutable Issue, PR, runtime, and provider receipts remain with their owning surfaces instead of being copied here.
+noodles is not a second Agent OS. It does not replace Noodle scheduling/worktrees, pstack engineering routing, Git, GitHub provider authority, or target-local domain contracts. It does not persist derived status that can be reconstructed from provider facts.
+
+### SYSTEM.PURPOSE.001
+
+The system MUST separate stable intent, intended work, execution, physical verification, and landed provider reality so that no layer can silently impersonate another authority.
 
 ## Enforcement hierarchy
 
 Enforcement descends from repository shape, to static/CI gates, to mechanical diagnostics, to soft Agent guidance. Put an invariant at the strongest available layer: the shortest local path should preserve architecture by default; invalid structural states should fail in executable gates; known invalid patterns should name the supported path; rules and Skills explain choices but grant no authority.
 
-Issue structure and completion evidence therefore have separate seams. Structural parsing owns schedulability without consulting an oracle registry. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle can only add evidence at completion, never replace the baseline. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
+Issue admission and completion evidence remain separate seams. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle only adds evidence at completion and never replaces the built-in baseline acceptance contract. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
 
 ## Agent-friendly architecture
 
-Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow a requested implementation even when the wider system invariant is not visible. Noodles does not treat those tendencies as failures to repair with more prose. It arranges ownership, paths, and executable gates so the least surprising local action is also the system-correct action.
+Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow requested implementation details even when wider invariants are not visible. Noodles responds by shaping ownership, paths, diagnostics, and gates so the least surprising local action is also the system-correct action.
 
-This adapts Dune's agent-friendly design principles as noodles system laws, not as a runtime dependency, implementation template, extra document, or new framework. The design target is local-obvious → globally-correct: an Agent starting from an exact Issue should naturally reach the Golden Path with fewer choices than any shortcut, and the obvious meaning of “done” should be the physically verified meaning.
+The design target is local-obvious → globally-correct. The conventional path should require fewer decisions than a shortcut, and the obvious meaning of “done” should be the physically verified meaning.
 
 | ID | System requirement | Admission boundary |
 |---|---|---|
-| AF-01 | The conventional path has fewer decisions than a shortcut: exact Issue, Noodle-owned isolated worktree, nearest executable contract/test, mandatory baseline acceptance, any applicable specialized oracle, exact-head PR, provider readback. | The route is P-class guidance; each named local or provider gate has only its existing L or R authority. |
-| AF-02 | A forbidden dependency, structural state, or authority transition fails mechanically with a diagnostic that names the supported path. | A prohibition is enforced only where a deterministic gate or provider readback already rejects it; prose alone is N-class. |
-| AF-03 | Every durable value has one obvious owner and one admitted writer or transition surface. Copies are read-only projections, never competing truth. | The owner map below is the decision record. Mechanical duplicate-ownership coverage is explicitly incomplete below. |
-| AF-04 | Repository mutation occurs only in an admitted isolated worktree owned by Noodle; the shared control checkout is a read/reconcile surface, not an Agent edit surface. | Noodle worktree/order/session readback and the existing L-03 containment controls. |
-| AF-05 | Bootstrap and recovery exceptions are exact, narrow, bounded atoms with receipts; they pass the nearest executable gate and provider admission when authority changes. | Exact Issue subject, declared boundary, L controls, and R readback; an exception never becomes a second normal path. |
-| AF-06 | The locally obvious completion path reaches mandatory exact-head baseline acceptance and every applicable specialized physical oracle before any completion or authority claim. | L-07 baseline acceptance at the exact candidate head/tree, additive specialized evidence when declared, followed by the existing exact-head R gates. |
+| AF-01 | The conventional path has fewer decisions than a shortcut: exact Issue, Noodle-owned isolated worktree, nearest executable contract/test, mandatory baseline acceptance, every applicable specialized oracle, exact-head PR, provider readback. | Routing remains P-class; named executable/provider gates retain only their existing L/R authority. |
+| AF-02 | A forbidden dependency, structural state, or authority transition fails mechanically with a diagnostic that names the supported path. | A prohibition is enforced only where a deterministic gate or provider readback rejects it. |
+| AF-03 | Every durable value has one obvious owner and one admitted writer or transition surface. Copies are read-only projections, never competing truth. | Ownership prose is N-class until the relevant readback/gate enforces it. |
+| AF-04 | Repository mutation occurs only in an admitted isolated worktree owned by Noodle; the shared control checkout is read/reconcile only. | Noodle order/session/worktree readback plus local containment controls. |
+| AF-05 | Bootstrap and recovery exceptions are exact, narrow, bounded atoms with receipts and cannot become a second normal path by precedent. | Exact subject/boundary plus nearest executable and provider admission. |
+| AF-06 | The locally obvious completion path reaches mandatory exact-head baseline acceptance and every applicable specialized physical oracle before completion or authority is claimed. | Exact-head L evidence followed by existing GitHub R gates. |
 
 ### Durable owner and writer map
 
-“One writer” means one admitted mutation or transition surface for the durable value. It does not mean one process has every authority, and it does not turn a prose ownership statement into an L or R guarantee.
+“One writer” means one admitted mutation or transition surface for a durable value, not one process with all authority.
 
-| Durable value or truth | Owner | Admitted writer or transition surface | Required readback |
+| Durable value or truth | Canonical owner | Admitted transition surface | Required readback |
 |---|---|---|---|
-| Exact Issue goal, target, dependencies, and lifecycle state | GitHub Issue | Configured GitHub backlog adapter; only the trusted lander performs post-merge closure | Exact provider Issue body/state |
-| Scheduling, orders, process isolation, and worktrees | Noodle | Noodle control/runtime APIs | Exact order, stage, session, and worktree state |
-| Engineering playbook selection and route evidence | pstack | `poteto-mode` through the admitted execute Skill/provider path | Route packet remains P-class and cannot grant correctness or provider authority |
-| Baseline and specialized acceptance contracts | noodles | `feature_contract.py`, repository verification, and the nearest executable contract/test named by the Issue | Executed baseline operations, optional specialized operation, observed state, artifact digest where applicable, exact candidate head/tree |
-| Candidate repository source | Git in the Noodle-owned isolated worktree | The repository-mutating Agent inside that admitted worktree | Git status/tree/head plus local gate residue checks |
-| Default-branch source, merge, and Issue closure | GitHub | Trusted verify/land workflows with an expected head SHA | Verify receipt, PR/head/tree, merge parent, default-branch head, closure state |
-| Post-provider runtime reconciliation | noodles | `./noodles reconcile`, which drives the Noodle control API and configured backlog adapter after provider readback | Provider-landed ancestry, command acknowledgement, released order |
+| Stable system intent and requirements | `contracts/system-v1.md` | Exact specification atom | Direct source readback plus route controls |
+| Exact Issue goal, target, dependencies, and lifecycle | GitHub Issue | Configured backlog/Issue contract surfaces; trusted lander for closure | Exact provider Issue body/state |
+| Scheduling, orders, process isolation, and worktrees | Noodle | Noodle runtime/control APIs | Exact order/session/worktree state |
+| Engineering playbook selection | pstack | pinned `poteto-mode` route | Route packet is P-class only |
+| Baseline/specialized acceptance | nearest noodles contract/test/oracle | target-local executable verification | operation, observation, artifact/head/tree readback |
+| Candidate source | Git in Noodle-owned worktree | repository-mutating Agent in that worktree | status/head/tree/residue |
+| Default-branch source, merge, and Issue closure | GitHub | trusted verify/land workflow | exact-head receipt, merge parent, branch head, closure |
+| Post-provider reconciliation | noodles + Noodle | `./noodles reconcile` and Noodle control API | provider ancestry, command acknowledgement, released order |
 
 ### Design consequences
 
-- **Shortcut failure.** A shortcut is either structurally unavailable or fails with a diagnostic naming the supported Golden Path. A silent fallback, permissive cache, or second writer is an architecture defect, not convenience.
-- **Nearest contract.** Domain knowledge lives at the nearest executable boundary: an invariant in its positive and planted-negative test, an adapter rule in its contract test, and a provider assumption in live provider readback. Prose, Skills, route packets, and reviews remain P or N until the named operation executes and its state is read back.
-- **Isolation.** No repository-mutating Agent edits the shared control checkout. New mutation begins in a Noodle-owned isolated worktree; the shared checkout may observe and reconcile provider-landed state only.
-- **Exceptions.** Bootstrap or recovery work names one exact subject, trigger, write boundary, expiry/completion condition, receipt, and unsupported case. It uses the same executable/provider admission as normal work and cannot establish a new normal route by precedent.
-- **Subtraction.** Before adding a registry, router, framework, manager, or document layer, demonstrate a physical failure that the nearest existing contract cannot close. Prefer deleting or strengthening an existing seam; another abstraction is admitted only when subtraction cannot preserve the required behavior.
-- **`poteto-mode`.** pstack selects engineering playbooks probabilistically through `poteto-mode`. It may improve investigation, implementation, review, or cleanup choices, but it owns neither correctness nor GitHub authority and cannot bypass the nearest oracle.
-- **Verification architecture.** The architecture is agent-friendly only when the easiest completion path necessarily executes mandatory baseline acceptance, executes every Issue-declared specialized operation when applicable, checks observed state at the nearest oracle, binds evidence to the candidate head/tree, and then reaches the provider gate. A locally convenient “done” that stops at prose, unrelated tests, or model consensus violates AF-06.
+- **Shortcut failure.** A shortcut is structurally unavailable or fails with a diagnostic naming the supported Golden Path; silent fallback or a second writer is an architecture defect.
+- **Nearest contract.** Domain knowledge belongs at the nearest executable boundary. Prose, Skills, route packets, and reviews remain P or N until the named operation executes and its state is read back.
+- **Isolation.** No repository-mutating Agent edits the shared control checkout.
+- **Exceptions.** Recovery/bootstrap work names one exact subject, trigger, write boundary, completion condition, receipt, and unsupported case.
+- **Subtraction.** Before adding a registry, router, framework, manager, or document layer, demonstrate a physical failure the nearest existing seam cannot close.
+- **`poteto-mode`.** pstack chooses engineering playbooks probabilistically and owns neither correctness nor GitHub authority.
+- **Verification architecture.** Agent-friendly completion means mandatory baseline acceptance, every applicable specialized physical oracle, exact observed-state readback, exact candidate-head/tree binding, and provider admission.
 
 ### Current mechanical coverage and follow-up gap
 
-L-06 and its controls verify the declared three-node route, resolve its static document pointers, and reject a planted fourth architecture-document hop. The direct specification readback also pins one occurrence of each AF requirement row in this file.
+The existing document-route controls verify the declared three-node route, resolve static pointers, and reject a planted fourth architecture-document hop. The AF rows above remain unique by direct deterministic readback. Repository-wide semantic duplicate-owner detection is not yet mechanically proven; until a finite canonical document set and ownership-key seam exist, do not claim that AF-03 is fully enforced across arbitrary prose.
 
-There is no current seam that enumerates every canonical Agent-facing document and rejects a semantic duplicate of an AF durable rule or owner value. Therefore AF-03's repository-wide single-owner property is not mechanically verified by this atom. Follow-up work must first define the finite canonical document set and a deterministic ownership key/readback before adding a duplicate-owner planted negative; until that lands, do not claim more than the route and exact-row controls above.
+## 3. Authority model
 
-## Claim registry
+P/L/R/N are authority classes, not confidence levels.
 
-| ID | Class | Exact claim | Physical boundary |
-|---|---|---|---|
-| P-01 | P | External skills can improve routing and implementation choices. | Pinned checkout exists; skill output remains probabilistic. |
-| P-02 | P | `AGENTS.md` can route an Agent toward the Golden Path. | Never a correctness gate. |
-| L-01 | L | Tracked repository inventory contains only regular files and admitted surfaces. | `git ls-files --stage`, mode checks, required/forbidden paths. |
-| L-02 | L | The candidate satisfies the current failing fitness invariants. Architecture-health thresholds remain warning readback only. | Trusted `noodles.py verify` exit code and metrics readback. |
-| L-03 | L | Exact Issue/PR/handoff syntax is unambiguous and the completed execute session remains contained. | Parser controls plus exact worktree/order/session event readback and blocking-message controls. |
-| L-04 | L | The admitted Noodle runtime and external skills are exact pinned artifacts with release, commit, checksum, license, and discovery readback. | Release tag/commit, executable version, platform asset digest, installed binary digest, detached HEAD, clean status, tree, license digest, SKILL count, configured skill-path discovery. |
-| L-05 | L | Migration states cannot be promoted by prose. | Ledger schema and `MIGRATE` physical-evidence requirement. |
-| L-06 | L | The declared repository document route has no more than three nodes and every static pointer resolves. | Fitness policy, direct file readback, missing-pointer control, and fourth-node control. |
-| L-07 | L | Completion always requires baseline acceptance at the exact candidate head/tree; an Issue-declared specialized feature oracle is optional and additive. | Executed `tests/run.sh` and `./noodles verify --json`, zero-residue/head/tree readback, optional real code-surface digest and operation/oracle readback, plus handoff controls for skipped baseline, unknown feature, stale evidence, self-report, and artifact-blind packets. |
-| L-08 | L | Dependency eligibility is derived from each predecessor's own provider readback; no manual dependency-waiting state exists, and an unread predecessor is never satisfied. | Exact `noodles-depends-on` parsing in `issue_contract.py`, read-only `./noodles issue contract` provider readback with body digest, and landed-stale/open-predecessor/wrong-repository/duplicate/digest-drift/read-failure controls. |
-| R-01 | R | Direct main updates require a PR and the trusted `verify` check. | GitHub protection API readback with admins included and zero required human approvals. |
-| R-02 | R | Only the exact verified PR head is merged. | Workflow-run receipt, PR/head/tree readback, merge API SHA precondition. |
-| R-03 | R | The provider retained the PR head in a merge commit on default branch. | Merge result, PR readback, merge-parent readback, branch-head readback. |
-| R-04 | R | The exact Issue closes only after R-03. | Issue body receipt, state transition, closure readback. |
-| N-01 | N | Metrics, diagrams, inventories, and documentation describe the system. | No admission authority. |
-| N-02 | N | A tool, adapter, index, or test file exists. | Existence alone proves no behavior. |
+- **P — probabilistic guidance:** model reasoning, pstack routes, reviews, hypotheses, plans.
+- **L — local deterministic gate:** executable exit/result with exact subject, controls, readback, and residue where applicable.
+- **R — provider-enforced readback:** protected-branch/check/merge/event/closure/provider state.
+- **N — non-claim:** documentation, diagrams, inventory, metrics, external claims, or unverified proposals.
 
-## Trusted workflow boundary
+### AUTHORITY.NO_LAUNDERING.001
 
-`verify.yml` uses `pull_request_target`, so the workflow definition and verifier come from default branch. It executes candidate tests in an ephemeral job with read-only permissions, no persisted checkout credential, and no repository secrets. It then runs the trusted verifier against the exact candidate checkout and emits a receipt.
+P or N MUST NOT gain L or R authority through repetition, model consensus, prose, moved headings, a passing unrelated test, or a second Agent saying “LGTM”.
 
-`land.yml` runs only after successful `verify`. It checks out trusted default-branch code, downloads the exact receipt, validates provider protection and live PR/Issue state, then merges with an expected head SHA. It never executes candidate code with write permission.
+### EVIDENCE.NO_SELF_AUTHORIZATION.001
 
-## Supervised containment
+Candidate-modified bytes MUST NOT be the sole authority that admits the same candidate. Trusted/default-branch verification or a pre-admitted oracle identity/readback must independently bind the candidate subject and exact head/tree.
 
-Upstream Noodle merges a completed cook into local `main` when no blocking stage message exists; that is not a GitHub provider gate. The execute handoff therefore emits one blocking message for its exact Noodle session, which parks the order in `pending-review.json`. This does not create a Human Verifier state:
+The stable claim classes currently include inventory/containment/provider-pin/document-route/baseline/dependency L gates and protected-branch/exact-head/merge/closure R gates. Their executable definitions remain with the nearest implementation/tests; this specification does not duplicate their mutable receipts.
 
-1. GitHub lander performs the R gate and closes the Issue.
-2. `noodles reconcile` reads the provider receipt.
-3. local `main` fast-forwards to `origin/main`.
-4. the Noodle control API receives `merge` for the now-provider-landed order and returns the exact command acknowledgement.
-5. Noodle's local merge is an already-contained/no-op ancestry reconciliation, then `backlog.done` releases the order.
+## 4. Ownership model
 
-## Delivery topology decision
+### OWNERSHIP.SEPARATION.001
 
-v1 uses Noodle's Issue dependency graph and isolated worktrees instead of stacked PRs. Every repository-mutating atom opens one PR directly against the configured default branch. A dependent atom starts from provider-landed, reconciled `main`; independent atoms may run in parallel worktrees.
+Noodle owns scheduling, orders, process isolation, and worktrees. pstack owns P-class engineering playbook selection. noodles owns target-local correctness extensions, evidence compilation, domain invariants, and policy hooks. Git owns candidate source identity. GitHub owns protected default-branch and landing/closure reality. A target repository owns its own mutation and verification authority.
 
-This keeps scheduling with Noodle and landing with the trusted GitHub workflow. Graphite `gt`, Git Town, git-branchless, and equivalent stack managers are unsupported in the Golden Path: they must not restack a verified head, change a PR base, ship a branch, or merge a PR. Their presence would remain P-class convenience and grant no admission authority.
+No layer may become a substitute scheduler, generic worktree manager, generic review framework, mutable requirement-status store, or provider authority merely because it can observe another layer.
 
-The physical boundary is existing code, not this decision text:
+## 5. Golden Path invariants
 
-- execute handoff and trusted PR verification reject a base other than the configured default branch;
-- the lander merges only the exact verified head and reads back its merge parent and the default-branch head;
-- Noodle owns dependency order, worktree isolation, and process lifecycle; it does not prove correctness or provider state.
+```text
+exact GitHub Issue
+  → deterministic admission
+  → Noodle order + isolated worktree
+  → pinned poteto-mode engineering route
+  → smallest independently useful implementation atom
+  → nearest executable contract/test/oracle
+  → exact-head L evidence
+  → trusted GitHub verification
+  → exact-head R landing and closure readback
+  → local reconciliation
+```
 
-Reconsider stacked PRs only after a physical canary shows that provider landing latency blocks dependent throughput and a proposed contract preserves exact-head verification across every restack. Until then, adding a stack manager duplicates ownership and increases mutable state without closing a demonstrated failure.
+### GOLDEN_PATH.001
 
-## External control-skill decision — HOLD
+Implementation is done only when the candidate has complete local evidence and a PR is handed off; repository reality is done only after trusted provider landing, default-branch/closure readback, and reconciliation. Agent self-report is never the second state.
 
-`control-noodle` remains an external P-class knowledge bundle owned by `skill-concerns`; it is not a second router, runtime controller, or correctness authority. Noodle continues to schedule and isolate, while noodles owns target-local executable verification and GitHub owns provider admission.
+### GOLDEN_PATH.PROVENANCE.001
 
-Consumer admission requires all of the following before this decision can leave `HOLD`:
+Every authoritative completion path MUST preserve exact Issue subject, repository, candidate head/tree, verification identity, and provider landing identity across the boundary that consumes them.
 
-1. `skill-concerns` lands one exact producer commit with a deterministic bundle-admission receipt.
-2. noodles pins one selective `control-noodle` provider path and reads back the exact discovered bytes without exceeding the provider budget.
-3. Each hard requirement ID named by an Issue maps to one target-local positive control, planted negative control, direct readback, and residue check.
-4. A live stale-state-recovery and Issue→worktree→handoff canary passes on the exact admitted Noodle runtime.
-5. The exact-head GitHub workflow lands the consumer change and closes its Issue after provider readback.
+## 6. Verification architecture
 
-The skill may describe what to verify; it cannot verify itself or mutate Noodle runtime state. Code-map coverage, a passing producer test suite, or skill discovery alone does not establish complete Noodle behavior. v1 therefore makes no current compatibility or full-requirements claim for `control-noodle`.
+Tests pass != full product verification when the Issue claims CLI, UI, runtime, performance, provider, or other observable behavior beyond repository acceptance.
 
-## Cross-repository boundary
+Every repository mutation receives mandatory baseline acceptance. A specialized oracle is additive when the Issue declares a feature/behavior requiring one; it never replaces the baseline.
 
-v1 admits `ed3c/noodles` only. Cross-repository execution is `HOLD` until every target has:
+### VERIFICATION.ORACLE.001
 
-- a local Noodle installation/worktree authority in that target repository;
-- the same trusted verify/land workflows or an equivalent provider installation;
-- an exact token-scope readback;
-- target-specific branch protection;
-- one live issue→worktree→PR→merge→closure canary.
+Every completion claim whose observable behavior extends beyond static repository state MUST execute the nearest target-local physical oracle and bind the observation to the exact candidate head/tree.
 
-A central repo cannot claim physical control of another repo merely because it can read its Issues.
+### VERIFICATION.FEATURE_MAP.001
 
-## Non-claims
+A supported feature SHOULD minimally map feature → code surface → observable transition/journey → physical oracle → evidence. These facts remain target-local; a global registry is not required. Changed supported code must not silently escape verification: it either maps to required journeys/oracles or has an explicit mechanically justified non-case.
 
-- Passing tests is not full task verification unless the exact task contract names those tests and readbacks.
+### VERIFICATION.EVIDENCE_BINDING.001
+
+Authoritative evidence MUST bind the requirement/Issue subject, target repository, candidate head/tree, verification/oracle identity, observation/result, and residue outcome. Stale, wrong-subject, wrong-repository, wrong-head/tree, or self-authorized evidence fails closed.
+
+## 7. Autonomy architecture
+
+### AUTONOMY.NO_HUMAN_VERIFIER.001
+
+Human review MUST NOT be required as the routine correctness oracle. Human involvement is limited to goal setting, constraint changes, genuine product preference, root-authority transitions, or admitted escalation that cannot be reduced to an executable/provider fact.
+
+`/goal`, `/loop`, and `/swarm` are P-class search/decomposition/parallelism policies, not runtime authority primitives. They may increase coverage or throughput but cannot authorize completion.
+
+### AUTONOMY.BOUNDED.001
+
+Autonomous retry/search MUST terminate on L+R success or fail closed on exhausted budget, invariant violation, unavailable required oracle/provider, unsupported capability, or a true product decision. Retry is not evidence.
+
+## 8. Organizational learning
+
+### LEARNING.EXECUTABLE.001
+
+Repeated Agent failure may become durable organizational knowledge only through failure evidence → P-class lesson hypothesis → independent reproduction → non-case → eval → executable test/lint/contract/oracle → planted negative → regression. A single anecdote does not justify a new global rule.
+
+New executable knowledge belongs at the nearest failure boundary, not by default in `AGENTS.md`, a global registry, or a generic policy file.
+
+## 9. Concurrency model
+
+### CONCURRENCY.INDEPENDENCE.001
+
+Correctness MUST NOT depend on a fixed numeric `max_concurrency`. It depends on N-independent invariants: truthful runtime lease/ownership, exact provenance, disjoint admitted mutation boundaries, and duplicate/open-PR exclusion. Numeric caps are capacity controls, not correctness proofs.
+
+Start-readiness and completion-readiness are distinct. A task may start independently while still requiring provider-landed predecessor facts before it may complete or land.
+
+## 10. Cross-repository model
+
+### CROSS_REPO.AUTHORITY.001
+
+Authority follows the mutated repository. Cross-repository execution requires target-local Noodle/worktree ownership, target-local contract/oracle admission, target protection/provider readback, and an exact Issue→worktree→PR→merge→closure canary. A central noodles instance may discover or dispatch work but cannot use its own receipt to prove another repository correct.
+
+## 11. Complexity and entropy policy
+
+### COMPLEXITY.SUBTRACT.001
+
+Hard business/security/authority invariants may gate. Architecture-health metrics report and diagnose; they MUST NOT force line golfing or become correctness evidence. Before adding a layer, demonstrate a physical failure that the nearest existing seam cannot close. If deleting a component preserves the real task and all required evidence, prefer deletion.
+
+Derived projections are preferred over duplicated mutable truth. Requirement status, architecture health, and closure views should be reconstructed from stable specification + provider Issues/PRs/receipts rather than hand-maintained mirrors.
+
+## 12. Requirement identity and evolution
+
+### REQUIREMENT.EVOLUTION.001
+
+Stable requirement IDs are semantic identities. Once referenced by an Issue or receipt, an ID MUST NOT silently change meaning. A semantic break creates a new ID; the old ID may be deprecated but must remain resolvable for historical evidence.
+
+Requirement definitions live only in this specification for system-level invariants. Feature-local or Issue-local invariants remain at the nearest executable contract/test and are not promoted here merely because they are important to one change.
+
+### REQUIREMENT.PROJECTION.001
+
+LANDED/PARTIAL/HOLD or similar implementation status is derived provider state, not specification truth. Any future `requirements status` view must reconstruct status from this specification plus exact provider Issue/PR/merge/closure facts and must not create a second mutable source of truth.
+
+## 13. Provider and delivery invariants
+
+Trusted verification runs candidate behavior in an isolated/read-only execution context and applies trusted verifier logic from the protected/default-branch authority boundary. Landing merges only the exact verified head and reads back the merge/default-branch/closure facts.
+
+Noodle scheduling/worktree lifecycle and GitHub landing remain separate authorities. Provider landing precedes final local reconciliation; local execution state never substitutes for GitHub reality.
+
+The default delivery topology is one repository-mutating atom → one PR to the configured default branch. Noodle owns dependency ordering and worktree isolation. Stack managers may be considered only after a physical canary proves they close a real throughput failure without invalidating exact-head verification.
+
+## 14. Non-claims and placement rules
+
+- Passing baseline tests does not prove undeclared product/runtime behavior.
 - Agent cross-review is not independent provider verification.
-- A verification skill existing on disk, or its output, is P-class until its optional specialized operation runs and checks observed state. The mandatory baseline proves only repository acceptance; it does not upgrade an undeclared product capability into a verified feature.
-- Architecture warnings are health signals only. They are not correctness evidence, merge permission, or a reason to compress readable code instead of creating a real seam.
-- Derived schedulability is admission input for the scheduler only; it is not a dependency solver, not merge or closure authority, and it does not make Agent reasoning deterministic.
-- GrepAI candidates are not source truth and misses are not absence proof.
-- Tree-sitter ranges do not prove a context compiler.
-- Serena indexing does not prove bounded edit execution.
-- Individual adapter PASS results do not prove an end-to-end code-intelligence chain.
-- An empty Human approval count does not remove the need for deterministic L and R gates.
+- Architecture metrics and N-class documents are not correctness evidence.
+- Derived schedulability is scheduler admission input, not merge/closure authority.
+- Tool-specific historical claims and migration-specific evidence belong to their Issue, migration ledger, or nearest executable boundary, not this system specification.
+- External Skills may describe what to verify but cannot verify themselves or mutate provider authority.
+- This specification does not implement typed Issue completeness, Feature Map runtime, organizational-learning runtime, concurrency machinery, cross-repository execution, or a requirement registry.

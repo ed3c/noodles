@@ -255,6 +255,44 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
 
+    def test_execute_skill_unsupported_route_refusal_transition(self) -> None:
+        stable_refusal = "Unsupported routes fail closed:"
+        self.assertEqual(skill_contract.EXECUTE_UNSUPPORTED_PHRASE, stable_refusal)
+
+        branded_result = self.verify()
+        self.assertTrue(branded_result["ok"], branded_result["errors"])
+        branded_content = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
+        branded_rules = [line for line in branded_content.splitlines() if line.startswith(stable_refusal)]
+        self.assertEqual(len(branded_rules), 1)
+        self.assertIn("`control-ui`", branded_rules[0])
+
+        cases = (
+            ("generic", "Unsupported routes fail closed: any route not explicitly admitted above.", True),
+            ("deleted", "", False),
+            ("weakened", "Unsupported routes may proceed best-effort:", False),
+            (
+                "negated prose",
+                "This obsolete wording, Unsupported routes fail closed:, no longer applies; unsupported routes may proceed.",
+                False,
+            ),
+        )
+        for label, replacement, accepted in cases:
+            with self.subTest(case=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / ".agents/skills/execute/SKILL.md"
+                content = path.read_text()
+                refusal_rules = [line for line in content.splitlines() if line.startswith(stable_refusal)]
+                self.assertEqual(len(refusal_rules), 1)
+                path.write_text(content.replace(refusal_rules[0], replacement, 1))
+                if label == "generic":
+                    self.assertNotIn("`control-ui`", path.read_text())
+
+                result = self.verify(root)
+                self.assertEqual(result["ok"], accepted, result["errors"])
+                if not accepted:
+                    self.assertTrue(any("unsupported route refusal" in item for item in result["errors"]))
+
     def test_execute_skill_without_required_p_contract_is_rejected(self) -> None:
         cases = (
             (
@@ -266,11 +304,6 @@ class RepositoryGateTests(unittest.TestCase):
                 skill_contract.EXECUTE_BYPASS_PHRASE,
                 "Leaf skill routing is permitted when it seems faster.",
                 "direct leaf bypass refusal",
-            ),
-            (
-                skill_contract.EXECUTE_UNSUPPORTED_PHRASE,
-                "Unsupported routes may proceed best-effort.",
-                "unsupported route refusal",
             ),
         )
         for phrase, replacement, label in cases:
