@@ -169,7 +169,9 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
              mock.patch.object(noodles, "issue_read", return_value={"body": ISSUE_BODY}), \
              mock.patch.object(noodles, "issue_set_state") as set_state:
             receipt = noodles.execute_handoff(self.root, SUBJECT, 44, self.pr)
-        set_state.assert_called_once_with(SUBJECT, "awaiting_land")
+        set_state.assert_called_once()
+        self.assertEqual(set_state.call_args.args[:2], (SUBJECT, "awaiting_land"))
+        self.assertEqual(set_state.call_args.args[2].repository, "ed3c/noodles")
         self.assertEqual(receipt["feature"], FEATURE.feature_id)
         self.assertEqual(receipt["feature_code_surface_sha256"], code_surface_digest(self.root, FEATURE))
 

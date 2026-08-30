@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import issue_contract
+import runtime_contract
+
 
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
 SCHEDULE_ACTIVE_ORDER_PHRASE = "Do not re-emit any active non-schedule order."
@@ -274,6 +277,7 @@ def validate_schedule_output(
     current: Any,
     proposed: Any,
     required_task_profiles: dict[str, dict[str, str]],
+    target_repository: str,
 ) -> list[str]:
     current_orders, errors = _orders(current, "current orders")
     proposed_orders, proposed_errors = _orders(proposed, "scheduler output")
@@ -309,6 +313,19 @@ def validate_schedule_output(
             errors.append(
                 f"scheduler output must omit active non-schedule order {active_ids[normalized_id]!r}; "
                 "Noodle preserves its exact order/stage fields"
+            )
+            continue
+        subject = issue_contract.SUBJECT_RE.fullmatch(order_id)
+        if subject is None:
+            errors.append(
+                f"scheduler output order {order_id!r} must be one exact target-local owner/repo#N subject"
+            )
+            continue
+        observed_repository = subject.group("repo")
+        if observed_repository != target_repository:
+            errors.append(
+                f"scheduler output order {order_id!r} repository {observed_repository!r} != "
+                f"target-local repository {target_repository!r}"
             )
             continue
         stages = order.get("stages")
@@ -367,6 +384,10 @@ def _read_json(path: Path, label: str) -> Any:
 
 def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
     root = root.resolve()
+    github_policy = _read_json(root / "policy/github.json", "GitHub policy")
+    if not isinstance(github_policy, dict):
+        raise ValueError("GitHub policy must be a JSON object")
+    target = runtime_contract.target_local_repository_admission(root, github_policy, error_cls=ValueError)
     runtime = root / ".noodle"
     expected_candidate = runtime / "orders-next.candidate.json"
     candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
@@ -389,7 +410,7 @@ def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
         )
     ):
         raise ValueError("fitness policy requires exact non-empty schedule/execute task profiles")
-    errors = validate_schedule_output(current, proposed, required_task_profiles)
+    errors = validate_schedule_output(current, proposed, required_task_profiles, target.repository)
     if errors:
         raise ValueError("schedule output rejected: " + "; ".join(errors))
     destination = runtime / "orders-next.json"

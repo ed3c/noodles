@@ -36,6 +36,7 @@ from runtime_contract import (
     resolve_locked_runtime_binary,
     runtime_check as runtime_binary_check,
     skill_discovery_check,
+    target_local_repository_admission as runtime_target_local_repository_admission,
     validate_handoff_session,
     validate_runtime_lock,
 )
@@ -382,12 +383,24 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     policy_root = (policy_root or root).resolve()
     policy = load_json(policy_root / "policy/fitness.json")
     errors: list[str] = []
+    target_readback: dict[str, Any] | None = None
+    try:
+        target = target_local_repository(root)
+        target_readback = {
+            "repository": target.repository,
+            "origin_repository": target.origin_repository,
+            "default_branch": target.default_branch,
+            "required_check": target.required_check,
+            "cross_repository_status": target.cross_repository_status,
+        }
+    except GateError as exc:
+        errors.append(f"target-local repository admission failed: {exc}")
     required_task_profiles = policy.get("required_codex_task_profiles"); expected_task_profiles = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
     if required_task_profiles != expected_task_profiles: errors.append(f"policy required_codex_task_profiles must be exactly {expected_task_profiles!r}")
     try:
         entries = tracked_entries(root)
     except GateError as exc:
-        return {"ok": False, "errors": [str(exc)], "metrics": {}}
+        return {"ok": False, "errors": [*errors, str(exc)], "metrics": {}, "target": target_readback}
     allowed_modes = {"100644", "100755"}
     for mode, relative in entries:
         if mode not in allowed_modes:
@@ -462,6 +475,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         "warnings": metrics_result["warnings"],
         "warning_readback": metrics_result["warning_readback"],
         "metrics": metrics,
+        "target": target_readback,
     }
 def provider_check(root: Path) -> list[dict[str, Any]]:
     return runtime_provider_check(root, error_cls=GateError)
@@ -492,10 +506,19 @@ def issue_read(subject_value: str) -> dict[str, Any]:
         raise GateError(f"subject does not resolve to an issue: {subject_value}")
     parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
     return issue
-def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
+def issue_set_state(
+    subject_value: str,
+    new_state: str,
+    target: runtime_contract.TargetLocalRepositoryReceipt,
+) -> dict[str, Any]:
     if new_state not in ALLOWED_ISSUE_STATES:
         raise GateError(f"unsupported issue state: {new_state}")
     subject = parse_subject(subject_value)
+    target.require_repository(
+        subject.repo,
+        boundary="Issue state mutation",
+        error_cls=GateError,
+    )
     issue = issue_read(subject_value)
     if new_state == "blocked" and not one_marker(issue.get("body") or "", "blocker", required=False):
         raise GateError(f"{subject_value} cannot become blocked without a noodles-blocker owner/reason; dependency waiting is derived from provider readback")
@@ -552,24 +575,28 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
 
 def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str, Any]) -> dict[str, Any]:
     subject = parse_subject(subject_value)
-    if subject.repo != runtime_gh_repo_from_git(root, error_cls=GateError):
-        raise GateError("handoff subject repository does not match current worktree")
+    target = target_local_repository(root)
+    target.require_repository(subject.repo, boundary="handoff subject", error_cls=GateError)
     if pr.get("state") != "open" or pr.get("draft"):
         raise GateError("handoff PR must be open and non-draft")
     if parse_pr_reference(pr.get("body") or "") != subject_value:
         raise GateError("handoff PR does not exactly reference the issue")
-    policy = protection_policy(root)
-    if pr.get("base", {}).get("ref") != policy["default_branch"]:
-        raise GateError(f"handoff PR base must be {policy['default_branch']}")
+    if pr.get("base", {}).get("ref") != target.default_branch:
+        raise GateError(f"handoff PR base must be {target.default_branch}")
     head = git(root, "rev-parse", "HEAD")
     if pr.get("head", {}).get("sha") != head:
         raise GateError("handoff PR head does not match current worktree HEAD")
     session_id = os.getenv("NOODLE_SESSION_ID", "").strip()
-    validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
+    session = validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
+    target.require_repository(
+        runtime_gh_repo_from_git(Path(session["project"]), error_cls=GateError),
+        boundary="handoff Noodle project",
+        error_cls=GateError,
+    )
     resolve_locked_runtime_binary(root, error_cls=GateError)
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
-    issue_set_state(subject_value, "awaiting_land")
+    issue_set_state(subject_value, "awaiting_land", target)
     receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
     specialized = evidence["specialized"]
     return {
@@ -584,6 +611,10 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     }
 def protection_policy(root: Path) -> dict[str, Any]:
     return load_json(root / "policy/github.json")
+
+
+def target_local_repository(root: Path) -> runtime_contract.TargetLocalRepositoryReceipt:
+    return runtime_target_local_repository_admission(root, protection_policy(root), error_cls=GateError)
 def protection_readback(repo: str, branch: str, required_check: str) -> dict[str, Any]:
     return github_protection.protection_readback(
         lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
@@ -595,9 +626,9 @@ def protection_readback(repo: str, branch: str, required_check: str) -> dict[str
 
 
 def control_checkout_admission(root: Path) -> dict[str, Any]:
-    return runtime_control_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
+    return runtime_control_checkout_admission(root, target_local_repository(root).default_branch, error_cls=GateError)
 def reconcile_checkout_admission(root: Path) -> dict[str, Any]:
-    return runtime_reconcile_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
+    return runtime_reconcile_checkout_admission(root, target_local_repository(root).default_branch, error_cls=GateError)
 
 
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
@@ -609,17 +640,15 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     number = int(pr["number"])
     head_sha = str(pr["head"]["sha"])
     base_ref = str(pr["base"]["ref"])
-    policy = protection_policy(root)
-    if repository not in policy["allowed_repositories"]:
-        raise GateError(f"repository not admitted: {repository}")
-    if base_ref != policy["default_branch"]:
-        raise GateError(f"PR base must be {policy['default_branch']}")
+    target = target_local_repository(root)
+    target.require_repository(repository, boundary="verify event", error_cls=GateError)
+    if base_ref != target.default_branch:
+        raise GateError(f"PR base must be {target.default_branch}")
     if pr.get("draft"):
         raise GateError("draft PR cannot produce a landing receipt")
     subject_value = parse_pr_reference(pr.get("body") or "")
     subject = parse_subject(subject_value)
-    if subject.repo != repository:
-        raise GateError("v1 requires issue and PR to be in the same repository")
+    target.require_repository(subject.repo, boundary="verify Issue subject", error_cls=GateError)
     issue = issue_read(subject_value)
     contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
     if issue.get("state") != "open" or contract["state"] != "awaiting_land":
@@ -658,6 +687,8 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         raise GateError(f"expected one PR on workflow run, got {len(pulls)}")
     receipt = load_json(receipt_path)
     repository = str(event["repository"]["full_name"])
+    target = target_local_repository(root)
+    target.require_repository(repository, boundary="land event", error_cls=GateError)
     pr_number = int(pulls[0]["number"])
     head_sha = str(workflow["head_sha"])
     expected = {
@@ -668,37 +699,39 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     for key, value in expected.items():
         if receipt.get(key) != value:
             raise GateError(f"receipt {key}={receipt.get(key)!r} != event {value!r}")
-    policy = protection_policy(root)
-    if repository not in policy["allowed_repositories"]:
-        raise GateError(f"repository not admitted: {repository}")
     workflow_boundary_errors, workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     if workflow_boundary_errors:
         raise GateError("trusted workflow boundary invalid: " + "; ".join(workflow_boundary_errors))
     verify_source = github_protection.trusted_workflow_run_readback(
-        gh_api, GateError, repository, int(workflow.get("id") or 0), name="verify", path=".github/workflows/verify.yml", event="pull_request_target", default_branch=policy["default_branch"]
+        gh_api, GateError, repository, int(workflow.get("id") or 0), name="verify", path=".github/workflows/verify.yml", event="pull_request_target", default_branch=target.default_branch
     )
     current_run_id = int(os.getenv("GITHUB_RUN_ID", "0") or "0")
     land_source: dict[str, Any] | None = None
     if current_run_id > 0:
         land_source = github_protection.trusted_workflow_run_readback(
-            gh_api, GateError, repository, current_run_id, name="land", path=".github/workflows/land.yml", event="workflow_run", default_branch=policy["default_branch"]
+            gh_api, GateError, repository, current_run_id, name="land", path=".github/workflows/land.yml", event="workflow_run", default_branch=target.default_branch
         )
     protection_receipt = github_protection.protection_audit(
         lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
         GateError,
         repository,
-        policy["default_branch"],
-        policy["required_check"],
+        target.default_branch,
+        target.required_check,
     )
     pr = gh_api(f"repos/{repository}/pulls/{pr_number}")
     if pr.get("state") != "open" or pr.get("merged") or pr.get("draft"):
         raise GateError("PR must be open, unmerged, and non-draft")
-    if pr["head"]["sha"] != head_sha or pr["base"]["ref"] != policy["default_branch"]:
+    if pr["head"]["sha"] != head_sha or pr["base"]["ref"] != target.default_branch:
         raise GateError("PR exact head/base readback failed")
     commit = gh_api(f"repos/{repository}/git/commits/{head_sha}")
     if commit.get("tree", {}).get("sha") != receipt.get("tree_sha"):
         raise GateError("receipt tree does not match GitHub head tree")
     subject_value = parse_pr_reference(pr.get("body") or "")
+    target.require_repository(
+        parse_subject(subject_value).repo,
+        boundary="land Issue subject",
+        error_cls=GateError,
+    )
     if subject_value != receipt.get("issue_subject"):
         raise GateError("receipt subject does not match PR body")
     issue = issue_read(subject_value)
@@ -708,7 +741,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     merge = gh_api(
         f"repos/{repository}/pulls/{pr_number}/merge",
         method="PUT",
-        payload={"sha": head_sha, "merge_method": "merge"},
+        payload={"sha": head_sha, "merge_method": target.merge_method},
     )
     if not merge or not merge.get("merged"):
         raise GateError(f"GitHub merge failed: {merge}")
@@ -720,7 +753,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     parents = {parent["sha"] for parent in merge_commit.get("parents", [])}
     if head_sha not in parents:
         raise GateError("merge commit does not retain the exact PR head as a parent")
-    branch = gh_api(f"repos/{repository}/branches/{policy['default_branch']}")
+    branch = gh_api(f"repos/{repository}/branches/{target.default_branch}")
     if branch.get("commit", {}).get("sha") != merge_sha:
         raise GateError("default branch did not advance to the observed merge commit")
     subject = parse_subject(subject_value)
@@ -790,13 +823,26 @@ def provider_landed(subject_value: str) -> tuple[int, str, str]:
 
 
 def reconcile_once(root: Path, control_url: str) -> list[str]:
+    target = target_local_repository(root)
     branch = str(reconcile_checkout_admission(root)["branch"])
     snapshot = http_json(control_url.rstrip("/") + "/api/snapshot")
-    completed: list[str] = []
-    for review in snapshot.get("pending_reviews") or []:
+    reviews = snapshot.get("pending_reviews") or []
+    if not isinstance(reviews, list):
+        raise GateError("Noodle snapshot pending_reviews must be an array")
+    admitted: list[tuple[dict[str, Any], str]] = []
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
         order_id = str(review.get("order_id") or "")
         try:
-            parse_subject(order_id)
+            subject = parse_subject(order_id)
+        except GateError:
+            continue
+        target.require_repository(subject.repo, boundary="reconcile order", error_cls=GateError)
+        admitted.append((review, order_id))
+    completed: list[str] = []
+    for _review, order_id in admitted:
+        try:
             provider_landed(order_id)
         except GateError:
             continue
@@ -880,7 +926,9 @@ def adapter_sync() -> int:
 
 def adapter_add(title: str) -> int:
     root = repo_root()
-    repository = os.getenv("NOODLES_TARGET_REPOSITORY") or runtime_gh_repo_from_git(root, error_cls=GateError)
+    target = target_local_repository(root)
+    repository = os.getenv("NOODLES_TARGET_REPOSITORY") or target.repository
+    target.require_repository(repository, boundary="adapter add target", error_cls=GateError)
     provisional = {
         "title": title,
         "body": "<!-- noodles-role: repository-mutating-atom -->\n"
@@ -898,11 +946,18 @@ def adapter_add(title: str) -> int:
 
 
 def adapter_edit(item_id: str, new_status: str) -> int:
-    issue_set_state(item_id, new_status)
+    target = target_local_repository(repo_root())
+    target.require_repository(parse_subject(item_id).repo, boundary="adapter edit subject", error_cls=GateError)
+    issue_set_state(item_id, new_status, target)
     return 0
 
 
 def adapter_done(item_id: str) -> int:
+    target_local_repository(repo_root()).require_repository(
+        parse_subject(item_id).repo,
+        boundary="adapter done subject",
+        error_cls=GateError,
+    )
     provider_landed(item_id)
     return 0
 
@@ -932,8 +987,8 @@ def start_unattended(root: Path, control_url: str, interval: float) -> int:
     provider_sync(root)
     skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
     codex_isolation.codex_surface_canary(root, error_cls=GateError)
-    policy = protection_policy(root)
-    protection_readback(policy["repository"], policy["default_branch"], policy["required_check"])
+    target = target_local_repository(root)
+    protection_readback(target.repository, target.default_branch, target.required_check)
     env = os.environ.copy()
     env.setdefault("NOODLE_NO_BROWSER", "1")
     process = subprocess.Popen([runtime_receipt["binary_path"], "start"], cwd=root, env=env)
@@ -1073,23 +1128,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "github":
             if args.github_action == "protect":
-                policy = protection_policy(root)
-                repository = args.repository or policy["repository"]
+                target = target_local_repository(root)
+                repository = args.repository or target.repository
+                target.require_repository(repository, boundary="protection command", error_cls=GateError)
                 if args.action == "apply":
                     github_protection.protection_apply(
                         gh_api,
                         lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
                         GateError,
                         repository,
-                        policy["default_branch"],
-                        policy["required_check"],
+                        target.default_branch,
+                        target.required_check,
                     )
                 result = github_protection.protection_audit(
                     lambda endpoint, **kwargs: github_protection.gh_api_response(run, GateError, endpoint, **kwargs),
                     GateError,
                     repository,
-                    policy["default_branch"],
-                    policy["required_check"],
+                    target.default_branch,
+                    target.required_check,
                 )
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0

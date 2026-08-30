@@ -186,12 +186,31 @@ class ExecuteHandoffTests(unittest.TestCase):
 class ReconcileTests(unittest.TestCase):
     def test_reconcile_checkout_admission_fails_before_snapshot_or_merge(self) -> None:
         with mock.patch.object(noodles, "reconcile_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
-             mock.patch.object(noodles, "http_json") as http_json, \
+             mock.patch.object(noodles, "http_json", return_value={"pending_reviews": []}) as http_json, \
              mock.patch.object(noodles, "git") as git_cmd:
             with self.assertRaisesRegex(noodles.GateError, "dirty"):
                 noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
         admit.assert_called_once_with(CANDIDATE_ROOT)
         http_json.assert_not_called()
+        git_cmd.assert_not_called()
+
+    def test_foreign_reconcile_order_fails_before_provider_git_or_control_mutation(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        def fake_http(url: str, *, payload: object | None = None) -> dict:
+            calls.append((url, payload))
+            return {"pending_reviews": [{"order_id": "ed3c/foreign#33"}]}
+
+        with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
+             mock.patch.object(noodles, "reconcile_checkout_admission") as admit, \
+             mock.patch.object(noodles, "provider_landed") as landed, \
+             mock.patch.object(noodles, "git") as git_cmd:
+            with self.assertRaisesRegex(noodles.GateError, "reconcile order repository"):
+                noodles.reconcile_once(CANDIDATE_ROOT, "http://noodle.test")
+
+        self.assertEqual(calls, [("http://noodle.test/api/snapshot", None)])
+        admit.assert_called_once_with(CANDIDATE_ROOT)
+        landed.assert_not_called()
         git_cmd.assert_not_called()
 
     def test_provider_landed_sends_exact_merge_control_and_accepts_status_ack(self) -> None:
@@ -345,6 +364,7 @@ class ReconcileTests(unittest.TestCase):
 
         with mock.patch.object(noodles, "http_json", side_effect=fake_http), \
              mock.patch.object(noodles, "provider_landed", return_value=(44, "a" * 40, "b" * 40)), \
+             mock.patch.object(noodles, "target_local_repository", return_value=noodles.target_local_repository(CANDIDATE_ROOT)), \
              mock.patch.object(noodles, "git", side_effect=logging_git):
             completed = noodles.reconcile_once(root, "http://noodle.test")
 

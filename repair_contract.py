@@ -67,20 +67,29 @@ def ensure_session_event(
 def repair_review(root: Path, subject_value: str, review: Mapping[str, Any], pr: dict[str, Any]) -> dict[str, Any]:
     engine = _engine()
     subject = engine.parse_subject(subject_value)
+    target = engine.target_local_repository(root)
+    target.require_repository(subject.repo, boundary="repair subject", error_cls=engine.GateError)
     review_subject = str(review.get("order_id") or "").strip()
     if review_subject != subject_value:
         raise engine.GateError(f"pending review order {review_subject!r} != exact subject {subject_value!r}")
     session_context = validate_pending_review_session(root, subject_value, review, error_cls=engine.GateError)
     repository = subject.repo
-    policy = engine.protection_policy(root)
-    if repository not in policy["allowed_repositories"]:
-        raise engine.GateError(f"repository not admitted: {repository}")
+    target.require_repository(
+        engine.runtime_gh_repo_from_git(Path(session_context["project"]), error_cls=engine.GateError),
+        boundary="repair Noodle project",
+        error_cls=engine.GateError,
+    )
+    target.require_repository(
+        engine.runtime_gh_repo_from_git(Path(session_context["worktree_path"]), error_cls=engine.GateError),
+        boundary="repair worktree",
+        error_cls=engine.GateError,
+    )
     if pr.get("state") != "open" or pr.get("merged") or pr.get("draft"):
         raise engine.GateError("repair requires an open, unmerged, non-draft PR")
     if engine.parse_pr_reference(pr.get("body") or "") != subject_value:
         raise engine.GateError("repair PR does not exactly reference the issue")
-    if pr.get("base", {}).get("ref") != policy["default_branch"]:
-        raise engine.GateError(f"repair PR base must be {policy['default_branch']}")
+    if pr.get("base", {}).get("ref") != target.default_branch:
+        raise engine.GateError(f"repair PR base must be {target.default_branch}")
     issue = engine.issue_read(subject_value)
     contract = engine.parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
     if issue.get("state") != "open" or contract["state"] != "awaiting_land":
@@ -101,10 +110,10 @@ def repair_review(root: Path, subject_value: str, review: Mapping[str, Any], pr:
         engine.GateError,
         repository,
         head_sha,
-        name=policy["required_check"],
+        name=target.required_check,
         path=".github/workflows/verify.yml",
         event="pull_request_target",
-        default_branch=policy["default_branch"],
+        default_branch=target.default_branch,
     )
     failed_job = github_protection.failed_workflow_job_readback(
         engine.gh_api,
@@ -142,7 +151,7 @@ def repair_review(root: Path, subject_value: str, review: Mapping[str, Any], pr:
         "head_sha": head_sha,
         "issue_state": contract["state"],
         "pr_state": str(pr.get("state") or ""),
-        "required_check": policy["required_check"],
+        "required_check": target.required_check,
         "failed_workflow_run": {
             "id": failed_run["run"]["id"],
             "name": failed_run["run"]["name"],
@@ -203,6 +212,7 @@ def repair_review(root: Path, subject_value: str, review: Mapping[str, Any], pr:
 
 def repair_pending_reviews(root: Path, control_url: str) -> list[dict[str, Any]]:
     engine = _engine()
+    target = engine.target_local_repository(root)
     snapshot = engine.http_json(control_url.rstrip("/") + "/api/snapshot")
     reviews = snapshot.get("pending_reviews") or []
     if not isinstance(reviews, list):
@@ -216,12 +226,12 @@ def repair_pending_reviews(root: Path, control_url: str) -> list[dict[str, Any]]
             subject = engine.parse_subject(subject_value)
         except engine.GateError:
             continue
+        target.require_repository(subject.repo, boundary="repair order", error_cls=engine.GateError)
         pr = find_open_pr_for_subject(subject.repo, subject_value)
         head_sha = str(pr.get("head", {}).get("sha") or "")
-        policy = engine.protection_policy(root)
         runs = github_protection.workflow_runs_for_head(engine.gh_api, engine.GateError, subject.repo, head_sha)
         failed = any(
-            item["name"] == policy["required_check"]
+            item["name"] == target.required_check
             and item["path"] == ".github/workflows/verify.yml"
             and item["event"] == "pull_request_target"
             and item["status"] == "completed"

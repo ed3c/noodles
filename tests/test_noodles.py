@@ -360,7 +360,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
             }]
         }
-        self.assertEqual(skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES), [])
+        self.assertEqual(skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES, "ed3c/noodles"), [])
 
     def test_schedule_output_rejects_stage_without_do(self) -> None:
         proposed = {
@@ -370,7 +370,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output order 'ed3c/noodles#37' stage[0] requires canonical non-empty do"],
         )
 
@@ -382,7 +382,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             [
                 "scheduler output order 'ed3c/noodles#37' stage[0] has unresolved do 'review'; "
                 "expected 'execute'"
@@ -400,7 +400,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output order 'ed3c/noodles#37' must contain exactly one stage; found 2"],
         )
 
@@ -412,7 +412,7 @@ class RepositoryGateTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output order 'ed3c/noodles#37' must not contain a schedule stage"],
         )
 
@@ -420,6 +420,8 @@ class RepositoryGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-") as temp_name:
             root = Path(temp_name)
             shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
+            cmd(["git", "init", "-q", "-b", "main"], root)
+            cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
             runtime = root / ".noodle"
             runtime.mkdir()
             (runtime / "orders.json").write_text('{"orders": []}')
@@ -454,7 +456,7 @@ class RepositoryGateTests(unittest.TestCase):
                 "stages": [{"do": "execute", "prompt": "rewritten"}],
             }]
         }
-        errors = skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES)
+        errors = skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES, "ed3c/noodles")
         self.assertEqual(
             errors,
             [
@@ -467,6 +469,8 @@ class RepositoryGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="noodles-schedule-contract-") as temp_name:
             root = Path(temp_name)
             shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
+            cmd(["git", "init", "-q", "-b", "main"], root)
+            cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
             runtime = root / ".noodle"
             runtime.mkdir()
             current = {
@@ -774,18 +778,14 @@ class StartUnattendedTests(unittest.TestCase):
     def test_wrapper_polls_repair_reconcile_and_sleeps_before_clean_exit(self) -> None:
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, 0, 0]
-        policy = {
-            "repository": "ed3c/noodles",
-            "default_branch": "main",
-            "required_check": "verify",
-        }
+        target = mock.Mock(repository="ed3c/noodles", default_branch="main", required_check="verify")
 
         with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
              mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
              mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
              mock.patch.object(noodles, "provider_sync"), \
              mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
-             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "target_local_repository", return_value=target), \
              mock.patch.object(noodles, "protection_readback"), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
              mock.patch.object(noodles, "repair_pending_reviews") as repair, \
@@ -802,8 +802,8 @@ class StartUnattendedTests(unittest.TestCase):
     def test_wrapper_does_not_swallow_non_gate_exceptions(self) -> None:
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, None]
-        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
+        target = mock.Mock(repository="ed3c/noodles", default_branch="main", required_check="verify")
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), mock.patch.object(noodles, "target_local_repository", return_value=target), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
         process.terminate.assert_called_once()

@@ -118,10 +118,14 @@ class BlockerMarkerTests(unittest.TestCase):
             noodles.parse_issue_contract(issue_body(blocker="ed3c: token revoked"), SUBJECT)
 
     def test_issue_set_state_refuses_blocked_without_blocker_before_mutation(self) -> None:
+        target = mock.Mock()
         with mock.patch.object(noodles, "issue_read", return_value={"state": "open", "body": issue_body()}), \
              mock.patch.object(noodles, "gh_api") as api:
             with self.assertRaisesRegex(noodles.GateError, "noodles-blocker"):
-                noodles.issue_set_state(SUBJECT, "blocked")
+                noodles.issue_set_state(SUBJECT, "blocked", target)
+        target.require_repository.assert_called_once_with(
+            "ed3c/noodles", boundary="Issue state mutation", error_cls=noodles.GateError
+        )
         api.assert_not_called()
 
 

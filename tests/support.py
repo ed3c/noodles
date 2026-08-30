@@ -119,6 +119,7 @@ def copy_tracked(source: Path, destination: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst, follow_symlinks=False)
     initialize_repo(destination)
+    cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], destination)
 
 
 def tree_digest(root: Path) -> str:
@@ -275,7 +276,6 @@ def handoff_fixture(
     temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
     root = Path(temp.name) / "repo"
     copy_tracked(source, root)
-    cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
     binary = Path(temp.name) / "noodle"
     write_handoff_noodle_stub(binary, "v0.1.5", blocking)
     lock_path = root / "policy/runtime.lock.json"
@@ -411,6 +411,9 @@ def control_checkout_fixture(source: Path = CANDIDATE_ROOT) -> tuple[tempfile.Te
     copy_tracked(source, provider)
     control = base / "control"
     cmd(["git", "clone", "-q", str(provider), str(control)], base)
+    github_origin = "git@github.com:ed3c/noodles.git"
+    cmd(["git", "config", "remote.origin.url", github_origin], control)
+    cmd(["git", "config", f"url.{provider.resolve().as_uri()}.insteadOf", github_origin], control)
     cmd(["git", "config", "user.name", "tests"], control)
     cmd(["git", "config", "user.email", "tests@example.invalid"], control)
     return temp, control, provider

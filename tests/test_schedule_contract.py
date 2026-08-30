@@ -58,6 +58,12 @@ class ScheduleContractTests(unittest.TestCase):
                 (CANDIDATE_ROOT / "policy/fitness.json").read_text(),
                 encoding="utf-8",
             )
+            (policy_dir / "github.json").write_text(
+                (CANDIDATE_ROOT / "policy/github.json").read_text(),
+                encoding="utf-8",
+            )
+            cmd(["git", "init", "-q", "-b", "main"], root)
+            cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
             if current is not None:
                 (runtime / "orders.json").write_text(json.dumps(current), encoding="utf-8")
             candidate_path = runtime / "orders-next.candidate.json"
@@ -115,7 +121,59 @@ class ScheduleContractTests(unittest.TestCase):
 
     def test_schedule_output_accepts_runtime_compatible_action_needed_array(self) -> None:
         proposed = {"orders": [], "action_needed": ["needs-human", ""]}
-        self.assertEqual(skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES), [])
+        self.assertEqual(skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"), [])
+
+    def test_target_local_repository_receipt_reads_exact_self_policy(self) -> None:
+        receipt = runtime_contract.target_local_repository_admission(
+            CANDIDATE_ROOT,
+            json.loads((CANDIDATE_ROOT / "policy/github.json").read_text()),
+            error_cls=AssertionError,
+        )
+        self.assertEqual(receipt.origin_repository, "ed3c/noodles")
+        self.assertEqual(receipt.repository, "ed3c/noodles")
+        self.assertEqual(receipt.cross_repository_status, "TARGET_LOCAL_ONLY")
+
+    def test_target_local_repository_receipt_rejects_policy_authority_drift(self) -> None:
+        base = json.loads((CANDIDATE_ROOT / "policy/github.json").read_text())
+        cases = (
+            ("repository", "ed3c/foreign", "local origin repository"),
+            ("unexpected", "value", "fields drifted"),
+            ("merge_method", "squash", "merge_method"),
+            ("require_branch_protection", False, "require_branch_protection"),
+            ("cross_repository_status", "HOLD_UNTIL_TARGET_INSTALLATION_AND_TOKEN_READBACK", "cross_repository_status"),
+        )
+        for field, value, diagnostic in cases:
+            with self.subTest(field=field):
+                policy = dict(base)
+                policy[field] = value
+                with self.assertRaisesRegex(AssertionError, diagnostic):
+                    runtime_contract.target_local_repository_admission(
+                        CANDIDATE_ROOT,
+                        policy,
+                        error_cls=AssertionError,
+                    )
+
+    def test_local_origin_never_substitutes_for_target_identity(self) -> None:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-local-origin-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        cmd(["git", "remote", "set-url", "origin", str(Path(temp.name) / "provider.git")], root)
+        policy = json.loads((root / "policy/github.json").read_text())
+        with self.assertRaisesRegex(AssertionError, "cannot derive GitHub repository"):
+            runtime_contract.target_local_repository_admission(root, policy, error_cls=AssertionError)
+
+    def test_foreign_schedule_candidate_fails_before_promotion(self) -> None:
+        result = self.local_publish({
+            "orders": [{
+                "id": "ed3c/foreign#70",
+                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "foreign"}],
+            }]
+        })
+        self.assertFalse(result["accepted"])
+        self.assertIn("target-local repository 'ed3c/noodles'", str(result["error"]))
+        self.assertTrue(result["candidate_exists"])
+        self.assertFalse(result["published_exists"])
 
     def test_codex_task_model_map_is_exact_and_drift_is_rejected(self) -> None:
         self.assertEqual(
@@ -214,14 +272,14 @@ class ScheduleContractTests(unittest.TestCase):
     def test_schedule_output_rejects_unknown_top_level_field(self) -> None:
         proposed = {"orders": [], "rationale": "top-level drift"}
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output has unknown field 'rationale'; allowed fields: action_needed, orders"],
         )
 
     def test_schedule_output_rejects_non_array_action_needed(self) -> None:
         proposed = {"orders": [], "action_needed": "ed3c/noodles#43"}
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output action_needed must be an array of strings"],
         )
 
@@ -234,7 +292,7 @@ class ScheduleContractTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             ["scheduler output order[0] has unknown field 'bogus'; allowed fields: id, plan, rationale, stages, title"],
         )
 
@@ -246,7 +304,7 @@ class ScheduleContractTests(unittest.TestCase):
             }]
         }
         self.assertEqual(
-            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES),
+            skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES, "ed3c/noodles"),
             [
                 "scheduler output order 'ed3c/noodles#43' stage[0] has unknown field 'bogus'; "
                 "allowed fields: do, extra, extra_prompt, group, model, prompt, runtime, with"

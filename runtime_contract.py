@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -49,6 +50,42 @@ CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS = (
     "create-verification-skill",
     "maintain-verification-skill",
 )
+TARGET_LOCAL_CROSS_REPOSITORY_STATUS = "TARGET_LOCAL_ONLY"
+TARGET_LOCAL_POLICY_FIELDS = frozenset({
+    "schema_version",
+    "repository",
+    "default_branch",
+    "required_check",
+    "merge_method",
+    "require_branch_protection",
+    "cross_repository_status",
+})
+
+
+@dataclass(frozen=True)
+class TargetLocalRepositoryReceipt:
+    root: Path
+    origin_repository: str
+    repository: str
+    default_branch: str
+    required_check: str
+    merge_method: str
+    require_branch_protection: bool
+    cross_repository_status: str
+
+    def require_repository(
+        self,
+        observed: str,
+        *,
+        boundary: str,
+        error_cls: type[Exception],
+    ) -> str:
+        repository = observed.strip()
+        if repository != self.repository:
+            raise error_cls(
+                f"{boundary} repository {repository!r} != target-local repository {self.repository!r}"
+            )
+        return repository
 
 
 def _remove_path(path: Path) -> None:
@@ -229,11 +266,61 @@ def git(root: Path, *args: str, error_cls: type[Exception], check: bool = True) 
 
 
 def gh_repo_from_git(root: Path, *, error_cls: type[Exception]) -> str:
-    url = git(root, "remote", "get-url", "origin", error_cls=error_cls)
+    url = git(root, "config", "--get", "remote.origin.url", error_cls=error_cls)
     match = re.search(r"github\.com[/:]([^/]+/[^/.]+)(?:\.git)?$", url)
     if not match:
         raise error_cls(f"cannot derive GitHub repository from origin: {url}")
     return match.group(1)
+
+
+def target_local_repository_admission(
+    root: Path,
+    policy: Mapping[str, Any],
+    *,
+    error_cls: type[Exception],
+) -> TargetLocalRepositoryReceipt:
+    resolved_root = root.resolve()
+    observed_fields = set(policy)
+    if observed_fields != TARGET_LOCAL_POLICY_FIELDS:
+        missing = sorted(TARGET_LOCAL_POLICY_FIELDS - observed_fields)
+        unexpected = sorted(observed_fields - TARGET_LOCAL_POLICY_FIELDS)
+        raise error_cls(
+            f"target-local policy fields drifted; missing={missing!r} unexpected={unexpected!r}"
+        )
+    repository = str(policy.get("repository") or "").strip()
+    origin_repository = gh_repo_from_git(resolved_root, error_cls=error_cls)
+    if policy.get("schema_version") != 1:
+        raise error_cls(f"target-local policy schema_version must be 1, got {policy.get('schema_version')!r}")
+    if repository != origin_repository:
+        raise error_cls(
+            f"policy repository {repository!r} != local origin repository {origin_repository!r}"
+        )
+    default_branch = str(policy.get("default_branch") or "").strip()
+    required_check = str(policy.get("required_check") or "").strip()
+    if not default_branch or not required_check:
+        raise error_cls("target-local policy requires non-empty default_branch and required_check")
+    merge_method = str(policy.get("merge_method") or "")
+    if merge_method != "merge":
+        raise error_cls(f"target-local merge_method must be 'merge', got {merge_method!r}")
+    require_branch_protection = policy.get("require_branch_protection")
+    if require_branch_protection is not True:
+        raise error_cls("target-local policy require_branch_protection must be true")
+    cross_repository_status = str(policy.get("cross_repository_status") or "")
+    if cross_repository_status != TARGET_LOCAL_CROSS_REPOSITORY_STATUS:
+        raise error_cls(
+            "target-local policy cross_repository_status must be "
+            f"{TARGET_LOCAL_CROSS_REPOSITORY_STATUS!r}, got {cross_repository_status!r}"
+        )
+    return TargetLocalRepositoryReceipt(
+        root=resolved_root,
+        origin_repository=origin_repository,
+        repository=repository,
+        default_branch=default_branch,
+        required_check=required_check,
+        merge_method=merge_method,
+        require_branch_protection=True,
+        cross_repository_status=cross_repository_status,
+    )
 
 
 def _control_checkout_readback(root: Path, default_branch: str, *, error_cls: type[Exception]) -> dict[str, Any]:
