@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import schedule_domain
 import runtime_contract
 import signal
 import skill_contract
@@ -65,6 +66,7 @@ MARKER_PATTERNS = {
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+P0_TITLE_RE = re.compile(r"^\[[A-Za-z0-9][A-Za-z0-9-]*-P0\](?:\s|$)")
 N_CLASS_PREFIXES = ("docs/research/", "docs/design/")
 N_CLASS_EVIDENCE_RE = re.compile(
     r"(?im)^[ \t]*(?:[-*+][ \t]+)?\*{0,2}(claim|acceptance|evidence)\*{0,2}[ \t]*:[^\n]*?"
@@ -1141,6 +1143,206 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def execute_branch(subject_value: str) -> str:
+    subject = parse_subject(subject_value)
+    return f"{subject.repo.replace('/', '-')}-{subject.number}-0-execute"
+
+
+def matching_branch_refs(repository: str, prefix: str) -> dict[str, str]:
+    payload = gh_api(f"repos/{repository}/git/matching-refs/heads/{prefix}")
+    if not isinstance(payload, list):
+        raise GateError(f"provider matching refs readback for {repository} was not an array")
+    refs: dict[str, str] = {}
+    for item in payload:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("ref"), str)
+            or not isinstance(item.get("object"), dict)
+            or not isinstance(item["object"].get("sha"), str)
+            or not HEX40_RE.fullmatch(item["object"]["sha"])
+        ):
+            raise GateError(f"provider matching refs readback for {repository} was malformed")
+        ref = str(item["ref"])
+        if ref in refs:
+            raise GateError(f"provider matching refs readback for {repository} contained duplicate {ref}")
+        refs[ref] = str(item["object"]["sha"])
+    return refs
+
+
+def active_execute_claims(repository: str, refs: dict[str, str]) -> set[str]:
+    branch_prefix = repository.replace("/", "-") + "-"
+    pattern = re.compile(rf"^refs/heads/{re.escape(branch_prefix)}([1-9][0-9]*)-0-execute$")
+    return {
+        f"{repository}#{match.group(1)}"
+        for ref in refs
+        if (match := pattern.fullmatch(ref)) is not None
+    }
+
+
+def open_issues(repository: str) -> tuple[dict[str, Any], ...]:
+    issues: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    page = 1
+    while True:
+        payload = gh_api(
+            f"repos/{repository}/issues?state=open&sort=created&direction=asc&per_page=100&page={page}"
+        )
+        if not isinstance(payload, list):
+            raise GateError(f"provider issue frontier page {page} for {repository} was not an array")
+        for issue in payload:
+            if not isinstance(issue, dict):
+                raise GateError(f"provider issue frontier page {page} for {repository} was malformed")
+            number = issue.get("number")
+            if not isinstance(number, int) or number < 1:
+                raise GateError(f"provider issue frontier for {repository} has an invalid issue number")
+            if number in seen:
+                raise GateError(f"provider issue frontier for {repository} contained duplicate issue {number}")
+            seen.add(number)
+            issues.append(issue)
+        if len(payload) < 100:
+            return tuple(issues)
+        page += 1
+
+
+def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, ...]:
+    branch_prefix = repository.replace("/", "-") + "-"
+    claimed_subjects = active_execute_claims(repository, matching_branch_refs(repository, branch_prefix))
+    dependency_cache: dict[str, dict[str, Any]] = {}
+    snapshot: list[schedule_domain.ScheduleIssue] = []
+    emitted_subjects: set[str] = set()
+    provider_issues = open_issues(repository)
+    open_subjects = {
+        f"{repository}#{issue['number']}"
+        for issue in provider_issues
+        if "pull_request" not in issue
+    }
+    for issue in provider_issues:
+        if "pull_request" in issue:
+            continue
+        number = issue.get("number")
+        assert isinstance(number, int)
+        subject_value = f"{repository}#{number}"
+        try:
+            contract = issue_contract_payload(issue, subject_value, dependency_cache)
+        except GateError:
+            continue
+        emitted_subjects.add(subject_value)
+        snapshot.append(
+            schedule_domain.ScheduleIssue(
+                subject=subject_value,
+                repository=repository,
+                number=number,
+                dependencies=tuple(contract["dependencies"] or ()),
+                p0=bool(P0_TITLE_RE.match(str(issue.get("title") or ""))),
+                schedulable=bool(contract["schedulable"]),
+                claimed=subject_value in claimed_subjects,
+            )
+        )
+    malformed_claims = claimed_subjects.intersection(open_subjects) - emitted_subjects
+    for subject_value in sorted(malformed_claims, key=lambda value: parse_subject(value).number):
+        snapshot.append(
+            schedule_domain.ScheduleIssue(
+                subject=subject_value,
+                repository=repository,
+                number=parse_subject(subject_value).number,
+                dependencies=(),
+                p0=False,
+                schedulable=False,
+                claimed=True,
+            )
+        )
+    return tuple(snapshot)
+
+
+def claim_execute_branch(repository: str, branch: str, head: str) -> dict[str, Any]:
+    exact_ref = f"refs/heads/{branch}"
+    try:
+        created = gh_api(
+            f"repos/{repository}/git/refs",
+            method="POST",
+            payload={"ref": exact_ref, "sha": head},
+        )
+    except GateError:
+        if exact_ref in matching_branch_refs(repository, branch):
+            return {"status": "claimed_elsewhere", "branch": branch, "head": None}
+        raise
+    if (
+        not isinstance(created, dict)
+        or created.get("ref") != exact_ref
+        or created.get("object", {}).get("sha") != head
+    ):
+        raise GateError(f"provider claim readback for {exact_ref} did not match created head {head}")
+    return {"status": "claimed", "branch": branch, "head": head}
+
+
+def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
+    root = root.resolve()
+    candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
+    try:
+        proposed = skill_contract.validate_schedule_candidate(root, candidate)
+    except ValueError as exc:
+        raise GateError(str(exc)) from exc
+    policy = protection_policy(root)
+    repositories = tuple(sorted(set(policy.get("allowed_repositories") or ())))
+    if not repositories or not all(isinstance(repository, str) and repository for repository in repositories):
+        raise GateError("GitHub policy has no exact allowed repositories")
+    order_by_subject: dict[str, dict[str, Any]] = {}
+    for order in proposed["orders"]:
+        raw_subject = order.get("id")
+        if not isinstance(raw_subject, str) or raw_subject != raw_subject.strip():
+            raise GateError(f"schedule candidate order id is not canonical: {raw_subject!r}")
+        subject_value = raw_subject
+        subject = parse_subject(subject_value)
+        if subject.repo not in repositories:
+            raise GateError(f"schedule target repository is not admitted: {subject.repo}")
+        if subject_value in order_by_subject:
+            raise GateError(f"schedule candidate contains duplicate order: {subject_value}")
+        order_by_subject[subject_value] = order
+
+    issues = tuple(issue for repository in repositories for issue in schedule_snapshot(repository))
+    decision = schedule_domain.schedule_decision(issues)
+    initial_winners = set(decision.winners)
+    claimed_orders: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    default_branch = str(policy["default_branch"])
+    for subject_value in sorted(order_by_subject, key=lambda value: (parse_subject(value).repo, parse_subject(value).number)):
+        if subject_value not in initial_winners:
+            outcomes.append({"subject": subject_value, "status": "not_frontier"})
+            continue
+        subject = parse_subject(subject_value)
+        fresh = schedule_domain.schedule_decision(schedule_snapshot(subject.repo))
+        if subject_value not in fresh.winners:
+            outcomes.append({"subject": subject_value, "status": "frontier_changed"})
+            continue
+        contract = issue_contract_readback(subject_value)
+        if not contract["schedulable"]:
+            outcomes.append({"subject": subject_value, "status": "dependency_changed", "reasons": contract["reasons"]})
+            continue
+        default_ref = gh_api(f"repos/{subject.repo}/git/ref/heads/{default_branch}")
+        head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
+        if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
+            raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
+        claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
+        outcomes.append({"subject": subject_value, **claim})
+        if claim["status"] == "claimed":
+            claimed_orders.append(order_by_subject[subject_value])
+
+    filtered = {key: value for key, value in proposed.items() if key != "orders"}
+    filtered["orders"] = claimed_orders
+    write_json(candidate.resolve(), filtered)
+    destination = skill_contract.publish_schedule_output(root, candidate.resolve())
+    brief = {
+        "schema_version": SCHEMA_VERSION,
+        "frontier": list(decision.frontier),
+        "components": [list(component) for component in decision.components],
+        "max_useful_workers": decision.max_useful_workers,
+        "claims": outcomes,
+        "destination": str(destination),
+    }
+    write_json(root / ".noodle/schedule-cycle.json", brief)
+    return brief
 
 
 if __name__ == "__main__":
