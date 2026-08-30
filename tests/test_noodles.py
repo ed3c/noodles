@@ -109,7 +109,7 @@ class RepositoryGateTests(unittest.TestCase):
     def test_codex_task_profiles_are_exact(self) -> None:
         with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
             config = tomllib.load(handle)
-        expected = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
+        expected = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
         self.assertEqual(TASK_PROFILES, expected)
         self.assertEqual(config["routing"]["defaults"]["model"], expected["schedule"]["model"])
         self.assertEqual(config["agents"]["codex"]["path"], ".agents/bin")
