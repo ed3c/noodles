@@ -690,7 +690,7 @@ def worktree_exec(
     return result.stdout.strip()
 
 
-def verification_rerun_readback(
+def blocking_handoff_readback(
     root: Path,
     subject: str,
     pr_number: int,
@@ -702,24 +702,39 @@ def verification_rerun_readback(
     context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
     existing = [
         item for item in context["events"]
-        if item.get("type") == "verification_rerun_receipt"
+        if item.get("type") == "stage_message"
         and isinstance(item.get("payload"), dict)
         and item["payload"].get("issue_subject") == subject
         and item["payload"].get("pr_number") == pr_number
         and item["payload"].get("head_sha") == head
     ]
     if len(existing) > 1:
-        raise error_cls("execute handoff has duplicate verification rerun receipts")
+        raise error_cls("execute handoff has duplicate blocking stage messages")
     if not existing:
         return None
     event = existing[0]
     run_id = int(event["payload"].get("workflow_run_id") or 0)
-    if event.get("session_id") != session_id or run_id <= 0:
-        raise error_cls("execute handoff verification rerun receipt direct readback failed")
-    return {"issue_subject": subject, "pr_number": pr_number, "head_sha": head, "workflow_run_id": run_id}
+    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {run_id}; park until trusted provider landing readback."
+    stage_messages = [item for item in context["events"] if item.get("type") == "stage_message"]
+    if event.get("session_id") != session_id or event["payload"].get("blocking") is not True:
+        raise error_cls("execute handoff stage message is not blocking for the exact session")
+    if (
+        run_id <= 0
+        or event["payload"].get("message") != message
+        or not stage_messages
+        or stage_messages[-1] is not event
+    ):
+        raise error_cls("execute handoff stage message direct readback failed")
+    return {
+        "session_id": session_id,
+        "head": head,
+        "message": message,
+        "blocking": True,
+        "verification_rerun": {"workflow_run_id": run_id, "head_sha": head},
+    }
 
 
-def emit_verification_rerun_receipt(
+def emit_blocking_handoff(
     root: Path,
     subject: str,
     pr_number: int,
@@ -729,43 +744,31 @@ def emit_verification_rerun_receipt(
     *,
     error_cls: type[Exception],
 ) -> dict[str, Any]:
-    existing = verification_rerun_readback(root, subject, pr_number, head, session_id, error_cls=error_cls)
+    existing = blocking_handoff_readback(root, subject, pr_number, head, session_id, error_cls=error_cls)
     if existing is not None:
-        if existing["workflow_run_id"] != workflow_run_id:
-            raise error_cls("execute handoff verification rerun receipt run id drifted")
+        if existing["verification_rerun"]["workflow_run_id"] != workflow_run_id:
+            raise error_cls("execute handoff stage message workflow run id drifted")
         return existing
+    context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
+    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head} verify run {workflow_run_id}; park until trusted provider landing readback."
     payload = {
+        "message": message,
+        "blocking": True,
         "issue_subject": subject,
         "pr_number": pr_number,
         "head_sha": head,
         "workflow_run_id": workflow_run_id,
     }
-    emit_session_event(root, session_id, "verification_rerun_receipt", payload, error_cls=error_cls)
-    receipt = verification_rerun_readback(root, subject, pr_number, head, session_id, error_cls=error_cls)
-    if receipt is None or receipt["workflow_run_id"] != workflow_run_id:
-        raise error_cls("execute handoff verification rerun receipt direct readback failed")
-    return receipt
 
-
-def emit_blocking_handoff(
-    root: Path,
-    subject: str,
-    pr_number: int,
-    head: str,
-    session_id: str,
-    *,
-    error_cls: type[Exception],
-) -> dict[str, Any]:
-    context = validate_handoff_session(root, subject, session_id, error_cls=error_cls)
-    message = f"Provider handoff ready: {subject} PR #{pr_number} exact head {head}; park until trusted provider landing readback."
-    payload = {"message": message, "blocking": True}
     def matching(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             item for item in events
             if item.get("type") == "stage_message"
             and isinstance(item.get("payload"), dict)
             and item["payload"].get("message") == message
+            and item["payload"].get("workflow_run_id") == workflow_run_id
         ]
+
     existing = matching(context["events"])
     if len(existing) > 1:
         raise error_cls("execute handoff has duplicate blocking stage messages")
@@ -781,10 +784,10 @@ def emit_blocking_handoff(
     stage_messages = [item for item in events if item.get("type") == "stage_message"]
     if len(observed) != 1 or not stage_messages or stage_messages[-1] is not observed[0]:
         raise error_cls("execute handoff stage message direct readback failed")
-    event = observed[0]
-    if event.get("session_id") != session_id or event["payload"].get("blocking") is not True:
-        raise error_cls("execute handoff stage message is not blocking for the exact session")
-    return {"session_id": session_id, "head": head, "message": message, "blocking": True}
+    receipt = blocking_handoff_readback(root, subject, pr_number, head, session_id, error_cls=error_cls)
+    if receipt is None or receipt["verification_rerun"]["workflow_run_id"] != workflow_run_id:
+        raise error_cls("execute handoff stage message direct readback failed")
+    return receipt
 
 
 def runtime_check(

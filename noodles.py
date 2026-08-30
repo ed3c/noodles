@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
+    blocking_handoff_readback,
     control_checkout_admission as runtime_control_checkout_admission,
     emit_blocking_handoff,
-    emit_verification_rerun_receipt,
     gh_repo_from_git as runtime_gh_repo_from_git,
     provider_check as runtime_provider_check,
     provider_sync as runtime_provider_sync,
@@ -41,7 +41,6 @@ from runtime_contract import (
     skill_discovery_check,
     validate_handoff_session,
     validate_runtime_lock,
-    verification_rerun_readback,
 )
 from skill_contract import (
     validate_agent_document_route,
@@ -575,8 +574,8 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
     issue_set_state(subject_value, "awaiting_land")
-    rerun_receipt = verification_rerun_readback(root, subject_value, pr_number, head, session_id, error_cls=GateError)
-    if rerun_receipt is None:
+    receipt = blocking_handoff_readback(root, subject_value, pr_number, head, session_id, error_cls=GateError)
+    if receipt is None:
         failed_run = github_protection.failed_required_workflow_run_readback(
             gh_api,
             GateError,
@@ -588,7 +587,7 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
             default_branch=str(policy["default_branch"]),
         )
         gh_api(f"repos/{subject.repo}/actions/runs/{failed_run['run']['id']}/rerun", method="POST")
-        rerun_receipt = emit_verification_rerun_receipt(
+        receipt = emit_blocking_handoff(
             root,
             subject_value,
             pr_number,
@@ -597,7 +596,6 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
             session_id,
             error_cls=GateError,
         )
-    receipt = emit_blocking_handoff(root, subject_value, pr_number, head, session_id, error_cls=GateError)
     specialized = evidence["specialized"]
     return {
         "subject": subject_value,
@@ -607,7 +605,6 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
         "tree": evidence["tree"],
         "feature": specialized["feature_id"] if specialized else None,
         "feature_code_surface_sha256": specialized["code_surface_sha256"] if specialized else None,
-        "verification_rerun": rerun_receipt,
         **receipt,
     }
 def protection_policy(root: Path) -> dict[str, Any]:
