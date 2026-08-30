@@ -19,7 +19,7 @@ Read `./noodles issue contract owner/repo#N` for the typed goal, physical accept
 Schedule an item only when all are true:
 
 1. ID parses as one exact GitHub Issue subject.
-2. `./noodles issue validate owner/repo#N` passes.
+2. `./noodles issue validate owner/repo#N` passes for each Issue included in the published proposal. Run it only on those finalists, never across the backlog: the adapter's typed `schedulable`/`reasons` verdict is authoritative for all earlier filtering, and re-validating what the deterministic sync already computed burns provider quota without adding safety - the publish gate and admission still fail closed on any drift.
 3. Issue state is `ready`.
 4. The target repository is admitted by `policy/github.json`.
 5. The adapter reports `schedulable: true`, which means every declared predecessor read back closed and `landed`.
