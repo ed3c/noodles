@@ -38,10 +38,13 @@ jobs:
           NOODLES_OFFLINE_TESTS: '1'
         run: tests/run.sh
 
-  trusted-controls:
+  verify:
     needs: candidate-self-tests
     permissions:
+      actions: read
       contents: read
+      issues: read
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -73,38 +76,6 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/.trusted
           NOODLES_OFFLINE_TESTS: '1'
         run: python3 -m unittest discover -s .trusted/tests -v
-
-  verify:
-    needs: trusted-controls
-    permissions:
-      actions: read
-      contents: read
-      issues: read
-      pull-requests: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout trusted verifier from default branch
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          path: .trusted
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Checkout exact candidate head as data without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: .candidate
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.12'
 
       - name: Produce exact-head trusted receipt
         env:
