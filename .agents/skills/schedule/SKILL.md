@@ -24,6 +24,7 @@ Schedule an item only when all are true:
 4. The target repository is admitted by `policy/github.json`.
 5. The adapter reports `schedulable: true`, which means every declared predecessor read back closed and `landed`.
 6. The Issue describes one repository-mutating atom or one evidence-only audit atom.
+7. No other executor claims the Issue: its exact execute branch does not already exist on the provider and its marker is not `in_progress`. A provider-rejected branch creation is another executor's claim; skip it without ordering or marker edits.
 
 Do not schedule an item whose `reasons` are non-empty, and never patch an Issue marker to represent dependency waiting: eligibility is re-derived from provider truth on every sync. Reject when the target, subject, acceptance evidence, or non-claims are ambiguous. Reserve `blocked` for a real blocker with an explicit `<!-- noodles-blocker: owner: reason -->`.
 
@@ -63,6 +64,8 @@ dependencies: exact landed subjects
 ## Parallelism
 
 Sibling Issues may run concurrently only when their target paths/contracts are disjoint or the Issue explicitly records a safe merge boundary. Dependency edges, not optimistic Agent judgment, determine ordering.
+
+Before deferring a sibling behind an active order, re-verify that the blocking claim is alive: an active order whose session is dead and whose execute branch no longer exists on the provider is stale residue to report for recovery, not a write-boundary blocker.
 
 ## Prohibitions
 
