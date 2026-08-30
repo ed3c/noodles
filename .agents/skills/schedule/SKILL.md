@@ -65,6 +65,8 @@ dependencies: exact landed subjects
 
 Sibling Issues may run concurrently only when their target paths/contracts are disjoint or the Issue explicitly records a safe merge boundary. Dependency edges, not optimistic Agent judgment, determine ordering.
 
+Admission is oldest-first among ready P0 Issues: prove disjointness against the oldest ready P0, and when the overlap cannot be proven, defer the newer sibling - never the older Issue. A whole-loop atom therefore drains the queue and runs solo instead of starving behind a stream of narrower newcomers.
+
 Before deferring a sibling behind an active order, re-verify that the blocking claim is alive: an active order whose session is dead and whose execute branch no longer exists on the provider is stale residue to report for recovery, not a write-boundary blocker.
 
 ## Prohibitions
