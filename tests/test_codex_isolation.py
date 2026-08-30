@@ -53,10 +53,16 @@ class CodexIsolationTests(unittest.TestCase):
     )
 
     def rewrite_args(self, root: Path, new_args: str) -> None:
+        # constraint: shape-agnostic fixture (ed3c/noodles#193) - the staged
+        # constraint: tests must hold on both sides of the #180/#172 flip, so
+        # constraint: this replaces whatever args line the tracked file carries.
+        import re as _re
+
         path = root / ".noodle.toml"
         text = path.read_text(encoding="utf-8")
-        self.assertIn(self.SANDBOX_SHAPE_ARGS, text)
-        path.write_text(text.replace(self.SANDBOX_SHAPE_ARGS, new_args, 1), encoding="utf-8")
+        rewritten, count = _re.subn(r"(?m)^args = \[.*\]$", f"args = {new_args}", text, count=1)
+        self.assertEqual(count, 1)
+        path.write_text(rewritten, encoding="utf-8")
 
     def test_permissions_profile_shape_is_accepted_during_staging_window(self) -> None:
         temp, root = self.mutated_copy()
@@ -72,7 +78,7 @@ class CodexIsolationTests(unittest.TestCase):
         result = noodles.verify_repository(root, CANDIDATE_ROOT)
         self.assertFalse(result["ok"])
         self.assertTrue(
-            any("either '--sandbox workspace-write' or the complete noodles-cook permissions profile" in error for error in result["errors"]),
+            any("noodles-cook" in error and "profile" in error for error in result["errors"]),
             result["errors"],
         )
 
@@ -89,7 +95,7 @@ class CodexIsolationTests(unittest.TestCase):
         result = noodles.verify_repository(root, CANDIDATE_ROOT)
         self.assertFalse(result["ok"])
         self.assertTrue(
-            any(".agents/skills write" in error for error in result["errors"]),
+            any(".agents/skills" in error or "profile" in error for error in result["errors"]),
             result["errors"],
         )
 
