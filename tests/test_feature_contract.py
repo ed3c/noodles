@@ -86,17 +86,17 @@ class FeatureVerifierTests(unittest.TestCase):
     def test_operation_that_never_touches_the_real_artifact_fails_closed(self) -> None:
         root = self.candidate_copy()
         surface = root / FEATURE.code_surface
-        surface.write_text(
-            surface.read_text().replace(
-                skill_contract.EXECUTE_VERIFICATION_P_CLASS_PHRASE,
-                "Verification skill output may be trusted once the skill exists on disk.",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(noodles.GateError, "oracle rejected observed"):
-            feature_contract.verify_feature(root, FEATURE.feature_id, error_cls=noodles.GateError)
-        self.assertFalse((root / feature_contract.EVIDENCE_PATH).exists())
+        original = surface.read_text()
+        for phrase in (
+            skill_contract.EXECUTE_PREFLIGHT_PHRASE,
+            skill_contract.EXECUTE_VERIFICATION_P_CLASS_PHRASE,
+        ):
+            with self.subTest(phrase=phrase):
+                surface.write_text(original.replace(phrase, "Route freely.", 1), encoding="utf-8")
+                with self.assertRaisesRegex(noodles.GateError, "oracle rejected observed"):
+                    feature_contract.verify_feature(root, FEATURE.feature_id, error_cls=noodles.GateError)
+                self.assertFalse((root / feature_contract.EVIDENCE_PATH).exists())
+        surface.write_text(original, encoding="utf-8")
 
     def test_operation_reporting_failure_is_not_admitted(self) -> None:
         root = self.candidate_copy()
@@ -168,6 +168,7 @@ class FeatureVerifierTests(unittest.TestCase):
     def test_verify_rejects_execute_surface_without_verification_route_contract(self) -> None:
         root = self.candidate_copy()
         cases = (
+            (skill_contract.EXECUTE_PREFLIGHT_PHRASE, "step-0 preflight"),
             (skill_contract.EXECUTE_VERIFICATION_ROUTE, "verification-skill fixture"),
             (skill_contract.EXECUTE_VERIFICATION_P_CLASS_PHRASE, "verification-skill P-class refusal"),
         )

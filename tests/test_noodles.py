@@ -303,6 +303,11 @@ class RepositoryGateTests(unittest.TestCase):
     def test_execute_skill_without_required_p_contract_is_rejected(self) -> None:
         cases = (
             (
+                skill_contract.EXECUTE_PREFLIGHT_PHRASE,
+                "Implementation may begin before environment admission.",
+                "step-0 preflight",
+            ),
+            (
                 skill_contract.EXECUTE_ENTRYPOINT_PHRASE,
                 "Execute may route directly to a leaf skill.",
                 "poteto-mode entrypoint",
