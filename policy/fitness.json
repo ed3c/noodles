@@ -12,7 +12,7 @@
   "required_codex_task_profiles": {
     "schedule": {
       "model": "gpt-5.6-luna",
-      "reasoning_effort": "max"
+      "reasoning_effort": "high"
     },
     "execute": {
       "model": "gpt-5.6-sol",

@@ -382,7 +382,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     policy_root = (policy_root or root).resolve()
     policy = load_json(policy_root / "policy/fitness.json")
     errors: list[str] = []
-    required_task_profiles = policy.get("required_codex_task_profiles"); expected_task_profiles = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
+    required_task_profiles = policy.get("required_codex_task_profiles"); expected_task_profiles = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
     if required_task_profiles != expected_task_profiles: errors.append(f"policy required_codex_task_profiles must be exactly {expected_task_profiles!r}")
     try:
         entries = tracked_entries(root)

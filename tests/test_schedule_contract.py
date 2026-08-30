@@ -121,7 +121,7 @@ class ScheduleContractTests(unittest.TestCase):
         self.assertEqual(
             TASK_PROFILES,
             {
-                "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"},
                 "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
             },
         )
