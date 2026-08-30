@@ -320,6 +320,53 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertEqual(source["run"]["id"], 9)
         self.assertEqual(source["run"]["conclusion"], "failure")
 
+    def test_failed_required_workflow_run_readback_rejects_direct_head_drift(self) -> None:
+        head = "a" * 40
+        drifted = "b" * 40
+        payloads = {
+            f"repos/ed3c/noodles/actions/runs?head_sha={head}&per_page=100": {
+                "workflow_runs": [{
+                    "id": 9,
+                    "name": "verify",
+                    "path": ".github/workflows/verify.yml",
+                    "event": "pull_request_target",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": head,
+                    "workflow_id": 11,
+                }]
+            },
+            "repos/ed3c/noodles/actions/runs/9": {
+                "id": 9,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "event": "pull_request_target",
+                "status": "completed",
+                "conclusion": "failure",
+                "head_sha": drifted,
+                "workflow_id": 11,
+            },
+            "repos/ed3c/noodles": {"full_name": "ed3c/noodles", "default_branch": "main"},
+            "repos/ed3c/noodles/actions/workflows/verify.yml": {
+                "id": 11,
+                "name": "verify",
+                "path": ".github/workflows/verify.yml",
+                "state": "active",
+            },
+        }
+
+        with self.assertRaisesRegex(noodles.GateError, "head"):
+            github_protection.failed_required_workflow_run_readback(
+                lambda endpoint: payloads[endpoint],
+                noodles.GateError,
+                "ed3c/noodles",
+                head,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+            )
+
     def test_failed_workflow_job_readback_rejects_missing_failure(self) -> None:
         def fake_gh_api(_endpoint: str) -> dict:
             return {

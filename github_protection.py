@@ -847,6 +847,8 @@ def failed_required_workflow_run_readback(
         event=event,
         default_branch=default_branch,
     )
+    if source["run"]["head_sha"] != head_sha:
+        raise error_cls(f"required check {name} workflow run head drifted from {head_sha}")
     if source["run"]["status"] != "completed" or source["run"]["conclusion"] not in FAILED_WORKFLOW_CONCLUSIONS:
         raise error_cls(f"required check {name} is not a completed failed workflow run for {head_sha}")
     return source
