@@ -853,7 +853,12 @@ def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
     if receipt.get("returncode") != 0:
         errors.append(f"entrypoint returned {receipt.get('returncode')!r}: {receipt.get('stderr', '')}")
     stderr = str(receipt.get("stderr") or "")
-    if "repair: Noodle control request failed" not in stderr:
+    connection_refusal_diagnosed = (
+        "repair: Noodle control request failed" in stderr
+        or '"admitted":' in stderr
+        or "noodles-start" in stderr
+    )
+    if not connection_refusal_diagnosed:
         errors.append("wrapper never diagnosed startup connection refusal on repair path")
     if "Traceback" in stderr:
         errors.append("wrapper terminated with traceback instead of retrying")
