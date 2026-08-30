@@ -114,6 +114,8 @@ class CodexIsolationTests(unittest.TestCase):
         self.assertTrue(
             any(".agents/skills" in error or "profile" in error for error in result["errors"]),
             result["errors"],
+        )
+
     def test_codex_agent_config_accepts_narrow_skill_permission_profile(self) -> None:
         config = {"agents": {"codex": {"path": ".agents/bin", "args": PERMISSION_PROFILE_ARGS}}}
         self.assertEqual(codex_isolation.validate_codex_agent_config(CANDIDATE_ROOT, config), [])

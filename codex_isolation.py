@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,6 +16,21 @@ ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
 PROJECT_SKILLS_ROOT = ".agents/skills"
 FORBIDDEN_FORWARD_ARG = "--dangerously-bypass-approvals-and-sandbox"
 TRUNCATION_RE = re.compile(r"truncat|skill-context-budget", re.I)
+PERMISSION_PROFILE_OVERRIDES = (
+    'approval_policy="never"',
+    'default_permissions="noodles-cook"',
+    'permissions.noodles-cook.extends=":workspace"',
+    'permissions.noodles-cook.workspace_roots={"/Users/neon/noodles/.git"=true}',
+    'permissions.noodles-cook.filesystem={":workspace_roots"={".agents/skills"="write"}}',
+    "permissions.noodles-cook.network.enabled=true",
+)
+PERMISSION_PROFILE_ARGS = (
+    "--ignore-user-config",
+    *(item for override in PERMISSION_PROFILE_OVERRIDES for item in ("-c", override)),
+)
+LEGACY_SANDBOX_ERROR = ".noodle.toml agents.codex.args must not combine the permission profile with legacy sandbox settings"
+SKILL_PERMISSION_ERROR = ".noodle.toml agents.codex.args must grant write only to '.agents/skills' inside workspace roots"
+EXACT_PROFILE_ERROR = ".noodle.toml agents.codex.args must define the exact 'noodles-cook' permission profile"
 
 
 def validate_codex_agent_config(root: Path, noodle_config: Mapping[str, Any]) -> list[str]:
@@ -30,9 +46,25 @@ def validate_codex_agent_config(root: Path, noodle_config: Mapping[str, Any]) ->
     args = list(codex.get("args") or [])
     if "--ignore-user-config" not in args:
         errors.append(".noodle.toml agents.codex.args must include '--ignore-user-config'")
-    errors.extend(_sandbox_shape_errors(args))
-    if _flag_value(args, "-c") != 'approval_policy="never"':
+    overrides = _config_overrides(args)
+    parsed_overrides = [_parse_config_override(raw) for raw in overrides]
+    legacy_sandbox = any(str(arg) == "--sandbox" or str(arg).startswith("--sandbox=") for arg in args)
+    legacy_sandbox = legacy_sandbox or any(
+        key == "sandbox_mode" or key == "sandbox_workspace_write" or key.startswith("sandbox_workspace_write.")
+        for key, _value in parsed_overrides
+    )
+    if legacy_sandbox:
+        errors.append(LEGACY_SANDBOX_ERROR)
+    if not any(key == "approval_policy" and value == "never" for key, value in parsed_overrides):
         errors.append('.noodle.toml agents.codex.args must preserve \'-c approval_policy="never"\'')
+    filesystem_values = [
+        value for key, value in parsed_overrides if key == "permissions.noodles-cook.filesystem"
+    ]
+    expected_filesystem = {":workspace_roots": {".agents/skills": "write"}}
+    if filesystem_values != [expected_filesystem]:
+        errors.append(SKILL_PERMISSION_ERROR)
+    if tuple(str(arg) for arg in args) != PERMISSION_PROFILE_ARGS:
+        errors.append(EXACT_PROFILE_ERROR)
     wrapper = root / CODEX_WRAPPER
     if not wrapper.is_file():
         errors.append(f"tracked Codex wrapper missing: {CODEX_WRAPPER}")
@@ -68,55 +100,26 @@ def codex_surface_canary(root: Path, *, error_cls: type[Exception]) -> dict[str,
     return receipt
 
 
-def _flag_value(args: list[Any], flag: str) -> str | None:
+def _config_overrides(args: list[Any]) -> list[str]:
+    overrides: list[str] = []
     for index, value in enumerate(args):
-        if str(value) == flag and index + 1 < len(args):
-            return str(args[index + 1])
-    return None
+        argument = str(value)
+        if argument in {"-c", "--config"} and index + 1 < len(args):
+            overrides.append(str(args[index + 1]))
+        elif argument.startswith("--config="):
+            overrides.append(argument.split("=", 1)[1])
+    return overrides
 
 
-def _all_flag_values(args: list[Any], flag: str) -> list[str]:
-    return [str(args[index + 1]) for index, value in enumerate(args) if str(value) == flag and index + 1 < len(args)]
-
-
-# constraint: staging window (ed3c/noodles#180) - args may carry either the
-# constraint: sandbox-flag shape or the complete noodles-cook permissions
-# constraint: profile; the profile was proven load-bearing against the pinned
-# constraint: codex binary (2026-08-30); the retire step pins one shape after
-# constraint: ed3c/noodles#172 lands.
-_PROFILE_REQUIRED_EXACT = (
-    'default_permissions="noodles-cook"',
-    'permissions.noodles-cook.extends=":workspace"',
-    "permissions.noodles-cook.network.enabled=true",
-)
-
-
-def _sandbox_shape_errors(args: list[Any]) -> list[str]:
-    if _flag_value(args, "--sandbox") == "workspace-write":
-        return []
-    values = _all_flag_values(args, "-c")
-    if not any(value.startswith("default_permissions=") for value in values):
-        return [
-            ".noodle.toml agents.codex.args must carry either '--sandbox workspace-write' "
-            "or the complete noodles-cook permissions profile (staging window, ed3c/noodles#180)"
-        ]
-    errors = [
-        f".noodle.toml agents.codex.args profile shape missing '-c {required}'"
-        for required in _PROFILE_REQUIRED_EXACT
-        if required not in values
-    ]
-    if not any(value.startswith("permissions.noodles-cook.workspace_roots=") and ".git" in value for value in values):
-        errors.append(
-            ".noodle.toml agents.codex.args profile shape must grant the noodles .git root via permissions.noodles-cook.workspace_roots"
-        )
-    if not any(
-        value.startswith("permissions.noodles-cook.filesystem=") and ".agents/skills" in value and "write" in value
-        for value in values
-    ):
-        errors.append(
-            ".noodle.toml agents.codex.args profile shape must grant .agents/skills write via permissions.noodles-cook.filesystem"
-        )
-    return errors
+def _parse_config_override(raw: str) -> tuple[str, Any]:
+    key, separator, value = raw.partition("=")
+    if not separator:
+        return raw.strip(), None
+    try:
+        parsed = tomllib.loads(f"value={value}")["value"]
+    except (tomllib.TOMLDecodeError, KeyError):
+        parsed = None
+    return key.strip(), parsed
 
 
 def _run_canary_command(
