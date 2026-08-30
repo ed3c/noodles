@@ -365,7 +365,7 @@ def _read_json(path: Path, label: str) -> Any:
         raise ValueError(f"cannot read {label} {path}: {exc}") from exc
 
 
-def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
+def validate_schedule_candidate(root: Path, candidate_path: Path) -> dict[str, Any]:
     root = root.resolve()
     runtime = root / ".noodle"
     expected_candidate = runtime / "orders-next.candidate.json"
@@ -392,6 +392,15 @@ def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
     errors = validate_schedule_output(current, proposed, required_task_profiles)
     if errors:
         raise ValueError("schedule output rejected: " + "; ".join(errors))
+    return proposed
+
+
+def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
+    root = root.resolve()
+    runtime = root / ".noodle"
+    candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
+    candidate = candidate.resolve()
+    validate_schedule_candidate(root, candidate)
     destination = runtime / "orders-next.json"
     os.replace(candidate, destination)
     return destination
@@ -403,11 +412,13 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python3 skill_contract.py publish .noodle/orders-next.candidate.json", file=sys.stderr)
         return 2
     try:
-        destination = publish_schedule_output(Path.cwd(), Path(args[1]))
-    except ValueError as exc:
+        from noodles import schedule_publish
+        result = schedule_publish(Path.cwd(), Path(args[1]))
+        destination = result["destination"]
+    except (ValueError, RuntimeError) as exc:
         print(f"schedule contract FAIL: {exc}", file=sys.stderr)
         return 1
-    print(f"schedule contract PASS: {destination}")
+    print(f"schedule contract PASS: {destination} max_useful_workers={result['max_useful_workers']}")
     return 0
 
 
