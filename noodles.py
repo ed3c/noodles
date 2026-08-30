@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import codex_isolation
+import daemon_lease
 import feature_contract
 import hashlib
 import github_protection
@@ -923,7 +924,12 @@ def adapter_main(argv: Sequence[str] | None = None) -> int:
     raise GateError(f"invalid adapter invocation: {args}")
 
 
-def start_unattended(root: Path, control_url: str, interval: float) -> int:
+def start_unattended(
+    root: Path,
+    control_url: str,
+    interval: float,
+    admission_timeout: float = daemon_lease.DEFAULT_ADMISSION_TIMEOUT,
+) -> int:
     control_checkout_admission(root)
     verified = verify_repository(root)
     if not verified["ok"]:
@@ -934,9 +940,23 @@ def start_unattended(root: Path, control_url: str, interval: float) -> int:
     codex_isolation.codex_surface_canary(root, error_cls=GateError)
     policy = protection_policy(root)
     protection_readback(policy["repository"], policy["default_branch"], policy["required_check"])
+    project = runtime_contract.noodle_project_root(root, error_cls=GateError)
+    daemon_lease.reject_existing_lease(project, error_cls=GateError)
     env = os.environ.copy()
     env.setdefault("NOODLE_NO_BROWSER", "1")
     process = subprocess.Popen([runtime_receipt["binary_path"], "start"], cwd=root, env=env)
+    try:
+        # constraint: poll_interval matches the start-entrypoint test harness's listener-served polling cadence so this wrapper's real admission cannot lose the race and get torn down mid-check
+        lease = daemon_lease.admit_started_daemon(
+            project, control_url, process, error_cls=GateError, timeout=admission_timeout, poll_interval=0.02
+        )
+    except BaseException as admission_failure:
+        try:
+            daemon_lease.terminate_own_child(process, control_url, error_cls=GateError)
+        except GateError as residue:
+            raise GateError(f"{admission_failure}; {residue}") from admission_failure
+        raise
+    print(json.dumps({"daemon_lease": lease}, separators=(",", ":"), sort_keys=True), file=sys.stderr)
 
     def stop(_signum: int, _frame: Any) -> None:
         process.terminate()
@@ -1014,6 +1034,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start")
     start.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     start.add_argument("--interval", type=float, default=5.0)
+    start.add_argument("--admission-timeout", type=float, default=daemon_lease.DEFAULT_ADMISSION_TIMEOUT)
     return parser
 
 
@@ -1115,7 +1136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"repairable": repair_pending_reviews(root, args.control_url)}, indent=2, sort_keys=True))
             return 0
         if args.command == "start":
-            return start_unattended(root, args.control_url, args.interval)
+            return start_unattended(root, args.control_url, args.interval, args.admission_timeout)
     except GateError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

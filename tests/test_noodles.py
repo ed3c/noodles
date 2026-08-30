@@ -4,6 +4,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -11,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import daemon_lease
 import noodles
 import runtime_contract
 import skill_contract
@@ -787,6 +790,9 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
              mock.patch.object(noodles, "protection_policy", return_value=policy), \
              mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles.runtime_contract, "noodle_project_root", return_value=CANDIDATE_ROOT), \
+             mock.patch.object(noodles.daemon_lease, "reject_existing_lease"), \
+             mock.patch.object(noodles.daemon_lease, "admit_started_daemon", return_value={"admitted": True}), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
              mock.patch.object(noodles, "repair_pending_reviews") as repair, \
              mock.patch.object(noodles, "reconcile_once") as reconcile, \
@@ -803,7 +809,7 @@ class StartUnattendedTests(unittest.TestCase):
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, None]
         policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
-        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), mock.patch.object(noodles, "protection_policy", return_value=policy), mock.patch.object(noodles, "protection_readback"), mock.patch.object(noodles.runtime_contract, "noodle_project_root", return_value=CANDIDATE_ROOT), mock.patch.object(noodles.daemon_lease, "reject_existing_lease"), mock.patch.object(noodles.daemon_lease, "admit_started_daemon", return_value={"admitted": True}), mock.patch.object(noodles.subprocess, "Popen", return_value=process), mock.patch.object(noodles, "repair_pending_reviews", side_effect=RuntimeError("boom")):
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
         process.terminate.assert_called_once()
@@ -879,34 +885,33 @@ class StartUnattendedTests(unittest.TestCase):
             )
 
     def test_start_entrypoint_receipt_accepts_admission_evidence_without_legacy_repair_diagnostic(self) -> None:
-        # constraint: planted control - the ed3c/noodles#45 lease-admission candidate replaces the repair-retry path entirely, so this stderr never carries the legacy diagnostic
+        # constraint: planted control - the ed3c/noodles#45 lease-admission candidate replaces the repair-retry path entirely, so this stderr never carries the legacy diagnostic; shape matches noodles.py's real compact `{"daemon_lease": receipt}` emission
         receipt = {
             "returncode": 0,
-            "stderr": '{"admitted": true}\n',
+            "stderr": '{"daemon_lease":{"admitted":true,"listener_pids":[4242],"loop_state":"running"}}\n',
             "entrypoint_exists": True,
-            "listener_ready": True,
-            "listener_served": True,
-            "listener_request_count": 1,
-            "listener_thread_alive": False,
-            "listener_error": None,
+            "listener_after_exit": [],
+            "lease_after_exit": "4242",
         }
         self.assertEqual(validate_start_entrypoint_receipt(receipt), [])
 
     def test_start_entrypoint_receipt_rejects_stderr_with_neither_diagnostic(self) -> None:
-        # constraint: planted control - stderr carries neither the legacy repair diagnostic nor admission-path evidence, so the check must still fail
+        # constraint: planted control - stderr carries neither the legacy repair diagnostic nor admission-path evidence, so both the widened connection check and the lane's admission assertions must fail
         receipt = {
             "returncode": 0,
             "stderr": "nothing relevant here\n",
             "entrypoint_exists": True,
-            "listener_ready": True,
-            "listener_served": True,
-            "listener_request_count": 1,
-            "listener_thread_alive": False,
-            "listener_error": None,
+            "listener_after_exit": [],
+            "lease_after_exit": "4242",
         }
         self.assertEqual(
             validate_start_entrypoint_receipt(receipt),
-            ["wrapper never diagnosed startup connection refusal on repair path"],
+            [
+                "wrapper never diagnosed startup connection refusal on repair path",
+                "wrapper never admitted a truthful Noodle daemon lease",
+                "listener ownership readback missing from the admission receipt",
+                "listener never served snapshot readback with a live runtime status",
+            ],
         )
 
     def test_start_entrypoint_stub_materializes_live_looking_runtime_surface(self) -> None:
@@ -1234,5 +1239,220 @@ class RuntimePhysicalTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOODLES_TEST_SKILLS_OUTPUT": output}, clear=False):
             with self.assertRaisesRegex(noodles.GateError, "missing pinned playbook bytes"):
                 runtime_contract.skill_discovery_check(candidate, binary, error_cls=noodles.GateError)
+
+
+CONTROL_URL = "http://127.0.0.1:3210"
+
+
+class DaemonLeaseTests(unittest.TestCase):
+    def lease_project(self) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-lease-test-")
+        self.addCleanup(temp.cleanup)
+        project = Path(temp.name)
+        (project / ".noodle").mkdir()
+        return project
+
+    def plant(self, project: Path, *, lease: str | None = None, loop_state: str | None = "running") -> None:
+        if lease is not None:
+            (project / daemon_lease.LOCK_RELATIVE).write_text(lease, encoding="utf-8")
+        if loop_state is not None:
+            (project / daemon_lease.STATUS_RELATIVE).write_text(
+                json.dumps({"loop_state": loop_state, "mode": "supervised", "max_concurrency": 4}), encoding="utf-8"
+            )
+
+    def child(self, pid: int, returncode: object = None) -> mock.Mock:
+        return mock.Mock(pid=pid, poll=mock.Mock(return_value=returncode))
+
+    def dead_pid(self) -> int:
+        spare = subprocess.Popen([sys.executable, "-c", "raise SystemExit(0)"])
+        spare.wait(timeout=30)
+        return spare.pid
+
+    def defect(self, project: Path, child_pid: int, *, owners: list[int], snapshot: tuple[object, str] = ({"pending_reviews": []}, "")) -> str:
+        with mock.patch.object(daemon_lease, "listener_pids", return_value=owners), \
+             mock.patch.object(daemon_lease, "read_snapshot", return_value=snapshot):
+            diagnostic, _receipt = daemon_lease.admission_defect(project, CONTROL_URL, child_pid)
+        return diagnostic
+
+    def test_admission_receipt_binds_child_listener_snapshot_and_status(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        with mock.patch.object(daemon_lease, "listener_pids", return_value=[os.getpid()]), \
+             mock.patch.object(daemon_lease, "read_snapshot", return_value=({"pending_reviews": []}, "")):
+            receipt = daemon_lease.admit_started_daemon(
+                project, CONTROL_URL, self.child(os.getpid()), error_cls=noodles.GateError, timeout=1.0, poll_interval=0.01
+            )
+        self.assertEqual(receipt["lease_pid"], os.getpid())
+        self.assertEqual(receipt["child_pid"], os.getpid())
+        self.assertEqual(receipt["listener_pids"], [os.getpid()])
+        self.assertEqual(receipt["control_host"], "127.0.0.1")
+        self.assertEqual(receipt["control_port"], 3210)
+        self.assertEqual(receipt["loop_state"], "running")
+        self.assertEqual(receipt["snapshot_keys"], ["pending_reviews"])
+        self.assertTrue(receipt["admitted"])
+        self.assertEqual(receipt["lease_path"], str(project / daemon_lease.LOCK_RELATIVE))
+
+    def test_planted_stale_status_json_without_lease_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, loop_state="running")
+        with self.assertRaises(noodles.GateError) as raised:
+            daemon_lease.reject_existing_lease(project, error_cls=noodles.GateError)
+        self.assertIn("noodles-start status-ghost:", str(raised.exception))
+        self.assertIn("loop_state='running'", str(raised.exception))
+
+    def test_planted_dead_pid_lease_fails_closed(self) -> None:
+        project = self.lease_project()
+        dead = self.dead_pid()
+        self.plant(project, lease=f"{dead}\n", loop_state="running")
+        with self.assertRaises(noodles.GateError) as raised:
+            daemon_lease.reject_existing_lease(project, error_cls=noodles.GateError)
+        self.assertIn("noodles-start lease-dead-pid:", str(raised.exception))
+        self.assertIn(str(dead), str(raised.exception))
+
+    def test_planted_wrapper_only_lease_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        diagnostic = self.defect(project, os.getpid() + 1, owners=[os.getpid()])
+        self.assertIn("noodles-start lease-foreign-pid:", diagnostic)
+        self.assertIn(f"spawned Noodle child pid {os.getpid() + 1}", diagnostic)
+
+    def test_planted_child_without_listener_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        diagnostic = self.defect(project, os.getpid(), owners=[])
+        self.assertIn("noodles-start listener-absent:", diagnostic)
+        self.assertIn("127.0.0.1:3210", diagnostic)
+
+    def test_planted_unrelated_port_listener_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        diagnostic = self.defect(project, os.getpid(), owners=[os.getpid() + 7])
+        self.assertIn("noodles-start listener-foreign:", diagnostic)
+        self.assertIn(str(os.getpid() + 7), diagnostic)
+
+    def test_planted_unreadable_snapshot_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        diagnostic = self.defect(project, os.getpid(), owners=[os.getpid()], snapshot=(None, "connection refused"))
+        self.assertIn("noodles-start snapshot-unreadable:", diagnostic)
+
+    def test_planted_inconsistent_runtime_status_fails_closed(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n", loop_state="stopped")
+        diagnostic = self.defect(project, os.getpid(), owners=[os.getpid()])
+        self.assertIn("noodles-start status-inconsistent:", diagnostic)
+
+    def test_every_planted_fake_alive_state_reports_a_distinct_diagnostic(self) -> None:
+        project = self.lease_project()
+        dead = self.dead_pid()
+        codes: list[str] = []
+        for planted in ("stale-status", "dead-pid", "wrapper-only", "child-without-listener", "unrelated-port-listener"):
+            fresh = self.lease_project()
+            if planted == "stale-status":
+                self.plant(fresh, loop_state="running")
+                with self.assertRaises(noodles.GateError) as raised:
+                    daemon_lease.reject_existing_lease(fresh, error_cls=noodles.GateError)
+                diagnostic = str(raised.exception)
+            elif planted == "dead-pid":
+                self.plant(fresh, lease=f"{dead}\n")
+                with self.assertRaises(noodles.GateError) as raised:
+                    daemon_lease.reject_existing_lease(fresh, error_cls=noodles.GateError)
+                diagnostic = str(raised.exception)
+            elif planted == "wrapper-only":
+                self.plant(fresh, lease=f"{os.getpid()}\n")
+                diagnostic = self.defect(fresh, os.getpid() + 1, owners=[os.getpid()])
+            elif planted == "child-without-listener":
+                self.plant(fresh, lease=f"{os.getpid()}\n")
+                diagnostic = self.defect(fresh, os.getpid(), owners=[])
+            else:
+                self.plant(fresh, lease=f"{os.getpid()}\n")
+                diagnostic = self.defect(fresh, os.getpid(), owners=[os.getpid() + 7])
+            codes.append(diagnostic.split(":")[0])
+        self.assertEqual(len(set(codes)), 5, codes)
+        self.assertTrue(all(code.startswith("noodles-start ") for code in codes), codes)
+        self.assertTrue((project / ".noodle").is_dir())
+
+    def test_second_concurrent_start_fails_closed_without_spawning_a_second_child(self) -> None:
+        project = self.lease_project()
+        self.plant(project, lease=f"{os.getpid()}\n")
+        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+             mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
+             mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), \
+             mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
+             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles.runtime_contract, "noodle_project_root", return_value=project), \
+             mock.patch.object(noodles.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(noodles.GateError, "noodles-start lease-held:"):
+                noodles.start_unattended(CANDIDATE_ROOT, CONTROL_URL, 0.25)
+        popen.assert_not_called()
+
+    def test_failed_startup_terminates_only_its_own_child_and_never_calls_reset(self) -> None:
+        project = self.lease_project()
+        evidence = project / ".noodle/loop-events.ndjson"
+        evidence.write_text("planted runtime evidence\n", encoding="utf-8")
+        decoy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(decoy.wait)
+        self.addCleanup(decoy.kill)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(child.poll)
+        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+             mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
+             mock.patch.object(noodles, "provider_sync"), mock.patch.object(noodles, "skill_discovery_check"), \
+             mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
+             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles.runtime_contract, "noodle_project_root", return_value=project), \
+             mock.patch.object(daemon_lease, "listener_pids", return_value=[]), \
+             mock.patch.object(noodles.subprocess, "Popen", return_value=child) as popen, \
+             mock.patch.object(noodles, "repair_pending_reviews") as repair, \
+             mock.patch.object(noodles, "reconcile_once") as reconcile:
+            with self.assertRaisesRegex(noodles.GateError, "noodles-start lease-absent:"):
+                noodles.start_unattended(CANDIDATE_ROOT, CONTROL_URL, 0.25, admission_timeout=0.4)
+        popen.assert_called_once()
+        self.assertNotIn("reset", [str(item) for call in popen.call_args_list for item in (call.args[0] if call.args else [])])
+        repair.assert_not_called()
+        reconcile.assert_not_called()
+        self.assertIsNotNone(child.wait(timeout=10))
+        self.assertIsNone(decoy.poll())
+        self.assertEqual(evidence.read_text(encoding="utf-8"), "planted runtime evidence\n")
+
+    def test_start_source_never_invokes_noodle_reset(self) -> None:
+        source = (CANDIDATE_ROOT / "daemon_lease.py").read_text(encoding="utf-8")
+        self.assertNotIn("reset", source)
+        self.assertIn("terminate", source)
+
+    def test_listener_pid_parser_reads_lsof_pid_output(self) -> None:
+        with mock.patch.object(daemon_lease.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "20776\n20776\n881\n", "")):
+            self.assertEqual(daemon_lease.listener_pids("127.0.0.1", 3210), [881, 20776])
+        with mock.patch.object(daemon_lease.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertEqual(daemon_lease.listener_pids("127.0.0.1", 3210), [])
+        with mock.patch.object(daemon_lease.subprocess, "run", side_effect=FileNotFoundError("lsof")):
+            with self.assertRaisesRegex(RuntimeError, "noodles-start listener-probe-missing:"):
+                daemon_lease.listener_pids("127.0.0.1", 3210)
+
+    def test_bounded_admission_times_out_with_the_last_observed_defect(self) -> None:
+        project = self.lease_project()
+        with mock.patch.object(daemon_lease, "listener_pids", return_value=[]):
+            with self.assertRaises(noodles.GateError) as raised:
+                daemon_lease.admit_started_daemon(
+                    project, CONTROL_URL, self.child(os.getpid()), error_cls=noodles.GateError, timeout=0.2, poll_interval=0.01
+                )
+        self.assertIn("noodles-start admission-timeout:", str(raised.exception))
+        self.assertIn("noodles-start lease-absent:", str(raised.exception))
+
+    def test_child_exit_before_admission_fails_closed_as_wrapper_without_child(self) -> None:
+        project = self.lease_project()
+        with self.assertRaises(noodles.GateError) as raised:
+            daemon_lease.admit_started_daemon(
+                project, CONTROL_URL, self.child(os.getpid(), returncode=1), error_cls=noodles.GateError, timeout=0.2, poll_interval=0.01
+            )
+        self.assertIn("noodles-start lease-child-exited:", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
