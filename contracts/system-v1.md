@@ -125,6 +125,10 @@ Implementation is done only when the candidate has complete local evidence and a
 
 Every authoritative completion path MUST preserve exact Issue subject, repository, candidate head/tree, verification identity, and provider landing identity across the boundary that consumes them.
 
+### DEPENDENCY.IMPLICIT_DISCOVERY.001
+
+A discovered implicit dependency MUST become an explicit probe, gate, or typed marker within one atom. `./noodles preflight` is the execute-environment admission boundary. It probes the Python runtime, provider network reach, GitHub authentication readback, Git metadata writes, and feature-verifier availability. The command rejects a missing capability before source edits and does not repair the environment.
+
 ## 6. Verification architecture
 
 Tests pass != full product verification when the Issue claims CLI, UI, runtime, performance, provider, or other observable behavior beyond repository acceptance.

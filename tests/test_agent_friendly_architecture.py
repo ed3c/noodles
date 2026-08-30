@@ -83,6 +83,7 @@ class AgentFriendlyArchitectureTests(unittest.TestCase):
             "REQUIREMENT.EVOLUTION.001",
             "ISSUE_CONTRACT.TIGHTENING_OWNS_MIGRATION.001",
             "REQUIREMENT.PROJECTION.001",
+            "DEPENDENCY.IMPLICIT_DISCOVERY.001",
         ):
             self.assertEqual(system_contract.count(f"### {requirement_id}"), 1)
 
@@ -95,8 +96,14 @@ class AgentFriendlyArchitectureTests(unittest.TestCase):
             "migration obligation",
             "intake-normalizer seam `ed3c/noodles#157`",
             "No live-provider scan is required",
+            "A discovered implicit dependency MUST become an explicit probe, gate, or typed marker within one atom.",
+            "`./noodles preflight` is the execute-environment admission boundary",
         ):
             self.assertIn(phrase, system_contract)
+
+        noodles_source = (CANDIDATE_ROOT / "noodles.py").read_text()
+        self.assertIn("def preflight(root: Path) -> dict[str, Any]:", noodles_source)
+        self.assertIn('sub.add_parser("preflight")', noodles_source)
 
         mutable_fact_patterns = (
             r"(?im)^\s*(?:current\s+)?(?:pr|pull request)\s*#\d+",

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from skill_contract import EXECUTE_VERIFICATION_P_CLASS_PHRASE, EXECUTE_VERIFICATION_ROUTE
+from skill_contract import EXECUTE_PREFLIGHT_PHRASE, EXECUTE_VERIFICATION_P_CLASS_PHRASE, EXECUTE_VERIFICATION_ROUTE
 
 EVIDENCE_PATH = ".noodle/feature-evidence.json"
 EVIDENCE_FIELDS = ("feature_id", "head", "code_surface", "code_surface_sha256", "operation", "oracle", "observed")
@@ -45,7 +45,7 @@ VERIFICATION_SKILL_FEATURE = FeatureContract(
     feature_id="verification-skill-oracle",
     code_surface=".agents/skills/execute/SKILL.md",
     operation=("./noodles", "verify", "--json"),
-    oracle_phrases=(EXECUTE_VERIFICATION_ROUTE, EXECUTE_VERIFICATION_P_CLASS_PHRASE),
+    oracle_phrases=(EXECUTE_PREFLIGHT_PHRASE, EXECUTE_VERIFICATION_ROUTE, EXECUTE_VERIFICATION_P_CLASS_PHRASE),
     oracle="code-surface digest and required routing bytes plus exit-zero declared operation reporting ok with zero errors",
 )
 

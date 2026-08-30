@@ -10,6 +10,7 @@ This skill operates inside the Noodle-created isolated worktree.
 
 ## Required sequence
 
+0. Run `./noodles preflight` before any source edit. Stop if it names a missing capability.
 1. Parse the order ID as `owner/repo#N`.
 2. Run `./noodles issue validate owner/repo#N` and read the exact Issue.
 3. Confirm the target repository equals the current worktree repository.

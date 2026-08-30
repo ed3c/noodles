@@ -15,6 +15,7 @@ SCHEDULE_TASK_MODEL_PHRASE = (
     "Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model "
     "on the order's only `execute` stage."
 )
+EXECUTE_PREFLIGHT_PHRASE = "0. Run `./noodles preflight` before any source edit. Stop if it names a missing capability."
 EXECUTE_ENTRYPOINT_PHRASE = "Every execute task enters `poteto-mode` before any matched playbook or leaf skill."
 EXECUTE_BYPASS_PHRASE = "Do not bypass `poteto-mode` by entering a leaf skill directly."
 EXECUTE_EVIDENCE_PHRASE = "Record the selected P-class route and required physical oracle in the evidence packet."
@@ -136,6 +137,7 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
             f"{relative} requires non-empty top-level schedule frontmatter"
         ]
     required_contracts = (
+        (EXECUTE_PREFLIGHT_PHRASE, "step-0 preflight"),
         (EXECUTE_ENTRYPOINT_PHRASE, "poteto-mode entrypoint"),
         (EXECUTE_BYPASS_PHRASE, "direct leaf bypass refusal"),
         (EXECUTE_EVIDENCE_PHRASE, "route evidence packet"),

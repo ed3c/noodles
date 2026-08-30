@@ -100,6 +100,7 @@ def run(
     input_text: str | None = None,
     check: bool = True,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         list(argv),
@@ -110,6 +111,7 @@ def run(
         stderr=subprocess.PIPE,
         env=env,
         check=False,
+        timeout=timeout,
     )
     if check and result.returncode != 0:
         command = " ".join(argv)
@@ -479,6 +481,124 @@ def runtime_discovery(root: Path) -> dict[str, Any]:
     runtime_receipt = runtime_check(root)
     discovery_receipt = skill_discovery_check(root, runtime_receipt["binary_path"], error_cls=GateError)
     return {"runtime": runtime_receipt, "skills": discovery_receipt}
+
+
+def _preflight_command(
+    capability: str,
+    argv: Sequence[str],
+    *,
+    root: Path,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = run(argv, cwd=root, input_text=input_text, check=False, timeout=3.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GateError(f"preflight missing capability: {capability}: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise GateError(f"preflight missing capability: {capability}: {detail}")
+    return result
+
+
+def _preflight_provider_network(root: Path) -> dict[str, Any]:
+    capability = "provider network reach"
+    try:
+        providers = runtime_contract.provider_items(root, error_cls=GateError)
+    except GateError as exc:
+        raise GateError(f"preflight missing capability: {capability}: {exc}") from exc
+    names: list[str] = []
+    for provider in providers:
+        name = provider.get("name")
+        source = provider.get("source")
+        if not isinstance(name, str) or not name or not isinstance(source, str) or not source:
+            raise GateError(f"preflight missing capability: {capability}: enabled provider has no name or source")
+        _preflight_command(capability, ["git", "ls-remote", "--exit-code", source, "HEAD"], root=root)
+        names.append(name)
+    return {"capability": capability, "providers": names}
+
+
+def _preflight_gh_auth(root: Path) -> dict[str, Any]:
+    capability = "gh auth readback"
+    try:
+        repository = runtime_gh_repo_from_git(root, error_cls=GateError)
+    except GateError as exc:
+        raise GateError(f"preflight missing capability: {capability}: {exc}") from exc
+    observed = _preflight_command(
+        capability,
+        ["gh", "api", f"repos/{repository}", "--jq", ".full_name"],
+        root=root,
+    ).stdout.strip()
+    if observed != repository:
+        raise GateError(
+            f"preflight missing capability: {capability}: repository readback {observed!r} != {repository!r}"
+        )
+    return {"capability": capability, "repository": repository}
+
+
+def _preflight_git_metadata(root: Path) -> dict[str, Any]:
+    capability = "git metadata write"
+    head = _preflight_command(capability, ["git", "rev-parse", "HEAD"], root=root).stdout.strip()
+    tree = _preflight_command(capability, ["git", "rev-parse", "HEAD^{tree}"], root=root).stdout.strip()
+    root_digest = hashlib.sha256(str(root).encode()).hexdigest()[:12]
+    scratch_ref = f"refs/noodles/preflight/{root_digest}-{os.getpid()}"
+    created_commit: str | None = None
+    try:
+        created_commit = _preflight_command(
+            capability,
+            ["git", "commit-tree", tree, "-p", head],
+            root=root,
+            input_text=f"noodles preflight {root_digest}-{os.getpid()}\n",
+        ).stdout.strip()
+        if not HEX40_RE.fullmatch(created_commit):
+            raise GateError(f"preflight missing capability: {capability}: commit-tree returned no commit")
+        _preflight_command(
+            capability,
+            ["git", "update-ref", scratch_ref, created_commit, "0" * 40],
+            root=root,
+        )
+        observed = _preflight_command(capability, ["git", "rev-parse", scratch_ref], root=root).stdout.strip()
+        if observed != created_commit:
+            raise GateError(f"preflight missing capability: {capability}: scratch ref readback drifted")
+    finally:
+        if created_commit:
+            try:
+                cleanup = run(
+                    ["git", "update-ref", "-d", scratch_ref, created_commit],
+                    cwd=root,
+                    check=False,
+                    timeout=3.0,
+                )
+                residue = run(
+                    ["git", "show-ref", "--verify", "--quiet", scratch_ref],
+                    cwd=root,
+                    check=False,
+                    timeout=3.0,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GateError(f"preflight missing capability: {capability}: cleanup failed: {exc}") from exc
+            if cleanup.returncode != 0 or residue.returncode == 0:
+                detail = cleanup.stderr.strip() or cleanup.stdout.strip() or "scratch ref remains"
+                raise GateError(f"preflight missing capability: {capability}: cleanup failed: {detail}")
+    return {"capability": capability, "scratch_ref_deleted": True}
+
+
+def _preflight_feature_verify(root: Path) -> dict[str, Any]:
+    capability = "feature-verify tool presence"
+    _preflight_command(capability, [str(root / "noodles"), "feature", "verify", "--help"], root=root)
+    return {"capability": capability, "command": "./noodles feature verify <feature-id>"}
+
+
+def preflight(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    probes = (
+        _preflight_provider_network,
+        _preflight_gh_auth,
+        _preflight_git_metadata,
+        _preflight_feature_verify,
+    )
+    return {"schema_version": 1, "ok": True, "capabilities": [probe(root) for probe in probes]}
+
+
 def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, token: str | None = None) -> Any:
     _headers, body = github_protection.gh_api_response(
         run,
@@ -1056,6 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="noodles")
     parser.add_argument("--root", default=None, help="repository root (testing/audit only)")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("preflight")
     verify = sub.add_parser("verify")
     verify.add_argument("--policy-root")
     verify.add_argument("--json", action="store_true")
@@ -1113,6 +1234,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = repo_root(args.root)
     try:
+        if args.command == "preflight":
+            print(json.dumps(preflight(root), indent=2, sort_keys=True))
+            return 0
         if args.command == "verify":
             result = verify_repository(root, repo_root(args.policy_root) if args.policy_root else None)
             print(json.dumps(result, indent=2, sort_keys=True) if args.json else ("PASS" if result["ok"] else "FAIL"))
