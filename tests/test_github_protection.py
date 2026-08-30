@@ -271,6 +271,8 @@ class ProtectionContractTests(unittest.TestCase):
                         "conclusion": "failure",
                         "head_sha": head,
                         "workflow_id": 11,
+                        "run_attempt": 1,
+                        "pull_requests": [{"number": 44}],
                     },
                     {
                         "id": 9,
@@ -281,6 +283,8 @@ class ProtectionContractTests(unittest.TestCase):
                         "conclusion": "failure",
                         "head_sha": head,
                         "workflow_id": 11,
+                        "run_attempt": 1,
+                        "pull_requests": [{"number": 44}],
                     },
                 ]
             },
@@ -293,6 +297,8 @@ class ProtectionContractTests(unittest.TestCase):
                 "conclusion": "failure",
                 "head_sha": head,
                 "workflow_id": 11,
+                "run_attempt": 1,
+                "pull_requests": [{"number": 44}],
             },
             "repos/ed3c/noodles": {
                 "full_name": "ed3c/noodles",
@@ -315,10 +321,25 @@ class ProtectionContractTests(unittest.TestCase):
             path=".github/workflows/verify.yml",
             event="pull_request_target",
             default_branch="main",
+            pr_number=44,
         )
 
         self.assertEqual(source["run"]["id"], 9)
         self.assertEqual(source["run"]["conclusion"], "failure")
+        self.assertEqual(source["run"]["run_attempt"], 1)
+        self.assertEqual(source["run"]["pull_request_numbers"], [44])
+        with self.assertRaisesRegex(noodles.GateError, "no completed failed workflow run"):
+            github_protection.failed_required_workflow_run_readback(
+                lambda endpoint: payloads[endpoint],
+                noodles.GateError,
+                "ed3c/noodles",
+                head,
+                name="verify",
+                path=".github/workflows/verify.yml",
+                event="pull_request_target",
+                default_branch="main",
+                pr_number=45,
+            )
 
     def test_failed_required_workflow_run_readback_rejects_direct_head_drift(self) -> None:
         head = "a" * 40
@@ -334,6 +355,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "conclusion": "failure",
                     "head_sha": head,
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }]
             },
             "repos/ed3c/noodles/actions/runs/9": {
@@ -345,6 +368,8 @@ class ProtectionContractTests(unittest.TestCase):
                 "conclusion": "failure",
                 "head_sha": drifted,
                 "workflow_id": 11,
+                "run_attempt": 1,
+                "pull_requests": [{"number": 44}],
             },
             "repos/ed3c/noodles": {"full_name": "ed3c/noodles", "default_branch": "main"},
             "repos/ed3c/noodles/actions/workflows/verify.yml": {
@@ -389,6 +414,8 @@ class ProtectionContractTests(unittest.TestCase):
                 "head_branch": "ed3c-noodles-3-0-task",
                 "head_sha": "6c7a4d70d676f5da4acc72a3b90cdac043716e31",
                 "workflow_id": 344826945,
+                "run_attempt": 1,
+                "pull_requests": [{"number": 3}],
             },
             "repos/ed3c/noodles": {
                 "full_name": "ed3c/noodles",
@@ -426,6 +453,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "path": ".github/workflows/verify.yml",
                     "event": "pull_request",
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }
             if endpoint == "repos/ed3c/noodles":
                 return {"full_name": "ed3c/noodles", "default_branch": "main"}
@@ -452,6 +481,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "path": ".github/workflows/candidate.yml",
                     "event": "pull_request_target",
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }
             if endpoint == "repos/ed3c/noodles":
                 return {"full_name": "ed3c/noodles", "default_branch": "main"}
@@ -478,6 +509,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "path": ".github/workflows/verify.yml",
                     "event": "pull_request_target",
                     "workflow_id": 99,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }
             if endpoint == "repos/ed3c/noodles":
                 return {"full_name": "ed3c/noodles", "default_branch": "main"}
@@ -504,6 +537,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "path": ".github/workflows/verify.yml",
                     "event": "pull_request_target",
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }
             if endpoint == "repos/ed3c/noodles":
                 return {"full_name": "ed3c/noodles", "default_branch": "candidate"}
@@ -530,6 +565,8 @@ class ProtectionContractTests(unittest.TestCase):
                     "path": ".github/workflows/verify.yml",
                     "event": "pull_request_target",
                     "workflow_id": 11,
+                    "run_attempt": 1,
+                    "pull_requests": [{"number": 44}],
                 }
             if endpoint == "repos/ed3c/noodles":
                 return {"full_name": "ed3c/noodles", "default_branch": "main"}
