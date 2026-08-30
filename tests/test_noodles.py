@@ -15,6 +15,7 @@ import noodles
 import runtime_contract
 import skill_contract
 from tests.support import (
+    ADMISSION_RECEIPT_GRACE_SECONDS,
     CANDIDATE_ROOT,
     ENGINE_ROOT,
     cmd,
@@ -821,6 +822,37 @@ class StartUnattendedTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"NOODLES_OFFLINE_TESTS": "1"}, clear=False):
             result = start_entrypoint_with_delayed_listener()
         assert_valid_start_entrypoint_receipt(result)
+
+    def test_start_entrypoint_terminates_promptly_on_admission_receipt_line(self) -> None:
+        # constraint: planted control - stub prints the admission receipt line, so termination must land well before the grace ceiling, proving the line-triggered path fires
+        result = start_entrypoint_with_delayed_listener(emit_admission_receipt=True)
+        assert_valid_start_entrypoint_receipt(result)
+        self.assertIs(result.get("admission_receipt_seen"), True)
+        wait_seconds = result.get("admission_wait_seconds")
+        assert isinstance(wait_seconds, float)
+        self.assertLess(
+            wait_seconds,
+            ADMISSION_RECEIPT_GRACE_SECONDS / 2,
+            "admission receipt line took as long to notice as a silent entrypoint would",
+        )
+
+    def test_start_entrypoint_terminates_at_grace_deadline_when_admission_receipt_never_arrives(self) -> None:
+        # constraint: planted control - stub stays silent (current main's ./noodles start never prints the line), so termination must fall back to the grace deadline rather than hang or race
+        result = start_entrypoint_with_delayed_listener()
+        assert_valid_start_entrypoint_receipt(result)
+        self.assertIs(result.get("admission_receipt_seen"), False)
+        wait_seconds = result.get("admission_wait_seconds")
+        assert isinstance(wait_seconds, float)
+        self.assertGreaterEqual(
+            wait_seconds,
+            ADMISSION_RECEIPT_GRACE_SECONDS - 0.5,
+            "silent entrypoint was terminated before the grace ceiling elapsed",
+        )
+        self.assertLess(
+            wait_seconds,
+            ADMISSION_RECEIPT_GRACE_SECONDS + 2,
+            "terminator overran the grace ceiling by more than scheduling slack accounts for",
+        )
 
     def test_start_entrypoint_stub_materializes_live_looking_runtime_surface(self) -> None:
         def assert_materialized(receipt: dict[str, object]) -> None:
