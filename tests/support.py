@@ -4,11 +4,13 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import feature_contract
@@ -143,6 +145,8 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "    import http.server\n"
             "    import json\n"
             "    import pathlib\n"
+            "    import select\n"
+            "    import signal\n"
             "    import threading\n"
             "    project = pathlib.Path(os.environ['NOODLES_TEST_START_PROJECT'])\n"
             "    (project / '.noodle').mkdir(parents=True, exist_ok=True)\n"
@@ -169,8 +173,16 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "        server = http.server.HTTPServer(\n"
             "            ('127.0.0.1', int(os.environ['NOODLES_TEST_START_PORT'])), Handler\n"
             "        )\n"
-            "        threading.Thread(target=server.serve_forever, daemon=True).start()\n"
-            "        time.sleep(float(os.environ.get('NOODLES_TEST_START_DURATION', '1')))\n"
+            "        server.timeout = 0.05\n"
+            "        stop_requested = threading.Event()\n"
+            "        signal.signal(signal.SIGTERM, lambda *_ignored: stop_requested.set())\n"
+            "        while not stop_requested.is_set():\n"
+            "            server.handle_request()\n"
+            "        drain_budget = 8\n"
+            "        while drain_budget > 0 and select.select([server.fileno()], [], [], 0.02)[0]:\n"
+            "            server.handle_request()\n"
+            "            drain_budget -= 1\n"
+            "        server.server_close()\n"
         )
     path.write_text(
         "#!/usr/bin/env python3\n"
@@ -734,8 +746,37 @@ def start_entrypoint_with_delayed_listener(
                 finally:
                     listener_stop.set()
 
+            terminator_stop = threading.Event()
+
+            def terminate_runtime_when_ready() -> None:
+                # constraint: 15s ceiling only guards a genuinely broken (never-serving) listener from hanging the suite; happy path returns in well under a second
+                deadline = time.monotonic() + 15
+                while (
+                    not listener_served.is_set()
+                    and not terminator_stop.is_set()
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+                if terminator_stop.is_set():
+                    return
+                lock_path = control / ".noodle" / "noodle.lock"
+                if not lock_path.exists():
+                    return
+                try:
+                    pid = int(lock_path.read_text().strip())
+                except (OSError, ValueError):
+                    return
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
             listener_thread = threading.Thread(target=poll_listener, name="start-entrypoint-listener")
             listener_thread.start()
+            terminator_thread = threading.Thread(
+                target=terminate_runtime_when_ready, name="start-entrypoint-terminator", daemon=True
+            )
+            terminator_thread.start()
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
             env["PYTHONPATH"] = str(CANDIDATE_ROOT)
@@ -744,7 +785,6 @@ def start_entrypoint_with_delayed_listener(
             env["NOODLES_TEST_START_PROJECT"] = str(control)
             env["NOODLES_TEST_START_PORT"] = str(port)
             env["NOODLES_TEST_START_SERVE"] = "1" if start_listener else "0"
-            env["NOODLES_TEST_START_DURATION"] = str(max(0.3, interval * 6))
             codex_real_bin = codex_real_bin_export(base)
             if codex_real_bin is not None:
                 env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
@@ -758,7 +798,9 @@ def start_entrypoint_with_delayed_listener(
                 check=False,
             )
             listener_stop.set()
+            terminator_stop.set()
             listener_thread.join(timeout=2)
+            terminator_thread.join(timeout=2)
             listener_state["listener_thread_alive"] = listener_thread.is_alive()
             lock_path = control / ".noodle" / "noodle.lock"
             status_path = control / ".noodle" / "status.json"
