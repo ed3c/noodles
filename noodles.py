@@ -386,13 +386,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     target_readback: dict[str, Any] | None = None
     try:
         target = target_local_repository(root)
-        target_readback = {
-            "repository": target.repository,
-            "origin_repository": target.origin_repository,
-            "default_branch": target.default_branch,
-            "required_check": target.required_check,
-            "cross_repository_status": target.cross_repository_status,
-        }
+        target_readback = target.authority_payload()
     except GateError as exc:
         errors.append(f"target-local repository admission failed: {exc}")
     required_task_profiles = policy.get("required_codex_task_profiles"); expected_task_profiles = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
@@ -668,6 +662,7 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "tree_sha": git(candidate_root, "rev-parse", "HEAD^{tree}"),
         "base_ref": base_ref,
         "workflow_run_id": int(os.getenv("GITHUB_RUN_ID", "0")),
+        "target_authority": result["target"],
         "metrics": result["metrics"],
         "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head"],
     }
@@ -695,6 +690,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         "repository": repository,
         "pr_number": pr_number,
         "head_sha": head_sha,
+        "target_authority": target.authority_payload(),
     }
     for key, value in expected.items():
         if receipt.get(key) != value:

@@ -73,6 +73,17 @@ class TargetLocalRepositoryReceipt:
     require_branch_protection: bool
     cross_repository_status: str
 
+    def authority_payload(self) -> dict[str, str | bool]:
+        return {
+            "origin_repository": self.origin_repository,
+            "repository": self.repository,
+            "default_branch": self.default_branch,
+            "required_check": self.required_check,
+            "merge_method": self.merge_method,
+            "require_branch_protection": self.require_branch_protection,
+            "cross_repository_status": self.cross_repository_status,
+        }
+
     def require_repository(
         self,
         observed: str,

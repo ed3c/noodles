@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import runtime_contract
 import skill_contract
@@ -132,6 +133,155 @@ class ScheduleContractTests(unittest.TestCase):
         self.assertEqual(receipt.origin_repository, "ed3c/noodles")
         self.assertEqual(receipt.repository, "ed3c/noodles")
         self.assertEqual(receipt.cross_repository_status, "TARGET_LOCAL_ONLY")
+        self.assertEqual(
+            receipt.authority_payload(),
+            {
+                "origin_repository": "ed3c/noodles",
+                "repository": "ed3c/noodles",
+                "default_branch": "main",
+                "required_check": "verify",
+                "merge_method": "merge",
+                "require_branch_protection": True,
+                "cross_repository_status": "TARGET_LOCAL_ONLY",
+            },
+        )
+        self.assertNotIn("root", receipt.authority_payload())
+        verified = noodles.verify_repository(CANDIDATE_ROOT, ENGINE_ROOT)
+        self.assertEqual(verified["target"], receipt.authority_payload())
+
+    def test_verify_receipt_reads_back_complete_exact_head_target_authority(self) -> None:
+        head = cmd(["git", "rev-parse", "HEAD"], CANDIDATE_ROOT)
+        event = {
+            "repository": {"full_name": "ed3c/noodles"},
+            "pull_request": {
+                "number": 14,
+                "head": {"sha": head},
+                "base": {"ref": "main"},
+                "draft": False,
+                "body": "Refs ed3c/noodles#14",
+            },
+        }
+        issue = {
+            "state": "open",
+            "body": (
+                "<!-- noodles-role: repository-mutating-atom -->\n"
+                "<!-- noodles-target: ed3c/noodles -->\n"
+                "<!-- noodles-subject: ed3c/noodles#14 -->\n"
+                "<!-- noodles-state: awaiting_land -->\n"
+                "<!-- noodles-feature: verification-skill-oracle -->\n"
+                "<!-- noodles-depends-on: ed3c/noodles#3, ed3c/noodles#4 -->\n"
+            ),
+        }
+        authority = noodles.target_local_repository(CANDIDATE_ROOT).authority_payload()
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-authority-") as temp_name:
+            event_path = Path(temp_name) / "event.json"
+            receipt_path = Path(temp_name) / "receipt.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            with mock.patch.object(noodles, "issue_read", return_value=issue), mock.patch.object(
+                noodles,
+                "verify_repository",
+                return_value={"ok": True, "errors": [], "metrics": {}, "target": authority},
+            ):
+                receipt = noodles.verify_pull_request(
+                    CANDIDATE_ROOT,
+                    event_path,
+                    CANDIDATE_ROOT,
+                    receipt_path,
+                )
+            self.assertEqual(receipt["target_authority"], authority)
+            self.assertEqual(json.loads(receipt_path.read_text())["target_authority"], authority)
+
+    def test_verify_rejects_subject_mismatch_before_issue_read_or_receipt(self) -> None:
+        head = cmd(["git", "rev-parse", "HEAD"], CANDIDATE_ROOT)
+        event = {
+            "repository": {"full_name": "ed3c/noodles"},
+            "pull_request": {
+                "number": 14,
+                "head": {"sha": head},
+                "base": {"ref": "main"},
+                "draft": False,
+                "body": "Refs ed3c/foreign#14",
+            },
+        }
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-subject-") as temp_name:
+            event_path = Path(temp_name) / "event.json"
+            receipt_path = Path(temp_name) / "receipt.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            with mock.patch.object(noodles, "issue_read") as issue_read, mock.patch.object(
+                noodles,
+                "verify_repository",
+            ) as repository_gate:
+                with self.assertRaisesRegex(noodles.GateError, "verify Issue subject repository"):
+                    noodles.verify_pull_request(
+                        CANDIDATE_ROOT,
+                        event_path,
+                        CANDIDATE_ROOT,
+                        receipt_path,
+                    )
+            issue_read.assert_not_called()
+            repository_gate.assert_not_called()
+            self.assertFalse(receipt_path.exists())
+
+    def test_handoff_rejects_subject_mismatch_before_issue_or_control_mutation(self) -> None:
+        with mock.patch.object(noodles, "issue_read") as issue_read, mock.patch.object(
+            noodles,
+            "issue_set_state",
+        ) as issue_mutation, mock.patch.object(noodles, "emit_blocking_handoff") as control_mutation:
+            with self.assertRaisesRegex(noodles.GateError, "handoff subject repository"):
+                noodles.execute_handoff(CANDIDATE_ROOT, "ed3c/foreign#14", 14, {})
+        issue_read.assert_not_called()
+        issue_mutation.assert_not_called()
+        control_mutation.assert_not_called()
+
+    def test_land_rejects_target_policy_drift_before_provider_mutation(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        authority = noodles.target_local_repository(root).authority_payload()
+        head = "a" * 40
+        event = {
+            "repository": {"full_name": "ed3c/noodles"},
+            "workflow_run": {
+                "id": 1414,
+                "name": "verify",
+                "conclusion": "success",
+                "head_sha": head,
+                "pull_requests": [{"number": 14}],
+            },
+        }
+        receipt = {
+            "repository": "ed3c/noodles",
+            "pr_number": 14,
+            "head_sha": head,
+            "target_authority": authority,
+        }
+        policy_path = root / "policy/github.json"
+        policy = json.loads(policy_path.read_text())
+        policy["required_check"] = "verify-policy-drift"
+        policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="noodles-land-authority-") as temp_name:
+            event_path = Path(temp_name) / "event.json"
+            receipt_path = Path(temp_name) / "receipt.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with mock.patch.object(noodles, "gh_api") as provider_mutation, mock.patch.object(
+                noodles.github_protection,
+                "workflow_boundary_readback",
+            ) as workflow_readback:
+                with self.assertRaisesRegex(noodles.GateError, "target_authority"):
+                    noodles.land_pull_request(root, event_path, receipt_path)
+        workflow_readback.assert_not_called()
+        merge_puts = [
+            call
+            for call in provider_mutation.call_args_list
+            if call.kwargs.get("method") == "PUT" and str(call.args[0]).endswith("/merge")
+        ]
+        issue_patches = [
+            call
+            for call in provider_mutation.call_args_list
+            if call.kwargs.get("method") == "PATCH" and "/issues/" in str(call.args[0])
+        ]
+        self.assertEqual(merge_puts, [])
+        self.assertEqual(issue_patches, [])
 
     def test_target_local_repository_receipt_rejects_policy_authority_drift(self) -> None:
         base = json.loads((CANDIDATE_ROOT / "policy/github.json").read_text())
