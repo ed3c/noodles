@@ -69,6 +69,7 @@ MARKER_PATTERNS = {
     "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
+    "normalized": re.compile(r"<!--\s*noodles-normalized:\s*([0-9a-f]{64})\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
     "head": re.compile(r"<!--\s*noodles-head:\s*([0-9a-f]{40})\s*-->", re.I),
     "merge": re.compile(r"<!--\s*noodles-merge:\s*([0-9a-f]{40})\s*-->", re.I),
@@ -1242,6 +1243,127 @@ def issue_template(repo: str, number: int, title: str) -> str:
     )
 
 
+INTAKE_BLOCKER_OWNER = "intake-normalizer"
+INTAKE_BLOCKER_PLACEHOLDER = f"<!-- noodles-blocker: {INTAKE_BLOCKER_OWNER}: contract intake normalization pending -->"
+INTAKE_DEFECTS_IN_COMMENT = "contract intake defects are named in the intake comment"
+INTAKE_CURE_LIMIT = 8
+
+
+def intake_has_marker(body: str, name: str) -> bool:
+    return bool(MARKER_PATTERNS[name].search(body or ""))
+
+
+def intake_body(header: Sequence[str], body: str) -> str:
+    return "".join(f"{line}\n" for line in header) + ("\n" if header else "") + (body or "")
+
+
+def intake_cure(reason: str, subject: Subject) -> tuple[str, bool] | None:
+    """One marker line for one exact parser diagnostic, plus whether its value is derived.
+
+    A derived value comes from provider truth or from the single supported literal; a value that
+    is only a fail-closed default is not derived, and one of those turns the whole repair into a
+    blocked normalization instead of a silent migration."""
+    if reason == "missing noodles-role marker":
+        return "<!-- noodles-role: repository-mutating-atom -->", True
+    if reason == "missing noodles-target marker":
+        return f"<!-- noodles-target: {subject.repo} -->", True
+    if reason == "missing noodles-subject marker":
+        return f"<!-- noodles-subject: {subject.value} -->", True
+    if reason == "missing noodles-state marker":
+        return "<!-- noodles-state: blocked -->", False
+    if reason.startswith("noodles-state: blocked requires"):
+        return INTAKE_BLOCKER_PLACEHOLDER, False
+    return None
+
+
+def intake_normalization(body: str, subject: Subject, title: str) -> dict[str, Any] | None:
+    """Plan the one-shot intake repair of a nonconforming issue, or None when nothing is owed.
+
+    Every cure is a marker line inserted above the original body, which is never edited: a defect
+    the exact parser still reports after curing therefore stays visible instead of being silently
+    overwritten. The receipt marker makes the repair happen exactly once."""
+    if intake_has_marker(body, "normalized"):
+        return None
+    header: list[str] = []
+    defects: list[str] = []
+    derivable = True
+    for _ in range(INTAKE_CURE_LIMIT):
+        try:
+            parse_issue_contract(intake_body(header, body), expected_subject=subject.value)
+            break
+        except GateError as exc:
+            reason = str(exc)
+            defects.append(reason)
+            cure = intake_cure(reason, subject)
+            if cure is None:
+                derivable = False
+                break
+            header.append(cure[0])
+            derivable = derivable and cure[1]
+    else:
+        raise GateError(f"intake normalization did not converge for {subject.value}: {'; '.join(defects)}")
+    if not intake_has_marker(intake_body(header, body), "depends_on"):
+        declared = issue_contract.derive_dependencies(body, subject.value)
+        if declared is None:
+            derivable = False
+        else:
+            header.append(f"<!-- noodles-depends-on: {declared} -->")
+    if not header and not defects:
+        return None
+    if not derivable:
+        reason = "; ".join(defects) or "contract intake normalization"
+        # constraint: a blocker reason carrying dependency prose is rejected by the exact contract, so
+        # constraint: the individually named defects fall back to the intake comment, never to a failed write.
+        if issue_contract.DEPENDENCY_PROSE_RE.search(reason):
+            reason = INTAKE_DEFECTS_IN_COMMENT
+        blocker = f"<!-- noodles-blocker: {INTAKE_BLOCKER_OWNER}: {reason} -->"
+        header = [blocker if line == INTAKE_BLOCKER_PLACEHOLDER else line for line in header]
+    header.append(f"<!-- noodles-normalized: {issue_contract.body_digest(body)} -->")
+    normalized = intake_body(header, body)
+    if derivable:
+        # constraint: a migration claims the issue now conforms, so prove it against the exact
+        # constraint: parser before writing instead of discovering a bad derivation at the next sync.
+        parse_issue_contract(normalized, expected_subject=subject.value)
+    return {"body": normalized, "comment": "" if derivable else intake_comment(subject, title, defects)}
+
+
+def intake_comment(subject: Subject, title: str, defects: Sequence[str]) -> str:
+    """Name each defect and carry the canonical template; never author Goal or acceptance prose."""
+    named = "\n".join(f"- {item}" for item in defects) or "- contract intake normalization"
+    return (
+        "Intake normalization: this issue did not satisfy the noodles Issue contract, so "
+        "`noodles adapter sync` inserted the mechanically derivable markers above the original "
+        "body and left the original body byte-intact. It is blocked until a human or atom repairs "
+        "the named defects and sets it back to `ready`.\n\n"
+        f"Named contract defects:\n\n{named}\n\n"
+        "Canonical shape:\n\n"
+        "```markdown\n"
+        f"{issue_template(subject.repo, subject.number, title)}"
+        "```\n"
+    )
+
+
+def intake_normalize(issue: dict[str, Any], repository: str) -> dict[str, Any]:
+    """Apply the intake repair to one open issue and read the write back; conforming issues are untouched."""
+    subject = Subject(repository, int(issue.get("number") or 0))
+    body = issue.get("body") or ""
+    plan = intake_normalization(body, subject, str(issue.get("title") or subject.value))
+    if plan is None:
+        return issue
+    updated = gh_api(
+        f"repos/{repository}/issues/{subject.number}", method="PATCH", payload={"body": plan["body"]}
+    )
+    if not isinstance(updated, dict) or (updated.get("body") or "") != plan["body"]:
+        raise GateError(f"intake normalization body readback failed for {subject.value}")
+    if plan["comment"]:
+        gh_api(
+            f"repos/{repository}/issues/{subject.number}/comments",
+            method="POST",
+            payload={"body": plan["comment"]},
+        )
+    return {**issue, "body": plan["body"]}
+
+
 def adapter_sync() -> int:
     repositories = [item.strip() for item in os.getenv("NOODLES_REPOSITORIES", "").split(",") if item.strip()]
     if not repositories:
@@ -1254,6 +1376,7 @@ def adapter_sync() -> int:
             if "pull_request" in issue:
                 continue
             try:
+                issue = intake_normalize(issue, repository)
                 contract = issue_contract_payload(issue, None, dependency_cache)
             except GateError as exc:
                 number = issue.get("number")

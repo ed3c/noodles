@@ -10,8 +10,38 @@ from typing import Any
 SUBJECT_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
 SECTION_RE = re.compile(r"(?m)^##[ \t]+(?P<heading>\S[^\n]*?)[ \t]*$")
 DEPENDENCY_PROSE_RE = re.compile(r"(?i)depend|predecessor|blocked by|waiting|#[0-9]")
+DEPENDENCY_DECLARATION_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**(?:depends[ \t]+on|blocked[ \t]+by|predecessors?)\**[ \t]*:?[ \t]*(?P<targets>[^\n]*)$"
+)
+ISSUE_REFERENCE_RE = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[1-9][0-9]*)")
+NO_DEPENDENCY_WORDS = {"", "-", "n/a", "none", "nothing"}
 NO_DEPENDENCIES = "none"
 REQUIRED_SECTIONS = ("goal", "physical_acceptance", "non_claims")
+
+
+def derive_dependencies(body: str, subject: str) -> str | None:
+    """Derive the typed marker value an author never declared, or None when it is not mechanical.
+
+    Only explicit declaration lines are converted, and a body carrying no declaration line at all
+    derives NO_DEPENDENCIES. Anything ambiguous stays a named defect for a human, so a tightening
+    that newly requires the marker migrates the derivable backlog instead of stranding it."""
+    repo = subject.partition("#")[0]
+    derived: list[str] = []
+    for match in DEPENDENCY_DECLARATION_RE.finditer(body or ""):
+        declaration = match.group("targets").strip()
+        if declaration.lower().rstrip(".").strip() in NO_DEPENDENCY_WORDS:
+            continue
+        references = list(ISSUE_REFERENCE_RE.finditer(declaration))
+        if not references:
+            return None
+        for reference in references:
+            owner = reference.group("repo") or repo
+            token = f"{owner}#{reference.group('number')}"
+            if owner != repo or token == subject:
+                return None
+            if token not in derived:
+                derived.append(token)
+    return ", ".join(derived) if derived else NO_DEPENDENCIES
 
 
 def parse_dependencies(raw: str | None, subject: str, *, error_cls: type[Exception]) -> tuple[str, ...]:

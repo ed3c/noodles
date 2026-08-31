@@ -243,6 +243,14 @@ The L admission boundary is the trusted fixture gate in `tests/test_issue_contra
 
 No live-provider scan is required at this boundary; the fixtures represent durable backlog shapes rather than current provider state. Runtime automatic migration remains owned by `ed3c/noodles#157`, and scheduler no-op or memoization behavior for unchanged backlogs remains owned by `ed3c/noodles#85`.
 
+### ISSUE_CONTRACT.INTAKE_NORMALIZATION.001
+
+A nonconforming open Issue MUST be cured mechanically at intake, never left as silent recurring noise that every sync re-fails and every scheduler pass skips without telling anyone. The backlog adapter is that admission boundary: on sync it repairs each nonconforming open Issue exactly once, recorded by one `<!-- noodles-normalized: <body-sha256> -->` receipt marker that makes a second sync a zero-write no-op, and a conforming Issue is never written at all.
+
+Repair inserts marker lines above the original body and never edits it, so the authored bytes stay intact and a defect the exact parser still reports stays visible instead of being overwritten. A defect whose value is derivable — the single supported role literal, the target and subject the provider already knows, an absent `noodles-depends-on` the body's own explicit declaration lines resolve — is converted, and the Issue continues as `ready`; the normalizer never fabricates Goal, acceptance, or Non-claims prose to manufacture conformance. A defect that is not derivable makes the repair a blocked normalization: `blocked` plus one `intake-normalizer` blocker naming each exact defect, and one comment naming them again and carrying the canonical template. When the authored state marker already exists, the Issue is not rewritten to `blocked`; the adapter's own fail-closed status for a still-unparseable contract keeps it out of admission.
+
+The conventional creation path carries the same shape by default: `.github/ISSUE_TEMPLATE/repository-mutating-atom.md` emits every marker except the provider-owned subject, which intake derives. Admission boundary: the intake normalizer gate in `tests/test_issue_contract.py` over the exact candidate `noodles.adapter_sync` — planted conforming, idempotent-resync, byte-preservation, derivable-migration, and non-derivable-blocked controls, plus the template read from disk. Admission rules themselves are unchanged: normalization only makes an Issue's real shape visible to the existing scheduler.
+
 ### REQUIREMENT.PROJECTION.001
 
 LANDED/PARTIAL/HOLD or similar implementation status is derived provider state, not specification truth. Any future `requirements status` view must reconstruct status from this specification plus exact provider Issue/PR/merge/closure facts and must not create a second mutable source of truth.

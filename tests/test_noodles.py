@@ -553,26 +553,37 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertNotIn("noodles-feature", body)
         self.assertEqual(noodles.parse_issue_contract(body, "ed3c/noodles#120")["feature"], "")
 
-    def test_adapter_sync_keeps_marker_free_and_invalid_issues_visible(self) -> None:
+    def test_adapter_sync_keeps_marker_free_and_uncurable_issues_visible(self) -> None:
         marker_free = noodles.issue_template("ed3c/noodles", 120, "Baseline atom")
         unknown = marker_free.replace(
             "<!-- noodles-depends-on: none -->",
             "<!-- noodles-feature: future-specialized-oracle -->\n<!-- noodles-depends-on: none -->",
         ).replace("#120", "#121")
-        invalid = marker_free.replace("<!-- noodles-subject: ed3c/noodles#120 -->\n", "").replace("#120", "#122")
+        invalid = marker_free.replace("#120", "#122").replace(
+            "<!-- noodles-subject: ed3c/noodles#122 -->\n",
+            "<!-- noodles-subject: ed3c/noodles#122 -->\n<!-- noodles-subject: ed3c/noodles#122 -->\n",
+        )
         issues = [
-            {"number": 120, "title": "Baseline atom", "body": marker_free, "html_url": "https://example/120"},
-            {"number": 121, "title": "Future oracle", "body": unknown, "html_url": "https://example/121"},
-            {"number": 122, "title": "Broken atom", "body": invalid, "html_url": "https://example/122"},
+            {"number": 120, "state": "open", "title": "Baseline atom", "body": marker_free, "html_url": "https://example/120"},
+            {"number": 121, "state": "open", "title": "Future oracle", "body": unknown, "html_url": "https://example/121"},
+            {"number": 122, "state": "open", "title": "Broken atom", "body": invalid, "html_url": "https://example/122"},
         ]
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
+            if method == "GET":
+                return issues
+            if method == "PATCH":
+                return {"number": 122, "state": "open", "body": payload["body"]}
+            return {"id": 1}
+
         stdout = io.StringIO()
         with mock.patch.dict(os.environ, {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
-             mock.patch.object(noodles, "gh_api", return_value=issues), \
+             mock.patch.object(noodles, "gh_api", side_effect=fake), \
              mock.patch("sys.stdout", stdout):
             self.assertEqual(noodles.adapter_sync(), 0)
         readback = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual([item["status"] for item in readback], ["ready", "ready", "blocked"])
-        self.assertIn("missing noodles-subject marker", readback[2]["diagnostic"])
+        self.assertIn("expected one noodles-subject marker, found 2", readback[2]["diagnostic"])
 
     def test_acceptance_enforcement_hierarchy_has_no_issue_number_bypass(self) -> None:
         agents = (CANDIDATE_ROOT / "AGENTS.md").read_text()
