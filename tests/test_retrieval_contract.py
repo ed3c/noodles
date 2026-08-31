@@ -248,6 +248,41 @@ class RetrievalProbeTests(unittest.TestCase):
         self.assertIn("mutated the candidate tree", str(raised.exception))
         self.assertIn(".grepai-planted-residue", str(raised.exception))
 
+    def test_residue_check_catches_an_index_directory_planted_in_the_candidate_tree(self) -> None:
+        root = self.candidate_copy()
+        positive, nonsense = self.queries(root)
+        payload = {
+            positive: json.dumps([candidate_json("noodles.py", 1, 4, 0.4)]),
+            nonsense: json.dumps([candidate_json("README.md", 1, 2, 0.3)]),
+        }
+
+        def indexing_search(query: str) -> str:
+            index = root / retrieval_contract.INDEX_DIRNAME / retrieval_contract.INDEX_FILENAME
+            index.parent.mkdir(exist_ok=True)
+            index.write_bytes(b"gob")
+            return payload[query]
+
+        with self.assertRaises(noodles.GateError) as raised:
+            retrieval_contract.probe_retrieval(root, indexing_search, error_cls=noodles.GateError)
+        self.assertIn(retrieval_contract.INDEX_DIRNAME, str(raised.exception))
+
+    def test_gitignore_rewrite_by_the_tool_is_caught_as_residue(self) -> None:
+        root = self.candidate_copy()
+        positive, nonsense = self.queries(root)
+        payload = {
+            positive: json.dumps([candidate_json("noodles.py", 1, 4, 0.4)]),
+            nonsense: json.dumps([candidate_json("README.md", 1, 2, 0.3)]),
+        }
+
+        def appending_search(query: str) -> str:
+            with (root / ".gitignore").open("a", encoding="utf-8") as handle:
+                handle.write(".grepai/\n")
+            return payload[query]
+
+        with self.assertRaises(noodles.GateError) as raised:
+            retrieval_contract.probe_retrieval(root, appending_search, error_cls=noodles.GateError)
+        self.assertIn("mutated the candidate tree", str(raised.exception))
+
 
 class RetrievalIndexAdmissionTests(unittest.TestCase):
     """`grepai init` writes `.grepai/` and appends to `.gitignore`, so the index must live outside the
