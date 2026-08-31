@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+# constraint: adapter gh calls share the repository-owned pacing budget in .agents/bin/gh.
+CARRIER_BIN = str(ROOT / ".agents" / "bin")
+os.environ["PATH"] = os.pathsep.join(entry for entry in (CARRIER_BIN, os.environ.get("PATH", "")) if entry)
 
 import noodles  # noqa: E402
 

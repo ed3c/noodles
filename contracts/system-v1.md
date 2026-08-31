@@ -249,6 +249,12 @@ The default delivery topology is one repository-mutating atom → one PR to the 
 
 After every trusted land, the trusted lander MUST run the landing train: select the oldest open awaiting_land PR whose branch is behind the default branch, perform a mechanical rebase only (git's textual replay; any conflict aborts the rebase and marks the PR with a fail-back diagnostic naming the conflicting paths — content is never auto-resolved), and force-push with a lease on the observed head so trusted verification re-runs on the new exact head without any manual event. The rebased head is a new head and earns its own exact-head receipt; the train grants no verification or landing authority. Admission boundary: the `Landing train mechanical rebase` step in `.github/workflows/land.yml`, held in place by the trusted workflow boundary readback — `./noodles verify` fails closed when the train step, its scoped Contents-write push token, or the token's confinement to that step drifts or disappears.
 
+### PROVIDER.CALL_PACING.001
+
+Provider burst tolerance is a structural property of the repository, never a probabilistic participant's discipline. Every `gh` invocation from a cook environment or a repository adapter MUST resolve through the tracked `.agents/bin/gh` carrier, which serializes concurrent callers on one state file under `flock` and holds a minimum inter-call gap before each attempt; argv, stdin, stdout, stderr, and exit code pass through unchanged. A secondary-limit `403` carrying `Retry-After` MAY be retried exactly once and only for a read-only request; every mutation and every unclassifiable shape fails closed to its caller, which owns idempotency context. Admission boundary: `tests/test_gh_pacing.py` over the tracked carrier - a planted PATH-ordering probe through `.agents/bin/codex`, byte-faithful argv/stdin/stdout/exit passthrough, a planted concurrent burst measured against a zero-gap control, and planted read/mutation `Retry-After` controls driving a fake `gh`.
+
+Pacing reduces but cannot eliminate secondary limiting, because other consumers share the same installation and user buckets; fail-closed handling of a residual `403` is unchanged.
+
 ## 14. Non-claims and placement rules
 
 - Passing baseline tests does not prove undeclared product/runtime behavior.

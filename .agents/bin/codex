@@ -141,11 +141,14 @@ def main() -> int:
     env = os.environ.copy()
     env["HOME"] = str(isolated_home)
     env["CODEX_HOME"] = str(isolated_codex_home)
+    # constraint: the carrier directory leads the cook PATH so every in-cook gh resolves the paced .agents/bin/gh shim.
+    env["PATH"] = os.pathsep.join(entry for entry in (str(self_path.parent), env.get("PATH", "")) if entry)
     trace_target = env.get("NOODLES_CODEX_TRACE_FILE", "").strip()
     if trace_target:
         write_trace(
             Path(trace_target),
             {
+                "child_path": env["PATH"],
                 "cwd": os.getcwd(),
                 "forwarded_argv": forwarded,
                 "incoming_argv": incoming_argv,

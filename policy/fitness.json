@@ -27,6 +27,7 @@
   ],
   "required_paths": [
     ".agents/bin/codex",
+    ".agents/bin/gh",
     ".agents/skills/execute/SKILL.md",
     ".agents/skills/schedule/SKILL.md",
     ".github/workflows/land.yml",
@@ -54,7 +55,8 @@
     "noodles",
     "noodles.py",
     ".noodle/adapters/github",
-    "tests/run.sh"
+    "tests/run.sh",
+    ".agents/bin/gh"
   ],
   "forbidden_path_names": [
     "__pycache__",
