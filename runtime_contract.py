@@ -13,6 +13,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from issue_contract import SUBJECT_RE
 from provider_contract import (
     CONTROL_NOODLE_DESTINATION,
     CONTROL_NOODLE_DISCOVERY_ROOT,
@@ -1149,3 +1150,259 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
     }
     write_json(root / ".noodle/receipts/runtime/skills.json", {**receipt, "observed_at": int(time.time())})
     return receipt
+
+
+# constraint: input and output schemas are declared separately - a future bundle/manifest shape
+# constraint: change bumps SKILL_EVAL_OUTPUT_SCHEMA without forcing every caller-authored lane index
+# constraint: (checked against SKILL_EVAL_LANE_INDEX_SCHEMA) to be rewritten, and vice versa.
+SKILL_EVAL_LANE_INDEX_SCHEMA = 1
+SKILL_EVAL_OUTPUT_SCHEMA = 1
+SKILL_EVAL_MANIFEST_NAME = "skill-eval-sweep-manifest.json"
+SKILL_EVAL_LANDED_OUTCOME = "landed"
+SKILL_EVAL_LANE_TEXT_FIELDS = ("subject", "outcome", "completed_at", "verify_receipt", "merge_receipt")
+# constraint: the packaged-byte secret gate. Only the three GitHub credential families this atom
+# constraint: declares, each with a body floor so the bare word "ghp_" in a transcript is not a FATAL.
+SKILL_EVAL_SECRET_RE = re.compile(rb"(ghs_|ghp_|github_pat_)[A-Za-z0-9_]{16,}")
+
+
+def _skill_eval_text(value: Any, *, field: str, where: str, error_cls: type[Exception]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise error_cls(f"skill-eval lane index {where}: {field} must be one non-empty string")
+    return value
+
+
+def _skill_eval_digest(value: Any, *, field: str, where: str, error_cls: type[Exception]) -> str:
+    text = _skill_eval_text(value, field=field, where=where, error_cls=error_cls)
+    if not HEX64_RE.fullmatch(text):
+        raise error_cls(f"skill-eval lane index {where}: {field} must be one sha256 digest, got {text!r}")
+    return text
+
+
+def _skill_eval_archive_reference(entry: Any, where: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise error_cls(f"skill-eval lane index {where}: each archive reference must be one object")
+    size = entry.get("bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise error_cls(f"skill-eval lane index {where}: bytes must be one non-negative integer, got {size!r}")
+    return {
+        "path": _skill_eval_text(entry.get("path"), field="path", where=where, error_cls=error_cls),
+        "sha256": _skill_eval_digest(entry.get("sha256"), field="sha256", where=where, error_cls=error_cls),
+        "bytes": size,
+    }
+
+
+def _skill_eval_lane(raw: Any, position: int, *, error_cls: type[Exception]) -> dict[str, Any]:
+    where = f"lane[{position}]"
+    if not isinstance(raw, dict):
+        raise error_cls(f"skill-eval lane index {where}: each lane must be one object")
+    lane = {
+        field: _skill_eval_text(raw.get(field), field=field, where=where, error_cls=error_cls)
+        for field in SKILL_EVAL_LANE_TEXT_FIELDS
+    }
+    if not SUBJECT_RE.fullmatch(lane["subject"]):
+        raise error_cls(f"skill-eval lane index {where}: subject {lane['subject']!r} is not one exact owner/repo#N subject")
+    pr = raw.get("pr")
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr <= 0:
+        raise error_cls(f"skill-eval lane index {where}: pr must be one positive integer, got {pr!r}")
+    skills = raw.get("skills")
+    if not isinstance(skills, dict) or not skills:
+        raise error_cls(f"skill-eval lane index {where}: skills must be one non-empty executing-skill digest map")
+    archives = raw.get("archives")
+    if not isinstance(archives, list) or not archives:
+        raise error_cls(f"skill-eval lane index {where}: archives must be one non-empty list of session-archive references")
+    return {
+        **lane,
+        "pr": pr,
+        "skills": {
+            str(name): _skill_eval_digest(digest, field=f"skills[{name}]", where=where, error_cls=error_cls)
+            for name, digest in sorted(skills.items())
+        },
+        "archives": sorted(
+            (
+                _skill_eval_archive_reference(entry, f"{where}.archives[{index}]", error_cls=error_cls)
+                for index, entry in enumerate(archives)
+            ),
+            key=lambda item: item["path"],
+        ),
+    }
+
+
+def _skill_eval_lane_index(path: Path, *, error_cls: type[Exception]) -> list[dict[str, Any]]:
+    payload = load_json(path, error_cls=error_cls)
+    if not isinstance(payload, dict) or payload.get("schema_version") != SKILL_EVAL_LANE_INDEX_SCHEMA:
+        raise error_cls(f"skill-eval lane index {path} must declare schema_version {SKILL_EVAL_LANE_INDEX_SCHEMA}")
+    raw_lanes = payload.get("lanes")
+    if not isinstance(raw_lanes, list) or not raw_lanes:
+        raise error_cls(f"skill-eval lane index {path} carries no lanes")
+    lanes = [_skill_eval_lane(raw, position, error_cls=error_cls) for position, raw in enumerate(raw_lanes)]
+    seen: set[str] = set()
+    for lane in lanes:
+        if lane["subject"] in seen:
+            raise error_cls(f"skill-eval lane index {path} repeats subject {lane['subject']}")
+        seen.add(lane["subject"])
+    return sorted(lanes, key=lambda lane: lane["subject"])
+
+
+def _skill_eval_selection(
+    lanes: Sequence[dict[str, Any]],
+    sample: Sequence[str],
+    since: str,
+    until: str,
+    *,
+    error_cls: type[Exception],
+) -> list[tuple[dict[str, Any], list[str]]]:
+    """Deterministic selection from the caller's explicit inputs only.
+
+    The window bounds and the sample list are caller arguments; nothing here reads a clock, a random
+    source, or live repository state, so the same index plus the same arguments always selects the
+    same lanes in the same order. A sample subject the window does not carry is a caller
+    contradiction and fails closed instead of silently shrinking the sweep."""
+    window = [
+        lane
+        for lane in lanes
+        if (not since or lane["completed_at"] >= since) and (not until or lane["completed_at"] <= until)
+    ]
+    requested = sorted({subject for subject in sample if subject.strip()})
+    available = {lane["subject"] for lane in window}
+    absent = [subject for subject in requested if subject not in available]
+    if absent:
+        raise error_cls(
+            f"skill-eval sample subjects absent from the caller's window {since or '-'}..{until or '-'}: {', '.join(absent)}"
+        )
+    selected: list[tuple[dict[str, Any], list[str]]] = []
+    for lane in window:
+        reasons = []
+        if lane["outcome"] != SKILL_EVAL_LANDED_OUTCOME:
+            reasons.append(f"outcome:{lane['outcome']}")
+        if lane["subject"] in requested:
+            reasons.append("sample")
+        if reasons:
+            selected.append((lane, reasons))
+    if not selected:
+        raise error_cls("skill-eval sweep selected no lane; an empty selection is never a successful sweep")
+    return selected
+
+
+def _skill_eval_secret_scan(label: str, payload: bytes, *, error_cls: type[Exception]) -> None:
+    # constraint: report the credential family and the byte offset, never the matched bytes - a
+    # constraint: diagnostic echoing the token would re-leak it into the trail this gate protects.
+    match = SKILL_EVAL_SECRET_RE.search(payload)
+    if match:
+        raise error_cls(
+            f"skill-eval secret scan rejected {label}: {match.group(1).decode('ascii')} token pattern at byte offset {match.start()}"
+        )
+
+
+def _skill_eval_archive_bytes(
+    archive_root: Path, subject: str, archive: dict[str, Any], *, error_cls: type[Exception]
+) -> bytes:
+    relative = Path(archive["path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise error_cls(f"skill-eval archive reference for {subject} escapes the archive root: {archive['path']}")
+    resolved = archive_root / relative
+    if not resolved.is_file():
+        raise error_cls(
+            f"skill-eval archive missing for {subject}: {archive['path']} is not a file under {archive_root}"
+        )
+    data = resolved.read_bytes()
+    if len(data) < archive["bytes"]:
+        raise error_cls(
+            f"skill-eval archive truncated for {subject}: {archive['path']} declares {archive['bytes']} bytes, read {len(data)}"
+        )
+    observed = hashlib.sha256(data).hexdigest()
+    if observed != archive["sha256"]:
+        raise error_cls(
+            f"skill-eval archive digest mismatch for {subject}: {archive['path']} declares {archive['sha256']}, read {observed}"
+        )
+    _skill_eval_secret_scan(f"archive {archive['path']} of {subject}", data, error_cls=error_cls)
+    return data
+
+
+def sweep_skill_eval(
+    index_path: Path,
+    archive_root: Path,
+    out_dir: Path,
+    *,
+    sample: Sequence[str] = (),
+    since: str = "",
+    until: str = "",
+    error_cls: type[Exception],
+) -> dict[str, Any]:
+    """Package one evidence bundle per selected lane and emit the sweep manifest.
+
+    Custody only. Every session-archive reference is re-verified by digest against the bytes on disk
+    at package time and every packaged byte is token-scanned, so a missing, truncated, or tampered
+    archive and a leaked credential each become a FATAL instead of a quietly thinner bundle. No
+    verdict is produced: the behavioral judge that reads this output is agent-side and N-class, and
+    no scheduling, verification, or landing path reads anything written here."""
+    # constraint: resolve before anything derives from it - the manifest's archive_root field is
+    # constraint: packaged evidence, so two callers pointing at the same directory through a
+    # constraint: different spelling (relative, trailing slash, `.` segment) must not fork the digest.
+    archive_root = archive_root.resolve()
+    if not archive_root.is_dir():
+        raise error_cls(f"skill-eval archive root is not a directory: {archive_root}")
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise error_cls(f"skill-eval sweep output directory is not empty: {out_dir}")
+    lanes = _skill_eval_lane_index(index_path, error_cls=error_cls)
+    packaged: list[tuple[Path, bytes, dict[str, Any]]] = []
+    for lane, reasons in _skill_eval_selection(lanes, sample, since, until, error_cls=error_cls):
+        repository, _, number = lane["subject"].partition("#")
+        bundle_name = f"{repository.replace('/', '-')}-{number}.json"
+        for archive in lane["archives"]:
+            _skill_eval_archive_bytes(archive_root, lane["subject"], archive, error_cls=error_cls)
+        payload = (
+            json.dumps(
+                {
+                    "schema_version": SKILL_EVAL_OUTPUT_SCHEMA,
+                    "subject": lane["subject"],
+                    "pr": lane["pr"],
+                    "outcome": lane["outcome"],
+                    "completed_at": lane["completed_at"],
+                    "selected_by": reasons,
+                    "verify_receipt": lane["verify_receipt"],
+                    "merge_receipt": lane["merge_receipt"],
+                    "skill_digests": lane["skills"],
+                    "archives": lane["archives"],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        _skill_eval_secret_scan(f"bundle {bundle_name}", payload, error_cls=error_cls)
+        packaged.append((
+            out_dir / bundle_name,
+            payload,
+            {
+                "subject": lane["subject"],
+                "pr": lane["pr"],
+                "selected_by": reasons,
+                "verify_receipt": lane["verify_receipt"],
+                "merge_receipt": lane["merge_receipt"],
+                "skill_digests": lane["skills"],
+                "archive_sha256": [archive["sha256"] for archive in lane["archives"]],
+                "bundle_path": bundle_name,
+                "bundle_sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        ))
+    manifest = {
+        "schema_version": SKILL_EVAL_OUTPUT_SCHEMA,
+        "lane_index_sha256": sha256_file(index_path),
+        "archive_root": str(archive_root),
+        "selection": {
+            "sample": sorted({subject for subject in sample if subject.strip()}),
+            "since": since,
+            "until": until,
+        },
+        "lane_count": len(packaged),
+        "lanes": [entry for _path, _payload, entry in packaged],
+    }
+    manifest_payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _skill_eval_secret_scan(SKILL_EVAL_MANIFEST_NAME, manifest_payload, error_cls=error_cls)
+    # constraint: nothing reaches the filesystem until every selected lane has passed digest
+    # constraint: re-verification and the token scan, so a FATAL sweep leaves no half-written bundle.
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for path, payload, _entry in packaged:
+        path.write_bytes(payload)
+    (out_dir / SKILL_EVAL_MANIFEST_NAME).write_bytes(manifest_payload)
+    return manifest
