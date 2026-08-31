@@ -38,6 +38,19 @@ jobs:
           NOODLES_OFFLINE_TESTS: '1'
         run: tests/run.sh
 
+      - name: Run candidate self-tests with a differing candidate root
+        working-directory: .candidate
+        env:
+          NOODLES_OFFLINE_TESTS: '1'
+          # A copy of the candidate as data makes candidate != engine without
+          # importing any trusted bytes, so a trusted assertion coupled to the
+          # candidate root that the candidate's own production does not honor
+          # reds here, in the candidate's own self-tests, before merge.
+          NOODLES_CANDIDATE_ROOT: ${{ github.workspace }}/.candidate-copy
+        run: |
+          cp -a "$GITHUB_WORKSPACE/.candidate" "$GITHUB_WORKSPACE/.candidate-copy"
+          python3 -m unittest discover -s tests -v
+
   verify:
     needs: candidate-self-tests
     permissions:
