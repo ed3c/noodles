@@ -452,5 +452,121 @@ class ScheduleContractTests(unittest.TestCase):
                     self.assertFalse(local["accepted"], f"{label}: local gate unexpectedly accepted a bypass")
 
 
+class ConcurrencyProofLockTests(unittest.TestCase):
+    """ed3c/noodles#100 - declared concurrency is admitted by evidence, never by the number.
+
+    The invariant this gate exists to enforce is: a repository that declares `max_concurrency > 1`
+    carries a lock naming, per N-independent invariant, the landed subject, its provider receipt, and
+    the planted-negative controls that keep the invariant alive in the tracked suite. It deliberately
+    does not bound the number: bounding it would be the numeric stop-loss the Chef decision refused."""
+
+    PROOF = skill_contract.CONCURRENCY_PROOF_PATH
+
+    def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-concurrency-proof-")
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        return temp, root
+
+    def commit(self, root: Path) -> None:
+        cmd(["git", "add", "-A"], root)
+        cmd(["git", "commit", "-q", "-m", "planted"], root)
+
+    def set_concurrency(self, root: Path, value: int) -> None:
+        path = root / ".noodle.toml"
+        text = path.read_text(encoding="utf-8")
+        replaced = text.replace("max_concurrency = 4", f"max_concurrency = {value}", 1)
+        self.assertNotEqual(replaced, text, "fixture drift: .noodle.toml no longer declares max_concurrency = 4")
+        path.write_text(replaced, encoding="utf-8")
+
+    def proof_errors(self, root: Path) -> list[str]:
+        return [item for item in noodles.verify_repository(root, CANDIDATE_ROOT)["errors"] if self.PROOF in item]
+
+    def declared_concurrency(self, root: Path) -> int:
+        import tomllib
+
+        return int(tomllib.loads((root / ".noodle.toml").read_text(encoding="utf-8"))["concurrency"]["max_concurrency"])
+
+    def test_shipped_lock_admits_the_declared_concurrency_and_names_only_real_controls(self) -> None:
+        # constraint: the positive is only meaningful while the repository actually declares more than
+        # constraint: one lane; at max_concurrency = 1 the gate returns early and proves nothing.
+        self.assertGreater(self.declared_concurrency(CANDIDATE_ROOT), 1)
+        config = json.loads(json.dumps({"concurrency": {"max_concurrency": self.declared_concurrency(CANDIDATE_ROOT)}}))
+        self.assertEqual(skill_contract.validate_concurrency_proof(CANDIDATE_ROOT, config), [])
+        lock = json.loads((CANDIDATE_ROOT / self.PROOF).read_text(encoding="utf-8"))
+        residuals = " ".join(lock["known_residuals"])
+        self.assertIn("primary checkout", residuals)
+        self.assertIn("outside the admitted entrypoints", residuals)
+        named = [item for entry in lock["invariants"] for item in entry["planted_negatives"]]
+        self.assertTrue(named)
+        for identifier in named:
+            self.assertTrue(skill_contract.tracked_test_exists(CANDIDATE_ROOT, identifier), identifier)
+
+    def test_a_control_inherited_from_a_same_file_fixture_base_still_resolves(self) -> None:
+        # constraint: ed3c/noodles#100 - this repo already shares fixtures by inheritance
+        # constraint: (tests/test_supervised_ceremony.py's ControlCheckoutFixture); resolution must
+        # constraint: not read a control as absent just because it lives on a base class rather than
+        # constraint: being redeclared on the named subclass.
+        temp, root = self.mutated_copy()
+        with temp:
+            fixture = root / "tests" / "test_inherited_control_fixture.py"
+            fixture.write_text(
+                "import unittest\n\n"
+                "class BaseFixture(unittest.TestCase):\n"
+                "    def test_defined_only_on_the_base(self) -> None:\n"
+                "        pass\n\n"
+                "class SubclassTests(BaseFixture):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                skill_contract.tracked_test_exists(
+                    root, "tests.test_inherited_control_fixture.SubclassTests.test_defined_only_on_the_base"
+                )
+            )
+            self.assertFalse(
+                skill_contract.tracked_test_exists(
+                    root, "tests.test_inherited_control_fixture.SubclassTests.test_never_declared_anywhere"
+                )
+            )
+
+    def test_planted_negative_missing_lock_with_declared_concurrency_fails_verify(self) -> None:
+        temp, root = self.mutated_copy()
+        with temp:
+            cmd(["git", "rm", "-q", self.PROOF], root)
+            self.commit(root)
+            errors = self.proof_errors(root)
+            self.assertTrue(any("is absent" in item for item in errors), errors)
+
+    def test_planted_negative_lock_naming_a_nonexistent_control_fails_verify(self) -> None:
+        temp, root = self.mutated_copy()
+        with temp:
+            path = root / self.PROOF
+            lock = json.loads(path.read_text(encoding="utf-8"))
+            lock["invariants"][0]["planted_negatives"][0] = "tests.test_noodles.DaemonLeaseTests.test_planted_never_written"
+            path.write_text(json.dumps(lock), encoding="utf-8")
+            self.commit(root)
+            errors = self.proof_errors(root)
+            self.assertTrue(any("absent from the tracked suite" in item for item in errors), errors)
+
+    def test_single_lane_with_no_lock_passes(self) -> None:
+        temp, root = self.mutated_copy()
+        with temp:
+            self.set_concurrency(root, 1)
+            cmd(["git", "rm", "-q", self.PROOF], root)
+            self.commit(root)
+            self.assertEqual(self.proof_errors(root), [])
+
+    def test_the_declared_number_is_never_bounded_above(self) -> None:
+        # constraint: ed3c/noodles#100 - the evidence ceiling replaces the numeric stop-loss, so an
+        # constraint: absurd N passes exactly as four does while the lock stands. A future numeric cap
+        # constraint: smuggled into this gate turns this control red.
+        temp, root = self.mutated_copy()
+        with temp:
+            self.set_concurrency(root, 4096)
+            self.commit(root)
+            self.assertEqual(self.proof_errors(root), [])
+
+
 if __name__ == "__main__":
     unittest.main()
