@@ -71,6 +71,7 @@ MARKER_PATTERNS = {
     "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
     "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
+    "write_boundary": re.compile(r"<!--\s*noodles-write-boundary:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
     "normalized": re.compile(r"<!--\s*noodles-normalized:\s*([0-9a-f]{64})\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
@@ -214,6 +215,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         raise GateError(f"{offending.group(1).lower()} field must cite a machine artifact, not N-class prose: {offending.group(2)}")
     declared = one_marker(body, "depends_on", required=False)
     dependencies = None if declared is None else list(issue_contract.parse_dependencies(declared, subject.value, error_cls=GateError))
+    write_boundary = issue_contract.parse_write_boundary(one_marker(body, "write_boundary", required=False))
     blocker = issue_contract.parse_blocker(one_marker(body, "blocker", required=False), state_value or "", error_cls=GateError)
     return {
         "role": role,
@@ -223,6 +225,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "feature": feature_value or "",
         "component": component_value or "",
         "dependencies": dependencies,
+        "write_boundary": write_boundary,
         "blocker": blocker,
     }
 
@@ -741,6 +744,7 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
         "url": issue.get("html_url"),
         "body_sha256": issue_contract.body_digest(body),
         "dependencies": contract["dependencies"],
+        "write_boundary": contract["write_boundary"],
         "dependency_states": observed,
         "blocker": contract["blocker"],
         "goal": body_sections.get("goal", ""),
@@ -2313,6 +2317,7 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
                 p0=bool(P0_TITLE_RE.match(str(issue.get("title") or ""))),
                 schedulable=bool(contract["schedulable"]),
                 claimed=subject_value in claimed_subjects,
+                write_boundary=contract["write_boundary"],
             )
         )
     malformed_claims = claimed_subjects.intersection(open_subjects) - emitted_subjects
@@ -2363,6 +2368,23 @@ def schedule_claim_outcome(subject: str, status: str, **extra: Any) -> dict[str,
     return {"subject": subject, "status": status, "meaning": meaning, **extra}
 
 
+def boundary_admission_conflict(
+    candidate: tuple[str, ...],
+    reserved: Sequence[tuple[str, tuple[str, ...] | None]],
+) -> tuple[str, str] | None:
+    # constraint: ed3c/noodles#98 - return the first reserved lane the candidate
+    # constraint: intersects, as (subject, intersecting-prefix); a reserved lane
+    # constraint: whose own boundary is undeclared (None) could write anywhere and
+    # constraint: blocks the candidate closed, named by NO_WRITE_BOUNDARY.
+    for reserved_subject, reserved_boundary in reserved:
+        if reserved_boundary is None:
+            return (reserved_subject, issue_contract.NO_WRITE_BOUNDARY)
+        prefix = issue_contract.boundary_conflict(candidate, reserved_boundary)
+        if prefix is not None:
+            return (reserved_subject, prefix)
+    return None
+
+
 def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     root = root.resolve()
     candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
@@ -2390,6 +2412,14 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     issues = tuple(issue for repository in repositories for issue in schedule_snapshot(repository))
     decision = schedule_domain.schedule_decision(issues)
     initial_winners = set(decision.winners)
+    # constraint: ed3c/noodles#98 - I3 disjoint admitted mutation boundaries: an
+    # constraint: active lane's declared write surface is reserved so an overlapping
+    # constraint: candidate cannot also be admitted; boundaries are repository-scoped
+    # constraint: because paths only collide within one repository.
+    reserved_boundaries: dict[str, list[tuple[str, tuple[str, ...] | None]]] = {}
+    for issue in issues:
+        if issue.claimed:
+            reserved_boundaries.setdefault(issue.repository, []).append((issue.subject, issue.write_boundary))
     claimed_orders: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     default_branch = str(policy["default_branch"])
@@ -2406,6 +2436,19 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if not contract["schedulable"]:
             outcomes.append(schedule_claim_outcome(subject_value, "dependency_changed", reasons=contract["reasons"]))
             continue
+        # constraint: ed3c/noodles#98 - prove write-boundary disjointness before any
+        # constraint: provider ref is created, so a rejected candidate leaves no residue;
+        # constraint: a missing or ambiguous own boundary fails closed distinctly.
+        candidate_boundary = contract["write_boundary"]
+        if candidate_boundary is None:
+            outcomes.append(schedule_claim_outcome(subject_value, "boundary_undeclared"))
+            continue
+        conflict = boundary_admission_conflict(candidate_boundary, reserved_boundaries.get(subject.repo, ()))
+        if conflict is not None:
+            outcomes.append(schedule_claim_outcome(
+                subject_value, "boundary_conflict", conflict_with=conflict[0], prefix=conflict[1]
+            ))
+            continue
         default_ref = gh_api(f"repos/{subject.repo}/git/ref/heads/{default_branch}")
         head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
@@ -2414,6 +2457,7 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         outcomes.append(schedule_claim_outcome(subject_value, **claim))
         if claim["status"] == "claimed":
             claimed_orders.append(order_by_subject[subject_value])
+            reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))
 
     filtered = {key: value for key, value in proposed.items() if key != "orders"}
     filtered["orders"] = claimed_orders
