@@ -1254,6 +1254,180 @@ def evidence_publication(candidate_root: Path, receipt: Mapping[str, Any]) -> di
     readback = evidence_publication_readback(publication, folder, evidence_publication_members(candidate_root, receipt))
     return {"status": "custody_unadmitted", **publication, **readback,
             "reason": "no admitted Google Drive destination credential exists for GitHub Actions; the packaged evidence stays on the GitHub artifact spool"}
+GHA_HOSTED_LANE = "gha-agentic"
+GHA_TRUSTED_WORKFLOW_PATHS = (".github/workflows/verify.yml", ".github/workflows/land.yml")
+# constraint: ed3c/noodles#189 - the exact typed declaration one target-local execution task is
+# constraint: bound to. Task identity is the sha256 of these fields and nothing else, so the
+# constraint: idempotency nonce is derived and never supplied: a sender cannot hold an identity
+# constraint: that disagrees with the content it identifies, and a duplicate dispatch converges on
+# constraint: the same task by construction instead of by the sender remembering a nonce.
+GHA_TASK_FIELDS = ("target", "subject", "subject_body_sha256", "base_sha", "runtime", "evidence", "write_boundary")
+GHA_ADMITTED_STATUSES = ("task_admitted", "task_reused", "apply_admitted")
+GHA_STATUS_MEANINGS = {
+    "task_admitted": "this dispatch created one target-local execution task bound to the exact issue, target, base, runtime, evidence policy, and write boundary",
+    "task_reused": "an active target-local task already carries this exact derived identity, so the duplicate dispatch converged on it instead of creating a second task",
+    "apply_admitted": "the proposed safe output stays inside the task's branch, write boundary, PR body shape, and bound evidence, so the apply step may create at most this one branch and PR",
+    "gha_lane_refused": "the capability table does not admit this issue on the hosted agentic lane, so no target-local task, branch, or PR is created for it here",
+    "gha_boundary_undeclared": "the issue declares no machine-readable write boundary, so the hosted lane has no surface to constrain the apply step to and fails closed",
+    "gha_target_mismatch": "the dispatch names a target repository the exact issue does not declare, so no target owns this mutation and nothing is created",
+    "gha_subject_mismatch": "the dispatch names a source subject the exact issue body does not declare as its own subject",
+    "gha_subject_digest_stale": "the dispatch carries a provider body digest that is not the digest of the issue body this gate read, so the issue changed after dispatch",
+    "gha_base_mismatch": "the dispatch names a base commit that is not the exact base head this task is admitted against",
+    "gha_runtime_mismatch": "the dispatch declares a runtime the exact issue does not declare, so the deterministic runtime step would not be the one the issue was admitted for",
+    "gha_evidence_policy_mismatch": "the dispatch declares an evidence policy the exact issue does not declare",
+    "gha_boundary_mismatch": "the dispatch declares a write boundary that is not the exact boundary the issue declares",
+    "gha_duplicate_claim": "another active target-local task already holds this subject's exact ephemeral execute branch under a different identity",
+    "gha_boundary_conflict": "this task's declared write boundary intersects an already-active target-local task's boundary, so admitting both concurrently could collide at landing",
+    "gha_task_unadmitted": "the apply step was handed something other than an admitted target-local task, so there is no bound surface to judge the proposal against",
+    "gha_proposal_malformed": "the agent safe output is not one exact branch, one exact PR body, and a non-empty list of exact repository-relative changed paths",
+    "gha_default_branch_push": "the proposed apply would write the default branch, which no hosted lane may ever do",
+    "gha_branch_mismatch": "the proposed apply names a branch that is not this task's exact ephemeral execute branch",
+    "gha_trusted_workflow_edit": "the proposed apply would rewrite the trusted workflow bytes that judge it, which would let the agent lane approve itself",
+    "gha_write_boundary_escape": "the proposed changed paths leave the issue's declared write boundary, named path by path, before any commit or push exists",
+    "gha_pr_body_refused": "the proposed PR body is not exactly one 'Refs owner/repo#N' line naming this task's own subject",
+    "gha_evidence_absent": "no complete evidence publication is bound to this candidate, so the run cannot report a custody receipt for what it executed",
+}
+def gha_outcome(status: str, **extra: Any) -> dict[str, Any]:
+    # constraint: ed3c/noodles#189 - both hosted-lane gates leave through this one
+    # constraint: exit, so a status without a machine-owned meaning cannot reach a
+    # constraint: receipt and no reader has to re-derive what a refusal meant.
+    meaning = GHA_STATUS_MEANINGS.get(status)
+    if meaning is None:
+        raise GateError(f"gha execution emitted undefined status: {status!r}")
+    return {"admitted": status in GHA_ADMITTED_STATUSES, "status": status, "meaning": meaning, **extra}
+def gha_task_identity(declaration: Mapping[str, Any]) -> str:
+    """The derived idempotency key of one exact target-local execution task."""
+    missing = [name for name in GHA_TASK_FIELDS if declaration.get(name) is None]
+    if missing:
+        raise GateError(f"gha task identity needs every declared field, missing: {', '.join(missing)}")
+    canonical = json.dumps({name: declaration[name] for name in GHA_TASK_FIELDS}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def gha_within_boundary(path: str, prefixes: Sequence[str]) -> bool:
+    # constraint: ed3c/noodles#98 - delegates to the one segment-wise containment rule
+    # constraint: instead of restating it, so a tightening at its declared home
+    # constraint: (issue_contract.boundary_conflict) is inherited here automatically.
+    return issue_contract.boundary_conflict((path,), tuple(prefixes)) is not None
+def gha_execution_task(
+    issue_body: str,
+    dispatch: Mapping[str, Any],
+    *,
+    base_head: str,
+    active_tasks: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Validate one dispatch against the exact issue bytes before any branch or PR exists.
+
+    The gate parses the issue body itself, so the digest it compares the dispatch against is the
+    digest of the text it read: an issue edited after dispatch fails as stale instead of executing
+    against a body nobody validated. Only typed markers are inputs - issue prose, including planted
+    injection prose, is never read, so it cannot widen the target, the lane, or the boundary. Every
+    refusal returns before an identity exists, so a rejected dispatch leaves no branch and no PR."""
+    if not HEX40_RE.fullmatch(base_head or ""):
+        raise GateError(f"gha execution base head {base_head!r} is not one exact 40-hex commit")
+    contract = parse_issue_contract(issue_body)
+    admission = contract["admission"]
+    if admission["lane"] != GHA_HOSTED_LANE:
+        return gha_outcome(
+            "gha_lane_refused",
+            task=None,
+            branch=None,
+            admitted_lanes=list(admission["admitted_lanes"]),
+            reasons=list(admission["reasons"]) or [f"admitted lane is {admission['lane']!r}, not {GHA_HOSTED_LANE!r}"],
+        )
+    boundary = contract["write_boundary"]
+    if boundary is None:
+        return gha_outcome("gha_boundary_undeclared", task=None, branch=None,
+                           reasons=["issue declares no machine-readable noodles-write-boundary"])
+    declaration = {
+        "target": contract["target"],
+        "subject": contract["subject"],
+        "subject_body_sha256": issue_contract.body_digest(issue_body),
+        "base_sha": base_head,
+        "runtime": contract["runtime"],
+        "evidence": contract["evidence"],
+        "write_boundary": list(boundary),
+    }
+    for field, status in (
+        ("target", "gha_target_mismatch"),
+        ("subject", "gha_subject_mismatch"),
+        ("subject_body_sha256", "gha_subject_digest_stale"),
+        ("base_sha", "gha_base_mismatch"),
+        ("runtime", "gha_runtime_mismatch"),
+        ("evidence", "gha_evidence_policy_mismatch"),
+        ("write_boundary", "gha_boundary_mismatch"),
+    ):
+        if dispatch.get(field) != declaration[field]:
+            return gha_outcome(status, task=None, branch=None,
+                               reasons=[f"dispatch {field} {dispatch.get(field)!r} != target-local {declaration[field]!r}"])
+    task = gha_task_identity(declaration)
+    branch = execute_branch(declaration["subject"])
+    binding = {"task": task, "branch": branch, "checkout": issue_contract.EPHEMERAL_CHECKOUT, **declaration}
+    if any(str(active.get("task")) == task for active in active_tasks):
+        return gha_outcome("task_reused", **binding)
+    duplicate = next((active for active in active_tasks if str(active.get("branch")) == branch), None)
+    if duplicate is not None:
+        return gha_outcome("gha_duplicate_claim", task=None, branch=None,
+                           reasons=[f"branch {branch} is already held by target-local task {duplicate.get('task')!r}"])
+    # constraint: ed3c/noodles#98 - reuse the landed disjointness machinery instead of a second
+    # constraint: copy of it; an active task whose own boundary is undeclared blocks closed.
+    conflict = boundary_admission_conflict(
+        tuple(boundary),
+        [(str(active.get("subject")), tuple(active["write_boundary"]) if active.get("write_boundary") is not None else None)
+         for active in active_tasks],
+    )
+    if conflict is not None:
+        return gha_outcome("gha_boundary_conflict", task=None, branch=None,
+                           reasons=[f"declared write boundary intersects active task {conflict[0]} at {conflict[1]}"])
+    return gha_outcome("task_admitted", **binding)
+def gha_apply_admission(
+    task: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    *,
+    default_branch: str,
+    evidence: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Judge one agent safe output against the typed task before any commit, push, or PR exists.
+
+    The agent job holds no write authority: what it emits is data, judged here against the task the
+    issue was admitted under. Trusted workflow bytes are refused first and unconditionally, so a
+    task whose declared boundary happens to contain `.github` still cannot rewrite the gate that
+    judges it. One task admits exactly one branch and one PR body, so no proposal shape can fan
+    out into a second branch or a second PR."""
+    if not task.get("admitted") or not task.get("branch"):
+        return gha_outcome("gha_task_unadmitted", reasons=[f"apply needs an admitted target-local task, got {task.get('status')!r}"])
+    for field in ("branch", "pr_body"):
+        if not isinstance(proposal.get(field), str) or not proposal[field]:
+            return gha_outcome("gha_proposal_malformed", reasons=[f"apply proposal {field} must be exactly one non-empty string, got {proposal.get(field)!r}"])
+    paths = proposal.get("changed_paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(item, str) and item for item in paths):
+        return gha_outcome("gha_proposal_malformed", reasons=["apply proposal changed_paths must be a non-empty list of exact repository-relative paths"])
+    escaping = sorted(item for item in paths if item.startswith("/") or {".", ".."} & set(item.split("/")))
+    if escaping:
+        return gha_outcome("gha_proposal_malformed", reasons=[f"apply proposal changed paths are not repository-relative: {', '.join(escaping)}"])
+    if proposal["branch"] == default_branch:
+        return gha_outcome("gha_default_branch_push", reasons=[f"apply proposes writing the default branch {default_branch!r}"])
+    if proposal["branch"] != task["branch"]:
+        return gha_outcome("gha_branch_mismatch", reasons=[f"apply branch {proposal['branch']!r} is not the task's exact ephemeral branch {task['branch']!r}"])
+    trusted = sorted(set(paths) & set(GHA_TRUSTED_WORKFLOW_PATHS))
+    if trusted:
+        return gha_outcome("gha_trusted_workflow_edit", reasons=[f"apply would rewrite the trusted workflow bytes that judge it: {', '.join(trusted)}"])
+    boundary = list(task.get("write_boundary") or ())
+    outside = sorted(item for item in paths if not gha_within_boundary(item, boundary))
+    if outside:
+        return gha_outcome("gha_write_boundary_escape", reasons=[
+            f"changed paths outside the declared write boundary "
+            f"{', '.join(boundary) or issue_contract.NO_WRITE_BOUNDARY}: {', '.join(outside)}"
+        ])
+    try:
+        referenced = parse_pr_reference(proposal["pr_body"])
+    except GateError as exc:
+        return gha_outcome("gha_pr_body_refused", reasons=[str(exc)])
+    if referenced != task["subject"]:
+        return gha_outcome("gha_pr_body_refused", reasons=[f"PR body references {referenced} rather than this task's own subject {task['subject']}"])
+    published = evidence or {}
+    if not str(published.get("folder") or "") or not str(published.get("manifest_sha256") or ""):
+        return gha_outcome("gha_evidence_absent", reasons=[f"no complete evidence publication is bound to this candidate: {published.get('status')!r}"])
+    return gha_outcome("apply_admitted", task=task["task"], branch=task["branch"], subject=task["subject"],
+                       changed_paths=sorted(paths), evidence_folder=published["folder"])
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
     event = load_json(event_path)
     pr = event.get("pull_request")
@@ -1281,8 +1455,9 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     actual_head = git(candidate_root, "rev-parse", "HEAD")
     if actual_head != head_sha:
         raise GateError(f"candidate checkout {actual_head} != event head {head_sha}")
+    changed_files = merge_base_changed_files(repository, base_ref, head_sha)
     surface_errors = component_surface_errors(
-        contract["component"], component_map(root), merge_base_changed_files(repository, base_ref, head_sha)
+        contract["component"], component_map(root), changed_files
     )
     if surface_errors:
         raise GateError("candidate component-surface gate failed: " + "; ".join(surface_errors))
@@ -1308,8 +1483,57 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction", "evidence-publication"],
     }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
+    # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,
+    # constraint: in the trusted checkout taken from the default branch, over provider-read changed
+    # constraint: files and the exact issue body. The agent job never runs this gate and cannot
+    # constraint: reach the bytes that implement it, so the lane cannot approve itself.
+    if contract["admission"]["lane"] == GHA_HOSTED_LANE:
+        receipt["gha_execution"] = gha_pull_request_admission(pr, repository, subject_value, issue, base_ref, changed_files, receipt, str(policy["default_branch"]))
+        receipt["gates"].append("gha-execution")
     write_json(receipt_path, receipt)
     return receipt
+def gha_pull_request_admission(
+    pr: Mapping[str, Any],
+    repository: str,
+    subject_value: str,
+    issue: Mapping[str, Any],
+    base_ref: str,
+    changed_files: Sequence[str],
+    receipt: Mapping[str, Any],
+    default_branch: str,
+) -> dict[str, Any]:
+    """Rebuild this candidate's target-local task from provider truth and judge the landed patch.
+
+    The dispatch is reconstructed from what the provider itself reports about the candidate, so at
+    the same-repository canary source and target coincide and the seven declaration comparisons are
+    self-consistent by construction; they become live refusals only for a cross-repository
+    `repository_dispatch`, which `policy/github.json` still holds. What refuses here today is the
+    apply half: the head branch, the write boundary, the trusted workflow bytes, the PR body shape,
+    and the bound evidence publication."""
+    body = str(issue.get("body") or "")
+    contract = parse_issue_contract(body, expected_subject=subject_value)
+    base_sha = str(pr.get("base", {}).get("sha") or "")
+    dispatch = {
+        "target": repository,
+        "subject": subject_value,
+        "subject_body_sha256": issue_contract.body_digest(body),
+        "base_sha": base_sha,
+        "runtime": contract["runtime"],
+        "evidence": contract["evidence"],
+        "write_boundary": list(contract["write_boundary"] or ()),
+    }
+    task = gha_execution_task(body, dispatch, base_head=base_sha)
+    if not task["admitted"]:
+        raise GateError(f"candidate gha-execution task gate failed: {task['status']}: " + "; ".join(task.get("reasons") or ()))
+    apply_result = gha_apply_admission(
+        task,
+        {"branch": str(pr.get("head", {}).get("ref") or ""), "changed_paths": list(changed_files), "pr_body": str(pr.get("body") or "")},
+        default_branch=default_branch,
+        evidence=receipt.get("evidence_publication"),
+    )
+    if not apply_result["admitted"]:
+        raise GateError(f"candidate gha-execution apply gate failed: {apply_result['status']}: " + "; ".join(apply_result.get("reasons") or ()))
+    return {"task": task, "apply": apply_result}
 
 
 RECEIPT_ANCHOR_PREFIX = "physical-receipt-anchor:"
@@ -2877,6 +3101,21 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
             raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
+        # constraint: ed3c/noodles#189 - the hosted agentic lane's target-local task identity is
+        # constraint: derived from the exact declaration and this exact base head before the
+        # constraint: execute ref exists, so a repeated cycle recomputes the identical task instead
+        # constraint: of creating a second one and a malformed declaration claims nothing.
+        hosted_task = None
+        if admission["lane"] == GHA_HOSTED_LANE:
+            hosted_task = gha_task_identity({
+                "target": subject.repo,
+                "subject": subject_value,
+                "subject_body_sha256": contract["body_sha256"],
+                "base_sha": head,
+                "runtime": contract["runtime"],
+                "evidence": contract["evidence"],
+                "write_boundary": list(candidate_boundary),
+            })
         claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
         if claim["status"] != "claimed":
             # constraint: ed3c/noodles#187 - a lost claim binds nothing: another
@@ -2897,6 +3136,8 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
             "evidence": contract["evidence"],
             "write_boundary": list(candidate_boundary),
         }
+        if hosted_task is not None:
+            binding["task"] = hosted_task
         if admission["lane"] == issue_contract.LOCAL_LANE:
             binding["handoff"] = emit_local_handoff(subject_value, contract, candidate_boundary)
         outcomes.append(schedule_claim_outcome(subject_value, **claim, **binding))
