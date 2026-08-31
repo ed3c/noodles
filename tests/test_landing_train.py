@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tempfile
 import unittest
@@ -12,6 +13,12 @@ import noodles
 
 ENGINE_ROOT = Path(noodles.__file__).resolve().parent
 GIT_IDENTITY = ["-c", "user.name=noodles-test", "-c", "user.email=noodles-test@example.com", "-c", "commit.gpgsign=false"]
+# constraint: immutable provider heads for the live control - ed3c/noodles#233 is the head whose trusted
+# constraint: verify completed FAILURE (run 33379233268) and starved the queue; ed3c/noodles#244 is a head
+# constraint: whose trusted verify completed SUCCESS (run 33382234390). Both runs are terminal, so neither
+# constraint: conclusion can drift under the control.
+LIVE_VERIFY_FAILURE_HEAD = "0ff2a643e5b2dcda18b83b9cc61adb8a5b191220"
+LIVE_VERIFY_SUCCESS_HEAD = "3383626f1303abd05914026676ca7774de0e7452"
 
 
 def sha256_file(path: Path) -> str:
@@ -74,10 +81,31 @@ def seed_train_remote(base: Path, *, conflict: bool) -> dict[str, str]:
     return {"origin": str(origin), "head": head_sha, "main": main_sha}
 
 
-def train_api(pulls: list[dict], issues: dict[int, dict], behind: dict[str, int], comments: dict[int, list], posts: list) -> object:
+def verify_run(sha: str, status: str, conclusion: str | None) -> dict:
+    return {
+        "name": "verify",
+        "path": ".github/workflows/verify.yml",
+        "event": "pull_request_target",
+        "head_sha": sha,
+        "status": status,
+        "conclusion": conclusion,
+    }
+
+
+def train_api(
+    pulls: list[dict],
+    issues: dict[int, dict],
+    behind: dict[str, int],
+    comments: dict[int, list],
+    posts: list,
+    runs: dict[str, list] | None = None,
+) -> object:
     def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
         if endpoint.startswith("repos/ed3c/noodles/pulls?"):
             return pulls
+        if endpoint.startswith("repos/ed3c/noodles/actions/runs?head_sha="):
+            sha = endpoint.split("head_sha=", 1)[1].split("&", 1)[0]
+            return {"workflow_runs": (runs or {}).get(sha, [])}
         if endpoint.startswith("repos/ed3c/noodles/compare/main..."):
             return {"behind_by": behind[endpoint.rsplit("...", 1)[1]]}
         if endpoint.startswith("repos/ed3c/noodles/issues/") and endpoint.endswith("/comments?per_page=100"):
@@ -135,6 +163,69 @@ class LandingTrainSelectionTests(unittest.TestCase):
             selected = noodles.train_select("ed3c/noodles", "main", pulls)
         self.assertIsNotNone(selected)
         self.assertEqual(selected["number"], 6)
+
+    def starving_queue(self, stuck_sha: str, runs: dict[str, list]) -> dict | None:
+        """Queue shaped like the observed starvation: an older behind candidate ahead of a newer behind one."""
+        sha_next = "b" * 40
+        pulls = [
+            pr_fixture(4, 404, stuck_sha, "stuck", "2026-08-30T00:00:00Z"),
+            pr_fixture(6, 606, sha_next, "next", "2026-08-30T01:00:00Z"),
+        ]
+        issues = {
+            404: {"state": "open", "body": issue_body(404)},
+            606: {"state": "open", "body": issue_body(606)},
+        }
+        behind = {stuck_sha: 1, sha_next: 1}
+        api = train_api(pulls, issues, behind, {}, [], runs)
+        with mock.patch.object(noodles, "gh_api", side_effect=api):
+            return noodles.train_select("ed3c/noodles", "main", pulls)
+
+    def test_completed_verify_failure_at_the_current_head_yields_to_the_newer_behind_candidate(self) -> None:
+        sha_stuck = "a" * 40
+        selected = self.starving_queue(sha_stuck, {sha_stuck: [verify_run(sha_stuck, "completed", "failure")]})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["number"], 6)
+
+    def test_owner_repush_to_a_new_head_makes_the_same_pr_selectable_again(self) -> None:
+        old_head = "a" * 40
+        new_head = "9" * 40
+        starved = self.starving_queue(old_head, {old_head: [verify_run(old_head, "completed", "failure")]})
+        self.assertEqual(starved["number"], 6)
+        # constraint: the rule is stateless - the failure is pinned to the exact head, so the owner's new head clears it with no marker to retract.
+        repushed = self.starving_queue(new_head, {old_head: [verify_run(old_head, "completed", "failure")]})
+        self.assertIsNotNone(repushed)
+        self.assertEqual(repushed["number"], 4)
+
+    def test_planted_negative_completed_verify_success_head_is_not_skipped(self) -> None:
+        sha_stuck = "a" * 40
+        selected = self.starving_queue(sha_stuck, {sha_stuck: [verify_run(sha_stuck, "completed", "success")]})
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["number"], 4)
+
+    def test_planted_negative_incomplete_or_absent_verify_head_is_not_skipped(self) -> None:
+        sha_stuck = "a" * 40
+        for label, runs in (
+            ("in_progress", [verify_run(sha_stuck, "in_progress", None)]),
+            ("queued", [verify_run(sha_stuck, "queued", None)]),
+            ("absent", []),
+            ("another workflow failed", [dict(verify_run(sha_stuck, "completed", "failure"), name="land", path=".github/workflows/land.yml")]),
+        ):
+            with self.subTest(case=label):
+                selected = self.starving_queue(sha_stuck, {sha_stuck: runs})
+                self.assertIsNotNone(selected)
+                self.assertEqual(selected["number"], 4)
+
+    @unittest.skipIf(
+        os.getenv("NOODLES_OFFLINE_TESTS") == "1" or os.getenv("GITHUB_ACTIONS") == "true",
+        "provider runs API is intentionally unreachable in hosted/offline CI; live control runs before handoff",
+    )
+    def test_live_control_real_completed_verify_runs_discriminate_failure_from_success(self) -> None:
+        # constraint: ed3c/noodles#65 pattern - the shape this rule reads is provider truth, so the predicate
+        # constraint: is exercised against the actual runs API for a real red head and a real green head, not
+        # constraint: only against fixtures this test wrote itself.
+        self.assertTrue(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_FAILURE_HEAD))
+        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_SUCCESS_HEAD))
+        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", "0" * 40))
 
 
 class LandingTrainRebaseTests(unittest.TestCase):

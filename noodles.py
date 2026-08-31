@@ -1173,8 +1173,26 @@ def train_failback_marker(head_sha: str) -> str:
     return f"<!-- noodles-train-failback: {head_sha} -->"
 
 
+def train_verify_failed_head(repository: str, head_sha: str) -> bool:
+    """Has this exact head already completed a trusted `verify` run concluded `failure`?
+
+    Stateless starvation guard. A head that rebases cleanly never earns a fail-back marker, so a head
+    whose verify is red for a reason a rebase cannot fix stays the oldest behind candidate forever and
+    blocks every newer one. A COMPLETED failure at this exact head means re-selecting the same head only
+    reproduces the same failure; the train defers to the owner pushing a new head, exactly like fail-back.
+    A success, an in-progress run, or no run at all is not a completed failure and never skips."""
+    runs = gh_api(f"repos/{repository}/actions/runs?head_sha={head_sha}&per_page=100") or {}
+    return any(
+        run.get("name") == "verify"
+        and run.get("path") == ".github/workflows/verify.yml"
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "failure"
+        for run in (runs.get("workflow_runs") or [])
+    )
+
+
 def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Oldest open awaiting_land PR whose branch is behind the default branch; a head already failed back waits for its owner."""
+    """Oldest open awaiting_land PR whose branch is behind the default branch; a head already failed back, or already red at verify, waits for its owner."""
     for pr in sorted(pulls, key=lambda item: (str(item.get("created_at") or ""), int(item.get("number") or 0))):
         head = pr.get("head") or {}
         if pr.get("state") != "open" or pr.get("draft"):
@@ -1195,6 +1213,8 @@ def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any
             continue
         comments = gh_api(f"repos/{repository}/issues/{pr['number']}/comments?per_page=100")
         if any(train_failback_marker(head_sha) in str(comment.get("body") or "") for comment in comments or []):
+            continue
+        if train_verify_failed_head(repository, head_sha):
             continue
         return pr
     return None
