@@ -35,6 +35,46 @@
       "id": "ready-no-feature-three-dependencies",
       "subject": "ed3c/noodles#900006",
       "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900006 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: ed3c/noodles#900000, ed3c/noodles#900010, ed3c/noodles#900020 -->\n\n## Goal\n\nPreserve a ready repository atom without a feature oracle and with three exact same-repository dependencies.\n\n## Physical acceptance\n\n- The exact issue contract parses the larger dependency cardinality without a feature marker.\n\n## Non-claims\n\n- This fixture does not claim any predecessor is currently landed.\n"
+    },
+    {
+      "id": "executor-gha-runtime-bun-ts",
+      "subject": "ed3c/noodles#900010",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900010 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-runtime -->\n<!-- noodles-runtime: bun-ts -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nAdmit one portable Bun + TypeScript repository job on the GitHub-hosted runtime lane.\n\n## Physical acceptance\n\n- `bun install`, `bun run lint`, `bun run typecheck`, `bun test`, `bun run build`, and the CLI smoke command all run non-interactively inside the hosted time envelope.\n- Executor admission classifies this exact issue as `gha-runtime` before any claim, branch, or worktree.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-gha-agentic-bun-ts",
+      "subject": "ed3c/noodles#900011",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900011 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-agentic -->\n<!-- noodles-runtime: bun-ts -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nAdmit one code-generating job over the same portable Bun + TypeScript runtime on the hosted agentic lane.\n\n## Physical acceptance\n\n- Executor admission classifies this exact issue as `gha-agentic`; deterministic runtime verification stays a separate step.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-refused-usb-device",
+      "subject": "ed3c/noodles#900012",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900012 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-runtime -->\n<!-- noodles-runtime: usb-device -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nPlant a hosted-lane declaration for a job that needs hardware/USB device access.\n\n## Physical acceptance\n\n- Executor admission refuses the hosted lane and names `local-noodle` as the only admitted route.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-refused-gui-simulator",
+      "subject": "ed3c/noodles#900013",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900013 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-runtime -->\n<!-- noodles-runtime: gui-simulator -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nPlant a hosted-lane declaration for a job that needs GUI or simulator interaction.\n\n## Physical acceptance\n\n- Executor admission refuses the hosted lane and names `local-noodle` as the only admitted route.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-refused-private-network",
+      "subject": "ed3c/noodles#900014",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900014 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-agentic -->\n<!-- noodles-runtime: private-network -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nPlant a hosted-lane declaration for a job that needs a private LAN/VPN service.\n\n## Physical acceptance\n\n- Executor admission refuses the hosted lane and names `local-noodle` as the only admitted route.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-refused-persistent-daemon",
+      "subject": "ed3c/noodles#900015",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900015 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-runtime -->\n<!-- noodles-runtime: persistent-daemon -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nPlant a hosted-lane declaration for a job that needs persistent cross-run daemon state.\n\n## Physical acceptance\n\n- Executor admission refuses the hosted lane and names `local-noodle` as the only admitted route.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-refused-unsupported-runtime",
+      "subject": "ed3c/noodles#900016",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900016 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: gha-runtime -->\n<!-- noodles-runtime: host-toolchain -->\n<!-- noodles-evidence: github-only-v1 -->\n\n## Goal\n\nPlant a hosted-lane declaration for a runtime no hosted runner image supplies.\n\n## Physical acceptance\n\n- Executor admission refuses the hosted lane and names `local-noodle` as the only admitted route.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "executor-local-drive-evidence",
+      "subject": "ed3c/noodles#900017",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900017 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: local-noodle -->\n<!-- noodles-runtime: shell -->\n<!-- noodles-evidence: drive-full-v1 -->\n\n## Goal\n\nAdmit one local lane whose evidence policy needs host-only credentials.\n\n## Physical acceptance\n\n- Executor admission classifies this exact issue as `local-noodle` and emits one idempotent provider-backed handoff task.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
     }
   ]
 }

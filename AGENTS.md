@@ -89,6 +89,10 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-subject: owner/repo#123 -->
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
 <!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
+<!-- noodles-executor: gha-agentic|gha-runtime|local-noodle -->
+<!-- noodles-runtime: bun-ts|python|shell|none -->
+<!-- noodles-write-boundary: path[, path]|none -->
+<!-- noodles-evidence: drive-full-v1|github-only-v1 -->
 ```
 
 Every repository mutation runs `./noodles acceptance verify`, which binds the exact candidate head/tree to `tests/run.sh`, `./noodles verify`, and zero residue. Add one optional `<!-- noodles-feature: feature-id -->` only when the Issue needs a specialized physical oracle; run `./noodles acceptance verify --feature <feature-id>`. The specialized oracle is additive and cannot replace or weaken the baseline. Unknown feature ids fail at completion with a diagnostic instead of making the Issue disappear from scheduling.
@@ -96,6 +100,19 @@ Every repository mutation runs `./noodles acceptance verify`, which binds the ex
 `noodles-depends-on` is parsed exactly: `none` or comma-separated same-repository subjects. A duplicate marker, duplicate entry, foreign repository, self-dependency, or dependency prose fails closed. A missing marker is undeclared, never "no dependencies": the Issue is reported non-schedulable with that exact reason instead of blocking an already-landed Issue's reconciliation.
 
 Dependency waiting is never stored. `./noodles issue contract owner/repo#N` reads each declared predecessor's own provider state and derives schedulability from it, so a landed predecessor releases its dependents without anyone patching a mirrored marker. A failed predecessor read is never satisfied. `blocked` therefore means a real blocker and requires one `<!-- noodles-blocker: owner: reason -->` that is not dependency waiting.
+
+Executor admission classifies the exact Issue before any claim, branch, checkout, or worktree exists.
+`issue_contract.CAPABILITY_TABLE` is the single bounded table — data, not a policy DSL: each `runtime`
+and `evidence` token names the exact lanes that can physically supply it, and the admitted lane set is
+the intersection. GitHub-hosted lanes supply only portable, non-interactive, bounded-duration work with
+no private device or network dependency; `usb-device`, `gui-simulator`, `private-network`,
+`persistent-daemon`, `host-toolchain`, `unbounded-duration`, and `drive-full-v1` evidence are
+`local-noodle` only, and `none` is contradictory on `gha-runtime`. A duplicate marker, a malformed
+value, an unknown value, and a missing marker each produce their own diagnostic; nothing defaults to a
+lane. A hosted lane gets only the ephemeral execute branch for that run and never a managed worktree;
+the local lane additionally emits one idempotent provider-backed handoff task keyed by the source Issue
+body digest and bound to target, required local capability, and write boundary, while Noodle remains the
+sole owner of the persistent worktree lifecycle.
 
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 

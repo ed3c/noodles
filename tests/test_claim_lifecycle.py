@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import claim_contract
+import issue_contract
 import noodles
 import skill_contract
 from tests.support import CANDIDATE_ROOT, ISSUE_DEPENDS_ON_MARKER, ISSUE_FEATURE_MARKER, cmd, handoff_fixture
@@ -30,7 +31,10 @@ def issue_body(state: str) -> str:
         f"<!-- noodles-state: {state} -->\n"
         f"{ISSUE_FEATURE_MARKER}\n"
         f"{ISSUE_DEPENDS_ON_MARKER}\n"
-        "<!-- noodles-write-boundary: none -->\n\n"
+        "<!-- noodles-write-boundary: none -->\n"
+        "<!-- noodles-executor: gha-runtime -->\n"
+        "<!-- noodles-runtime: shell -->\n"
+        "<!-- noodles-evidence: github-only-v1 -->\n\n"
         "## Goal\n\nOne exact claimed atom.\n\n"
         "## Physical acceptance\n\n- Exact controls pass.\n\n"
         "## Non-claims\n\n- Nothing adjacent.\n"
@@ -291,6 +295,13 @@ class ClaimLifecycleTests(unittest.TestCase):
             "meaning": skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["claimed"],
             "branch": BRANCH,
             "head": MAIN_HEAD,
+            "lane": "gha-runtime",
+            "checkout": issue_contract.EPHEMERAL_CHECKOUT,
+            "target": REPOSITORY,
+            "base_sha": MAIN_HEAD,
+            "runtime": "shell",
+            "evidence": "github-only-v1",
+            "write_boundary": [],
         }])
         published = json.loads((self.root / ".noodle" / "orders-next.json").read_text())["orders"]
         self.assertEqual([item["id"] for item in published], [SUBJECT])

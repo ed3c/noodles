@@ -72,6 +72,9 @@ MARKER_PATTERNS = {
     "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
     "write_boundary": re.compile(r"<!--\s*noodles-write-boundary:\s*([^>]+?)\s*-->", re.I),
+    "executor": re.compile(r"<!--\s*noodles-executor:\s*([^>]+?)\s*-->", re.I),
+    "runtime": re.compile(r"<!--\s*noodles-runtime:\s*([^>]+?)\s*-->", re.I),
+    "evidence": re.compile(r"<!--\s*noodles-evidence:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
     "normalized": re.compile(r"<!--\s*noodles-normalized:\s*([0-9a-f]{64})\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
@@ -216,6 +219,13 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     declared = one_marker(body, "depends_on", required=False)
     dependencies = None if declared is None else list(issue_contract.parse_dependencies(declared, subject.value, error_cls=GateError))
     write_boundary = issue_contract.parse_write_boundary(one_marker(body, "write_boundary", required=False))
+    # constraint: ed3c/noodles#187 - a duplicate marker fails in one_marker, a
+    # constraint: malformed or unknown value fails in the token parser, and a
+    # constraint: missing marker parses to None so admission can name it undeclared;
+    # constraint: four separate diagnostics, all before any claim or branch exists.
+    executor = issue_contract.parse_executor(one_marker(body, "executor", required=False), error_cls=GateError)
+    runtime_token = issue_contract.parse_capability("runtime", one_marker(body, "runtime", required=False), error_cls=GateError)
+    evidence = issue_contract.parse_capability("evidence", one_marker(body, "evidence", required=False), error_cls=GateError)
     blocker = issue_contract.parse_blocker(one_marker(body, "blocker", required=False), state_value or "", error_cls=GateError)
     return {
         "role": role,
@@ -226,6 +236,10 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "component": component_value or "",
         "dependencies": dependencies,
         "write_boundary": write_boundary,
+        "executor": executor,
+        "runtime": runtime_token,
+        "evidence": evidence,
+        "admission": issue_contract.executor_admission(executor, runtime_token, evidence),
         "blocker": blocker,
     }
 
@@ -745,6 +759,10 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
         "body_sha256": issue_contract.body_digest(body),
         "dependencies": contract["dependencies"],
         "write_boundary": contract["write_boundary"],
+        "executor": contract["executor"],
+        "runtime": contract["runtime"],
+        "evidence": contract["evidence"],
+        "admission": contract["admission"],
         "dependency_states": observed,
         "blocker": contract["blocker"],
         "goal": body_sections.get("goal", ""),
@@ -2385,6 +2403,54 @@ def boundary_admission_conflict(
     return None
 
 
+def local_handoff_body(subject_value: str, contract: dict[str, Any], boundary: tuple[str, ...]) -> str:
+    return (
+        f"<!-- noodles-local-handoff: {contract['body_sha256']} -->\n"
+        f"local-noodle handoff for {subject_value}\n"
+        f"- target: {contract['target']}\n"
+        f"- local capability: {contract['runtime']}\n"
+        f"- evidence policy: {contract['evidence']}\n"
+        f"- write boundary: {', '.join(boundary) or issue_contract.NO_WRITE_BOUNDARY}\n"
+        "Noodle remains the sole owner of the persistent worktree lifecycle for this lane."
+    )
+
+
+def emit_local_handoff(subject_value: str, contract: dict[str, Any], boundary: tuple[str, ...]) -> dict[str, Any]:
+    # constraint: ed3c/noodles#187 - the local lane's handoff task is provider-backed
+    # constraint: and idempotent: the source Issue body digest is the key, so a repeated
+    # constraint: cycle reads back the exact existing task instead of emitting a second
+    # constraint: one, and a digest change is a different task rather than a mutation.
+    subject = parse_subject(subject_value)
+    endpoint = f"repos/{subject.repo}/issues/{subject.number}/comments"
+    marker = f"<!-- noodles-local-handoff: {contract['body_sha256']} -->"
+    body = local_handoff_body(subject_value, contract, boundary)
+
+    def matching() -> list[dict[str, Any]]:
+        observed = gh_api(endpoint)
+        if not isinstance(observed, list):
+            raise GateError(f"provider handoff task readback for {subject_value} is not a list")
+        return [item for item in observed if isinstance(item, dict) and marker in str(item.get("body") or "")]
+
+    existing = matching()
+    if len(existing) > 1:
+        raise GateError(f"provider carries duplicate local handoff tasks for {subject_value}")
+    status = "reused"
+    if not existing:
+        gh_api(endpoint, method="POST", payload={"body": body})
+        existing = matching()
+        status = "emitted"
+    if len(existing) != 1 or str(existing[0].get("body")) != body:
+        raise GateError(f"provider local handoff readback failed for {subject_value}")
+    return {
+        "status": status,
+        "id": existing[0].get("id"),
+        "issue_digest": contract["body_sha256"],
+        "target": contract["target"],
+        "capability": contract["runtime"],
+        "write_boundary": list(boundary),
+    }
+
+
 def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     root = root.resolve()
     candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
@@ -2436,6 +2502,18 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if not contract["schedulable"]:
             outcomes.append(schedule_claim_outcome(subject_value, "dependency_changed", reasons=contract["reasons"]))
             continue
+        # constraint: ed3c/noodles#187 - classify the executor before any claim, branch,
+        # constraint: checkout, or worktree exists, so a lane that cannot physically
+        # constraint: complete the work never holds the subject's exact execute ref.
+        admission = contract["admission"]
+        if not admission["admitted"]:
+            outcomes.append(schedule_claim_outcome(
+                subject_value,
+                admission["status"],
+                reasons=list(admission["reasons"]),
+                admitted_lanes=list(admission["admitted_lanes"]),
+            ))
+            continue
         # constraint: ed3c/noodles#98 - prove write-boundary disjointness before any
         # constraint: provider ref is created, so a rejected candidate leaves no residue;
         # constraint: a missing or ambiguous own boundary fails closed distinctly.
@@ -2454,7 +2532,22 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
             raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
         claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
-        outcomes.append(schedule_claim_outcome(subject_value, **claim))
+        # constraint: ed3c/noodles#187 - an admitted lane is bound to one exact Issue,
+        # constraint: target, base SHA, runtime, and evidence policy; the hosted lanes
+        # constraint: get only this ephemeral branch for the run and never a managed
+        # constraint: worktree, so only the local lane emits a handoff task.
+        binding = {
+            "lane": admission["lane"],
+            "checkout": admission["checkout"],
+            "target": subject.repo,
+            "base_sha": head,
+            "runtime": contract["runtime"],
+            "evidence": contract["evidence"],
+            "write_boundary": list(candidate_boundary),
+        }
+        if claim["status"] == "claimed" and admission["lane"] == issue_contract.LOCAL_LANE:
+            binding["handoff"] = emit_local_handoff(subject_value, contract, candidate_boundary)
+        outcomes.append(schedule_claim_outcome(subject_value, **claim, **binding))
         if claim["status"] == "claimed":
             claimed_orders.append(order_by_subject[subject_value])
             reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))

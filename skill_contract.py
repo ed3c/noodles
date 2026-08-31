@@ -63,6 +63,8 @@ SCHEDULE_CLAIM_STATUS_MEANINGS = {
     "not_in_winners": "the subject was absent from the winner set this cycle computed; this is not another executor's claim",
     "boundary_conflict": "the subject's declared write boundary intersects an already-admitted active order's boundary, so admitting both concurrently could collide at landing",
     "boundary_undeclared": "the subject declares no machine-readable write boundary, so its mutation surface cannot be proven disjoint and it fails closed",
+    "executor_undeclared": "the subject declares no complete executor/runtime/evidence triple, so its execution lane cannot be classified and it fails closed before any claim",
+    "executor_refused": "the subject's declared executor cannot physically supply its declared runtime or evidence policy, so the capability table refuses that lane and names the admitted route instead",
 }
 COMPACT_ORDER_TOP_LEVEL_FIELDS = frozenset({"orders", "action_needed"})
 COMPACT_ORDER_FIELDS = frozenset({"id", "plan", "rationale", "stages", "title"})
