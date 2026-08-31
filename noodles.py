@@ -5,6 +5,7 @@ import argparse
 import codex_isolation
 import daemon_lease
 import feature_contract
+import fnmatch
 import hashlib
 import github_protection
 import issue_contract
@@ -63,6 +64,7 @@ MARKER_PATTERNS = {
     "subject": re.compile(r"<!--\s*noodles-subject:\s*([^>]+?)\s*-->", re.I),
     "state": re.compile(r"<!--\s*noodles-state:\s*([^>]+?)\s*-->", re.I),
     "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
+    "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
@@ -70,6 +72,9 @@ MARKER_PATTERNS = {
     "merge": re.compile(r"<!--\s*noodles-merge:\s*([0-9a-f]{40})\s*-->", re.I),
 }
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
+COMPONENT_MAP_PATH = "policy/components.json"
+COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+COMPARE_FILES_CEILING = 300
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 P0_TITLE_RE = re.compile(r"^\[[A-Za-z0-9][A-Za-z0-9-]*-P0\](?:\s|$)")
@@ -161,6 +166,9 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     subject_value = one_marker(body, "subject")
     state_value = one_marker(body, "state")
     feature_value = one_marker(body, "feature", required=False)
+    component_value = one_marker(body, "component", required=False)
+    if component_value is not None and not COMPONENT_NAME_RE.fullmatch(component_value):
+        raise GateError(f"noodles-component must name one lowercase component token from {COMPONENT_MAP_PATH}, got {component_value!r}")
     if role != "repository-mutating-atom":
         raise GateError(f"unsupported noodles-role: {role}")
     subject = parse_subject(subject_value or "")
@@ -182,6 +190,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "subject": subject.value,
         "state": state_value or "",
         "feature": feature_value or "",
+        "component": component_value or "",
         "dependencies": dependencies,
         "blocker": blocker,
     }
@@ -794,6 +803,54 @@ def reconcile_checkout_admission(root: Path) -> dict[str, Any]:
     return runtime_reconcile_checkout_admission(root, str(protection_policy(root)["default_branch"]), error_cls=GateError)
 
 
+def component_map(policy_root: Path) -> dict[str, list[str]]:
+    path = policy_root / COMPONENT_MAP_PATH
+    payload = load_json(path)
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "components"} or payload["schema_version"] != 1:
+        raise GateError(f"{COMPONENT_MAP_PATH} must contain exactly schema_version 1 and a components object")
+    raw_components = payload["components"]
+    if not isinstance(raw_components, dict) or not raw_components:
+        raise GateError(f"{COMPONENT_MAP_PATH} components must be a non-empty object of component -> path globs")
+    components: dict[str, list[str]] = {}
+    for name, globs in raw_components.items():
+        if not isinstance(name, str) or not COMPONENT_NAME_RE.fullmatch(name):
+            raise GateError(f"{COMPONENT_MAP_PATH} component name {name!r} is not one lowercase component token")
+        if not isinstance(globs, list) or not globs or not all(isinstance(glob, str) and glob for glob in globs):
+            raise GateError(f"{COMPONENT_MAP_PATH} component {name} must declare a non-empty list of path glob strings")
+        components[name] = list(globs)
+    return components
+def component_surface_errors(component: str, components: dict[str, list[str]], changed_files: Sequence[str]) -> list[str]:
+    if not component:
+        return [
+            f"issue declares no noodles-component marker; every issue must declare one owned component from {COMPONENT_MAP_PATH}"
+        ]
+    globs = components.get(component)
+    if globs is None:
+        return [
+            f"declared component {component!r} is not in {COMPONENT_MAP_PATH}; admitted components: {', '.join(sorted(components))}"
+        ]
+    offending = sorted(path for path in changed_files if not any(fnmatch.fnmatchcase(path, glob) for glob in globs))
+    if offending:
+        return [f"mutation outside admitted component {component!r}: {', '.join(offending)}"]
+    return []
+def compare_changed_files(comparison: Any) -> list[str]:
+    if not isinstance(comparison, dict) or not isinstance(comparison.get("files"), list):
+        raise GateError("provider compare readback has no files list")
+    files = comparison["files"]
+    if len(files) >= COMPARE_FILES_CEILING:
+        raise GateError(f"provider compare readback reached the {COMPARE_FILES_CEILING}-file ceiling; the changed-file set is not fully observable")
+    changed: set[str] = set()
+    for item in files:
+        filename = item.get("filename") if isinstance(item, dict) else None
+        if not isinstance(filename, str) or not filename:
+            raise GateError("provider compare readback contains a file entry without a filename")
+        changed.add(filename)
+        previous = item.get("previous_filename")
+        if isinstance(previous, str) and previous:
+            changed.add(previous)
+    return sorted(changed)
+def merge_base_changed_files(repository: str, base_ref: str, head_sha: str) -> list[str]:
+    return compare_changed_files(gh_api(f"repos/{repository}/compare/{base_ref}...{head_sha}"))
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
     event = load_json(event_path)
     pr = event.get("pull_request")
@@ -821,6 +878,11 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     actual_head = git(candidate_root, "rev-parse", "HEAD")
     if actual_head != head_sha:
         raise GateError(f"candidate checkout {actual_head} != event head {head_sha}")
+    surface_errors = component_surface_errors(
+        contract["component"], component_map(root), merge_base_changed_files(repository, base_ref, head_sha)
+    )
+    if surface_errors:
+        raise GateError("candidate component-surface gate failed: " + "; ".join(surface_errors))
     result = verify_repository(candidate_root, root)
     if not result["ok"]:
         raise GateError("candidate repository gate failed: " + "; ".join(result["errors"]))
@@ -834,7 +896,8 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "base_ref": base_ref,
         "workflow_run_id": int(os.getenv("GITHUB_RUN_ID", "0")),
         "metrics": result["metrics"],
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head"],
+        "component": contract["component"],
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface"],
     }
     write_json(receipt_path, receipt)
     return receipt

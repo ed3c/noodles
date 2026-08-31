@@ -27,6 +27,11 @@
       "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900005 -->\n<!-- noodles-state: ready -->\n<!-- noodles-feature: verification-skill-oracle -->\n<!-- noodles-depends-on: ed3c/noodles#900000, ed3c/noodles#900010 -->\n\n## Goal\n\nPreserve a ready repository atom with an additive feature oracle and two exact same-repository dependencies.\n\n## Physical acceptance\n\n- The exact issue contract parses the feature and dependency cardinality together.\n\n## Non-claims\n\n- This fixture does not claim either predecessor is currently landed.\n"
     },
     {
+      "id": "ready-component-declared",
+      "subject": "ed3c/noodles#900007",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900007 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: verify -->\n<!-- noodles-depends-on: none -->\n\n## Goal\n\nPreserve a ready repository atom that declares its owned component surface.\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom bound to one admitted component.\n\n## Non-claims\n\n- This fixture does not execute the component-surface gate against a live candidate.\n"
+    },
+    {
       "id": "ready-no-feature-three-dependencies",
       "subject": "ed3c/noodles#900006",
       "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900006 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: ed3c/noodles#900000, ed3c/noodles#900010, ed3c/noodles#900020 -->\n\n## Goal\n\nPreserve a ready repository atom without a feature oracle and with three exact same-repository dependencies.\n\n## Physical acceptance\n\n- The exact issue contract parses the larger dependency cardinality without a feature marker.\n\n## Non-claims\n\n- This fixture does not claim any predecessor is currently landed.\n"

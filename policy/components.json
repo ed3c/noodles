@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "components": {
+    "schedule": [
+      "AGENTS.md",
+      "contracts/*",
+      "docs/*",
+      "policy/*",
+      "tests/*",
+      "noodles.py",
+      "schedule_domain.py",
+      "daemon_lease.py",
+      "issue_contract.py",
+      ".agents/*",
+      ".noodle.toml",
+      ".noodle/*"
+    ],
+    "verify": [
+      "AGENTS.md",
+      "contracts/*",
+      "docs/*",
+      "policy/*",
+      "tests/*",
+      "noodles.py",
+      "noodles",
+      "feature_contract.py",
+      "github_protection.py",
+      "skill_contract.py",
+      "repair_contract.py",
+      "issue_contract.py",
+      ".github/*"
+    ],
+    "carrier": [
+      "AGENTS.md",
+      "contracts/*",
+      "docs/*",
+      "policy/*",
+      "tests/*",
+      "noodles.py",
+      "noodles",
+      "runtime_contract.py",
+      "codex_isolation.py",
+      "provider_contract.py",
+      "migrations/*",
+      ".agents/*",
+      ".noodle.toml",
+      ".noodle/*"
+    ],
+    "contract": [
+      "*"
+    ],
+    "docs": [
+      "AGENTS.md",
+      "README.md",
+      "contracts/*",
+      "docs/*",
+      "policy/*",
+      "tests/*"
+    ]
+  }
+}
