@@ -45,13 +45,14 @@ CANDIDATE_RE = re.compile(r"^(?P<path>[^:]+):(?P<start>\d+)-(?P<end>\d+)$")
 FLOATING_REFS = frozenset({"latest", "main", "master", "head", "stable", "*", "next"})
 
 
-def probe_constants(root: Path) -> dict[str, Any]:
+def probe_constants(root: Path, probe_path: str = PROBE_PATH) -> dict[str, Any]:
     """Read the producer's own literals without importing it.
 
     The trusted job runs the default branch's tests against a candidate tree it must never execute,
-    so the pins and the task list are parsed, not imported.
+    so the pins and the task list are parsed, not imported. The path is a parameter because the
+    convergence gate reads a second producer's pins the same way.
     """
-    module = ast.parse((root / PROBE_PATH).read_text(encoding="utf-8"))
+    module = ast.parse((root / probe_path).read_text(encoding="utf-8"))
     constants: dict[str, Any] = {}
     for node in module.body:
         if not (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id.isupper()):

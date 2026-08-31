@@ -534,7 +534,7 @@ def canary_controls(
 
 
 def code_intel_journey(
-    root: Path, search: Callable[[str], str], subject: str, *, error_cls: type[Exception]
+    root: Path, search: Callable[[str], str], subject: str, *, query: str | None = None, error_cls: type[Exception]
 ) -> dict[str, Any]:
     """One exact repository task across the landed band: intent query -> candidate paths ->
     structural/source readback -> one exact-subject evidence row, with a planted fault at every
@@ -543,7 +543,9 @@ def code_intel_journey(
     lock = structural_contract.load_parser_lock(root, error_cls=error_cls)
     module, language, parser_pins = structural_contract.load_language(lock, error_cls=error_cls)
     suffixes = tuple(lock["grammar"]["suffixes"])
-    query = load_retrieval_pin(root, error_cls=error_cls)["control"]["positive_query"]
+    # constraint: the lock's positive control stays the default so the #9 canary is unchanged; a
+    # constraint: convergence corpus supplies its own intent instead of retargeting the pinned control.
+    query = query or load_retrieval_pin(root, error_cls=error_cls)["control"]["positive_query"]
     before_digest, _ = _tree_digest(root)
 
     started = time.perf_counter()
