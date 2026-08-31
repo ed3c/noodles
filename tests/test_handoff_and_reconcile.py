@@ -88,6 +88,7 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        self.base = cmd(["git", "rev-parse", "main"], self.root)
         write_acceptance_evidence(self.root, self.head, FEATURE)
         self.issue = mock.patch.object(
             noodles,
@@ -108,7 +109,7 @@ class ExecuteHandoffTests(unittest.TestCase):
             "draft": False,
             "body": f"Refs {self.SUBJECT}",
             "head": {"sha": self.head},
-            "base": {"ref": "main"},
+            "base": {"ref": "main", "sha": self.base},
         }
         payload.update(overrides)
         return payload
@@ -341,6 +342,39 @@ class ExecuteHandoffTests(unittest.TestCase):
         failed_run.assert_not_called()
         api.assert_not_called()
 
+    def test_default_branch_provenance_fails_before_issue_or_handoff_mutation(self) -> None:
+        cmd(["git", "checkout", "-q", "main"], self.root)
+        control_head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state") as set_state, \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback") as failed_run, \
+             mock.patch.object(noodles, "gh_api") as api:
+            with self.assertRaisesRegex(noodles.GateError, "refuses default branch main"):
+                noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr(head={"sha": control_head}))
+        set_state.assert_not_called()
+        failed_run.assert_not_called()
+        api.assert_not_called()
+
+    def test_handoff_receipt_carries_the_exact_provenance_binding(self) -> None:
+        with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_set_state"), \
+             mock.patch.object(github_protection, "failed_required_workflow_run_readback", return_value=self.failed_verify_source()), \
+             mock.patch.object(github_protection, "trusted_workflow_run_readback", return_value=self.trusted_verify_source()), \
+             mock.patch.object(noodles, "gh_api", return_value=None):
+            receipt = noodles.execute_handoff(self.root, self.SUBJECT, 44, self.pr())
+        self.assertEqual(receipt["provenance"], {
+            "order": self.SUBJECT,
+            "session_id": self.session_id,
+            "session_spawn": str(self.root.resolve() / ".noodle" / "sessions" / self.session_id / "spawn.json"),
+            "repository": "ed3c/noodles",
+            "git_common_dir": str(self.root.resolve() / ".git"),
+            "worktree_path": str(self.root.resolve()),
+            "branch": "ed3c-noodles-33-0-execute",
+            "default_branch": "main",
+            "candidate_head": self.head,
+            "base_sha": self.base,
+        })
+
     def test_wrong_session_id_fails_before_emission(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": "wrong-session"}, clear=False), \
              mock.patch.object(noodles, "issue_set_state") as set_state:
@@ -353,6 +387,7 @@ class ExecuteHandoffTests(unittest.TestCase):
         self.temp, self.root, self.binary, self.session_id = handoff_fixture(CANDIDATE_ROOT, blocking=False)
         self.addCleanup(self.temp.cleanup)
         self.head = cmd(["git", "rev-parse", "HEAD"], self.root)
+        self.base = cmd(["git", "rev-parse", "main"], self.root)
         write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_set_state"), \

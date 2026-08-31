@@ -228,7 +228,7 @@ class FeatureEvidenceHandoffTests(unittest.TestCase):
             "draft": False,
             "body": f"Refs {SUBJECT}",
             "head": {"sha": self.head},
-            "base": {"ref": "main"},
+            "base": {"ref": "main", "sha": cmd(["git", "rev-parse", "main"], self.root)},
         }
 
     def handoff(self) -> tuple[mock.MagicMock, object]:

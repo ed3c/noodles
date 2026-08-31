@@ -490,13 +490,18 @@ def write_handoff_noodle_stub(path: Path, version: str, blocking: bool = True) -
     path.chmod(0o755)
 
 
+def execute_branch_name(subject: str) -> str:
+    return noodles.execute_branch(subject)
+
+
 def handoff_fixture(
     source: Path,
     subject: str = "ed3c/noodles#33",
     *,
     blocking: bool = True,
-    worktree_name: str = "ed3c-noodles-33-0-execute",
+    worktree_name: str | None = None,
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
+    worktree_name = worktree_name or execute_branch_name(subject)
     temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
     root = Path(temp.name) / "repo"
     copy_tracked(source, root)
@@ -510,6 +515,8 @@ def handoff_fixture(
     lock_path.write_text(json.dumps(lock))
     cmd(["git", "add", "policy/runtime.lock.json"], root)
     cmd(["git", "commit", "-q", "-m", "lock handoff runtime"], root)
+    cmd(["git", "checkout", "-q", "-b", worktree_name], root)
+    cmd(["git", "commit", "-q", "--allow-empty", "-m", f"execute {subject}"], root)
     session_id = "ed3c-noodles-33-0-execute-fixture"
     session = root / ".noodle" / "sessions" / session_id
     session.mkdir(parents=True)
