@@ -73,7 +73,9 @@ SDK 也沒有任何 base-URL 環境變數（`grep -rn "os.Getenv" sprites-go` �
 
 二進位層獨立覆核：`strings -a noodle | grep -c "api.sprites.dev"` = **1**，且沒有第二個 sprites 主機字串。
 
-結論：pinned 二進位的 sprites runtime **只能打 `https://api.sprites.dev`**。要把它指向本地 OpenShell shim，剩下的手段是 DNS 劫持 + 讓 Go 二進位信任自簽憑證 + 還要先設非空 `SPRITES_TOKEN` 才會註冊該 runtime——那是三個外部改動，不是一個 adapter。
+結論（範圍限定）：**在設定面／字串表這一層**，pinned 二進位的 sprites runtime 只宣告 `https://api.sprites.dev`，沒有第二個可設定的目的地。要把它指向本地 OpenShell shim，設定面看到的手段是 DNS 劫持 + 讓 Go 二進位信任自簽憑證 + 還要先設非空 `SPRITES_TOKEN` 才會註冊該 runtime——那是三個外部改動，不是一個 adapter。
+
+這個結論**沒有**檢查撥號路徑：`sprites-go/client.go:42-56` 的 `http.Client` 沒有設 `Transport`，因此走 `http.DefaultTransport`，其 `Proxy: http.ProxyFromEnvironment` 預設就會遵守 `HTTPS_PROXY`。更關鍵的是，本文 §2.4／§2.6a 自己已經證明 OpenShell gateway 對沙盒內任意 HTTPS 目的地做的正是同一種攔截（TLS 終結 + L7 規則），且沙盒內的系統信任庫已經預裝該 gateway 的 CA（§2.6a）。如果 noodle 二進位本身在沙盒內執行，它撥往 `api.sprites.dev` 的連線是否會被同一個攔截機制接住——完全不需要碰 Go 原始碼、不需要額外的 DNS 劫持步驟——這件事本文沒有測。見 §3 non-claim 10。
 
 這一條同時是一個一般教訓：**`base_url` 是一個宣告了卻沒有發射者的狀態**。只看設定 schema 會判「接縫是開的」，只有問「哪一行生產碼讀它」才會看到塌陷。
 
@@ -111,7 +113,7 @@ sprites runtime 之所以能繞過這點，是因為它根本不用宿主 worktr
 | 接縫 | 判定 | 決定性 receipt |
 |---|---|---|
 | (1) 上游 `runtime.Runtime` 實作 | 需 fork＋自建，換掉二進位保管模型 | `loop/defaults.go:47-68` 硬編 map；`runtime.lock.json` 只鎖上游 asset/binary sha256 |
-| (2) 本地 shim 講 sprites exec HTTP API | 物理關閉 | `BaseURL` 零消費端；`sprites.New(config.Token)`；二進位內 `api.sprites.dev` 出現 1 次 |
+| (2) 本地 shim 講 sprites exec HTTP API | 設定面物理關閉（撥號路徑未測，見非量測 10） | `BaseURL` 零消費端；`sprites.New(config.Token)`；二進位內 `api.sprites.dev` 出現 1 次 |
 | (3) 只包 carrier 命令 | 物理關閉 | 無 bind mount flag；沙盒內 `/Users` 不存在；宿主 worktree 無回寫路徑 |
 
 沒有一條符合 `#175` 自己下的門檻「最多一個 adapter，不得有 interface／factory／registry」。
@@ -198,7 +200,7 @@ grep -rIl <canary> /sandbox /tmp /etc /home /root /var       → 無命中
 正向控制：printf <canary> > /tmp/canary.txt 後同一條 grep    → /tmp/canary.txt（掃描器確實找得到）
 ```
 
-兩個沙盒各掛不同 provider，身分互不相同也互不可見：
+兩個沙盒各掛不同 provider，**拿到的 placeholder 參照**互不相同也互不可見：
 
 ```
 w1 placeholder sha256[:12] 56421f381395  len 55
@@ -206,7 +208,7 @@ w2 placeholder sha256[:12] 9245489b4a81  len 56
 placeholders_differ: True     w2_can_see_w1_canary: False
 ```
 
-沙盒手上只有一個 `openshell:resolve:` 參照，真值由 gateway 在出口解析。
+沙盒手上只有一個 `openshell:resolve:` 參照，真值由 gateway 在出口解析。**這證到的是「兩個參照字面不同」，不是「兩個參照解析出的真實憑證不同」**——後者才是 `#175` 要的 distinct token identity by per-bucket readback；gateway 理論上可能把兩個不同參照解回同一把金鑰。這道差距沒有補上，見 §3 non-claim 6。
 
 ### 2.6 兩個必須寫下來的代價
 
@@ -259,7 +261,9 @@ sandbox 建立：4.12s（首次）/ 1.55s / 1.28s（映像已在本機）
 | 沙盒 n175-d（linux/aarch64） | `Ran 572 tests` — FAILED (failures=8, errors=7) | 84 |
 | 宿主 worktree（darwin/arm64） | `Ran 572 tests` — OK | 313 |
 
-沙盒側 15 個失敗**全部是同一個原因**：`required noodle runtime command not found: noodle`（`runtime_contract.py:502`）。這不是偶發，是本 repo 的鎖檔決定的——`policy/runtime.lock.json` 的 `platforms` 只有 `darwin_arm64`，Linux 沙盒拿不到任何通過雜湊驗證的 noodle 二進位。`./noodles verify --json` 在沙盒內則正常通過。
+沙盒側 15 個失敗**全部是同一個原因**：`required noodle runtime command not found: noodle`（`runtime_contract.py:502`）。這不是偶發，是本 repo 的鎖檔決定的——`policy/runtime.lock.json` 的 `platforms` 只有 `darwin_arm64`，Linux 沙盒拿不到任何通過雜湊驗證的 noodle 二進位。
+
+**這本身是一個獨立 finding，不只是成本量測的附註**：同一棵樹裡 `./noodles verify --json` 在沙盒內正常通過（rc=0），因為 `verify` 的路徑不呼叫 `resolve_locked_runtime_binary`；它對「這個平台能不能拿到已鎖定的 noodle 二進位」是**盲的**。也就是說，`verify` 綠燈目前不能被讀成「這個環境可以跑 cook」——它只覆蓋了 runtime 鎖檔以外的檢查面。任何未來想用 `verify` 通過與否當 Linux 沙盒可用性判準的人都會被這個盲點誤導。
 
 秒數差不可解讀為「沙盒比較快」：兩邊 CPU 配額、Python 版本（3.14.3 vs 宿主）與磁碟後端都不同，這是單次、單一配置的觀察。
 
@@ -276,6 +280,7 @@ sandbox 建立：4.12s（首次）/ 1.55s / 1.28s（映像已在本機）
 7. **長時穩定性、checkpoint／restore、崩潰後 session 復原、資源上限行為全未測。** 每個沙盒生命週期都是分鐘級。
 8. **本次只在一台宿主、一種 driver（OrbStack 上的 Docker）、`openshell 0.0.59` 的單一組合上量測。** 換 driver（VM／Kubernetes）、換 gateway 部署形態的行為不在本文範圍。
 9. **`--approval-mode` 的 agent-authored policy proposal 流程未測。**
+10. **sprites SDK 的撥號路徑（`HTTPS_PROXY` + `ProxyFromEnvironment` + gateway 既有的 TLS 終結能力組合起來能不能攔到 `api.sprites.dev`）未測。** §1 接縫 (2) 的「物理關閉」只驗證了設定面（`BaseURL` 零消費端、二進位內字串出現次數），沒有驗證撥號層；本文 §2.4／§2.6a 已經證明 gateway 對任意 HTTPS 目的地做同一種攔截，這條路徑是否真能繞過「新增 adapter」門檻，需要一次真跑才能判，本文沒有做。
 
 ## 4. 解封條件（可證偽，按成本排序）
 
@@ -289,7 +294,9 @@ HOLD 由下列條件解除；每一條都是一次可執行的實驗，不是一
 
 只要 (1) 不成立，(2)–(5) 都不必花。
 
-## 5. 與現有機制的對照（只列本次真的量到的維度）
+## 5. 與現有機制的對照（右欄只列本次真的量到的維度）
+
+左欄「現況」取自既有 `.noodle.toml`／`codex_isolation` 原始碼與既有測試套件（`tests/run.sh` 內既有的 `codex_surface_canary` 測試這次隨套件跑過一次，但左欄其餘各格是讀碼／讀設定得到，不是本次為了這張表另外量測）；只有右欄「OpenShell 沙盒」是本次在真宿主上量到的。
 
 | 維度 | `codex_isolation` + worktree lane（現況） | OpenShell 沙盒（本次量測） |
 |---|---|---|
@@ -305,4 +312,4 @@ HOLD 由下列條件解除；每一條都是一次可執行的實驗，不是一
 
 ## 6. 本文的權威層級
 
-本文是 N-class 描述與研究輸出。它沒有新增任何 L gate、沒有改動任何 runtime／policy 設定、沒有宣稱上述任一能力已經在 `noodles` 的執行路徑上生效。所有沙盒與 provider 在量測後都已刪除，gateway 讀回 `No sandboxes found.` 且 provider 清單回到量測前的兩筆。
+本文是 N-class 描述與研究輸出。它沒有新增任何 L gate、沒有改動任何 runtime／policy 設定、沒有宣稱上述任一能力已經在 `noodles` 的執行路徑上生效。所有沙盒與 provider 在量測後都已刪除，gateway 讀回 `No sandboxes found.` 且 provider 清單回到量測前的兩筆（`claude-code`、`codex-runtime-env`）。§2.6b 已記錄「增量 policy 指令會併進既有群組」這個風險，因此這裡額外核過內容、不只核過名字：兩筆 provider 的 `openshell provider get` 讀回 `Resource version: 1`（型別／憑證鍵數與量測前一致：`claude-code`=1 把 credential key、`codex-runtime-env`=4 把），OpenShell 的 resource version 是平台自己的樂觀併發計數器，量測期間若曾被寫入會遞增；停在 1 代表這兩筆自建立以來未被本次任何 probe 動過。
