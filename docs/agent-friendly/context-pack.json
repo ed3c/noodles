@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "domain": "agent-friendly-software-architecture",
+  "subject": {"repository": "ed3c/noodles", "revision": "b9d4a56d29fcdbf3f56f29411018a1afdcc43e05"},
+  "contributor_context": "Issue-solving Agents operate with narrow task context and should not require a complete model of noodles. The repository therefore bounds document traversal and routes work toward the nearest executable authority.",
+  "design_objective": "Make the locally obvious noodles change the globally correct change without laundering guidance into verification authority.",
+  "invariants": [
+    {"id":"I1","title":"Conventional path first","statement":"The supported path should require fewer decisions than a shortcut.","claim_ids":["AF.BEST_PATH"]},
+    {"id":"I2","title":"Mechanical rejection","statement":"Forbidden structural or authority states should fail at deterministic/provider boundaries with supported-path diagnostics.","claim_ids":["AF.FORBIDDEN"]},
+    {"id":"I3","title":"One admitted writer","statement":"Every durable truth has one obvious owner and admitted mutation or transition surface.","claim_ids":["AF.WRITER"]},
+    {"id":"I4","title":"Isolation","statement":"Local mutation is isolated from shared control surfaces; this does not imply Dune-style feature-owned source topology.","claim_ids":["AF.ISOLATION"]},
+    {"id":"I5","title":"Explicit exceptions","statement":"Bootstrap, recovery, and cross-boundary exceptions remain explicit, bounded, and evidence-gated.","claim_ids":["AF.EXCEPTIONS"]}
+  ],
+  "carriers": [
+    {"name":"Exact GitHub Issue","responsibility":"Names one repository-mutating atom, target, lifecycle, dependencies and optional component/feature boundary.","invariant_refs":["I1","I5"],"claim_ids":["AF.BEST_PATH"]},
+    {"name":"Noodle-owned worktree","responsibility":"Contains repository mutation away from the shared control checkout.","invariant_refs":["I4"],"claim_ids":["AF.ISOLATION"]},
+    {"name":"Nearest executable contract/test/oracle","responsibility":"Carries target-local deterministic acceptance instead of relying on prose.","invariant_refs":["I1","I2"],"claim_ids":["AF.BEST_PATH","AF.FORBIDDEN"]},
+    {"name":"Durable owner/writer map","responsibility":"Separates system intent, Issue lifecycle, scheduling/worktrees, candidate source, provider reality and reconciliation authorities.","invariant_refs":["I3"],"claim_ids":["AF.WRITER"]},
+    {"name":"Trusted GitHub verification and landing","responsibility":"Binds exact-head provider admission, merge and closure reality.","invariant_refs":["I1","I2"],"claim_ids":["AF.BEST_PATH","AF.FORBIDDEN"]}
+  ],
+  "claims": [
+    {"claim_id":"AF.CONTEXT_ROUTE","semantic_kernel":"Narrow-context contributors need a bounded route to the nearest relevant authority.","domain_realization":"AGENTS.md -> system contract when needed -> issue-named executable contract/test, maximum three nodes.","authority_ceiling":"L","evidence_ids":["E-DOC-ROUTE"],"negative_claims":["The route test proves Agent comprehension."],"best_path_consequence":"Stop architecture-document traversal after the issue-selected executable boundary."},
+    {"claim_id":"AF.BEST_PATH","semantic_kernel":"The conventional path should be easier than shortcuts and completion should mean physically/provider verified completion.","domain_realization":"Exact Issue -> isolated worktree -> nearest executable boundary -> exact-head local evidence -> trusted GitHub landing/readback -> reconciliation.","authority_ceiling":"MIXED","evidence_ids":["E-SYSTEM-AF","E-AGENTS","E-ISSUE-PARSER","E-PROVIDER"],"negative_claims":["The end-to-end route is one mechanically guaranteed local gate.","Local tests alone authorize completion."],"best_path_consequence":"Follow the exact Issue and provider-bound path; distinguish P routing, L local evidence, and R provider reality."},
+    {"claim_id":"AF.FORBIDDEN","semantic_kernel":"Known invalid states should fail mechanically where possible.","domain_realization":"Repository verification, exact parsers, structural checks, dependency restrictions and trusted provider gates reject classes of invalid states.","authority_ceiling":"L","evidence_ids":["E-SYSTEM-AF","E-VERIFY-REPO","E-ISSUE-PARSER","E-FITNESS"],"negative_claims":["Every architecture invariant is mechanically enforced.","All fitness thresholds are hard gates."],"best_path_consequence":"Prefer an existing deterministic rejection seam over adding prose; preserve each gate's exact evidence ceiling."},
+    {"claim_id":"AF.WRITER","semantic_kernel":"Durable truth should have one obvious writer/transition surface.","domain_realization":"The system contract separates owners and admitted transitions; concrete single-source rules such as task-profile literals are mechanically checked.","authority_ceiling":"MIXED","evidence_ids":["E-SYSTEM-AF","E-SINGLE-PROFILE"],"negative_claims":["Repository-wide semantic duplicate-writer detection is complete."],"best_path_consequence":"Mutate durable truth only through its admitted owner/transition; treat undocumented duplicate-writer coverage as UNKNOWN."},
+    {"claim_id":"AF.ISOLATION","semantic_kernel":"Local work should not accumulate uncontrolled mutation in shared surfaces.","domain_realization":"Noodles isolates repository mutation in Noodle-owned worktrees and bounds ordinary mutations by declared component surfaces.","authority_ceiling":"MIXED","evidence_ids":["E-SYSTEM-AF","E-AGENTS","E-COMPONENTS"],"negative_claims":["Noodles implements Dune Feature-owned folders and reserved-file auto-discovery.","Component isolation is absolute."],"best_path_consequence":"Use the isolated worktree and declared component; do not infer product-source topology that is not evidenced."},
+    {"claim_id":"AF.EXCEPTIONS","semantic_kernel":"Exceptions should be narrow, explicit and unable to become a second normal path by precedent.","domain_realization":"Bootstrap/recovery atoms and trusted transitions are explicitly bounded; cross-component contract work is an admitted escape that relies on surrounding gates.","authority_ceiling":"MIXED","evidence_ids":["E-SYSTEM-AF","E-AGENTS","E-COMPONENTS"],"negative_claims":["contract:* is itself a narrow path glob.","An exception can silently become the default path."],"best_path_consequence":"Use normal component paths by default; treat broad contract scope as an explicit exception requiring the full admission/proof path."}
+  ],
+  "divergences": [
+    "Dune shapes product source topology with Feature-owned folders, reserved-file discovery, Client/Host contracts and package direction; noodles primarily shapes Issue/worktree/component/evidence/provider topology.",
+    "Noodles adds explicit P/L/R/N authority separation and exact-subject provider evidence binding beyond the supplied Dune excerpt.",
+    "Noodles complexity metrics include advisory N-class warnings; they are not all equivalent to Dune mechanical constraints."
+  ],
+  "negative_claims": [
+    "Prose or model consensus is enforcement.",
+    "Phrase-presence tests prove runtime correctness.",
+    "All fitness thresholds are hard gates.",
+    "The contract component makes unrestricted cross-component mutation normal.",
+    "Noodles has Dune-style Feature-owned folders/auto-discovery.",
+    "Local tests alone authorize merge/completion.",
+    "One-writer is fully mechanically proven repository-wide."
+  ],
+  "best_path": [
+    "Start from the exact Issue and declared component/feature markers.",
+    "Use the Noodle-owned isolated worktree; never mutate the shared control checkout.",
+    "Read AGENTS.md, then the system contract only when required, then the issue-selected executable contract/test; stop traversal.",
+    "Implement the smallest independently useful atom.",
+    "Run mandatory baseline acceptance plus every applicable specialized physical oracle.",
+    "Bind evidence to the exact candidate head/tree.",
+    "Use trusted GitHub verification, exact-head landing and provider readback for repository completion.",
+    "Reconcile local state only after provider reality is read back."
+  ],
+  "evidence_manifest": "fixtures/noodles/evidence-manifest.json"
+}
