@@ -28,6 +28,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from claim_contract import sweep_dead_claims
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
     blocking_handoff_readback,
@@ -1278,6 +1279,12 @@ def start_unattended(
             except GateError as exc:
                 print(f"repair: {exc}", file=sys.stderr)
             try:
+                for outcome in sweep_dead_claims(root):
+                    if outcome.get("action") in ("adopted", "released", "held"):
+                        print(json.dumps(outcome, separators=(",", ":"), sort_keys=True), file=sys.stderr)
+            except GateError as exc:
+                print(f"claims: {exc}", file=sys.stderr)
+            try:
                 reconcile_once(root, control_url)
             except GateError as exc:
                 print(f"reconcile: {exc}", file=sys.stderr)
@@ -1446,7 +1453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print(json.dumps({"reconciled": completed}))
                     time.sleep(args.interval)
             else:
-                print(json.dumps({"reconciled": reconcile_once(root, args.control_url)}))
+                print(json.dumps({"reconciled": reconcile_once(root, args.control_url), "claims": sweep_dead_claims(root)}))
             return 0
         if args.command == "repair":
             print(json.dumps({"repairable": repair_pending_reviews(root, args.control_url)}, indent=2, sort_keys=True))

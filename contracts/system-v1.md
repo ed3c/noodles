@@ -183,6 +183,12 @@ A claimed subject MUST exclude only its dependency-connected component from admi
 
 `./noodles start` MUST admit at most one truthful upstream Noodle daemon per repository; a ghost `status.json`, stale lease, foreign lease owner, listener-less child, or unrelated `127.0.0.1:3210` occupant fails closed with a distinct diagnostic. Admission boundary: upstream `.noodle/noodle.lock` readback, exact spawned-child pid identity, `lsof` listener ownership, live `/api/snapshot` response, `.noodle/status.json` loop state, planted fake-alive controls, and own-child-only termination with orphan/listener residue readback.
 
+### CONCURRENCY.CLAIM_LIFECYCLE.001
+
+Every execute-branch claim MUST stay mechanically owned across its whole lifecycle: acquisition by atomic provider ref creation; adoption when the subject is open awaiting_land with exactly one open PR and no live session, in which case the re-admitted cook resumes the existing branch and PR through the existing repair/exact-head ceremony; and release when adoption is not admitted, which preserves the claim content on a salvage branch, flips the subject back to ready with a fail-back receipt naming the red required check and the preserved branch, and only then frees the claim name. Session liveness derives only from the provider/session ledger (`.noodle/sessions` event ages), never from a process table, and an orphaned awaiting_land candidate is never a state only an operator notices.
+
+Admission boundary: the deterministic dead-claim detector and sweep in `claim_contract.py` (`dead_claim_snapshot`/`sweep_dead_claims`), executed by the supervised runner loop and `./noodles reconcile`, with planted per-class fixtures in `tests/test_claim_lifecycle.py`; every state flip, salvage ref, and claim-name deletion occurs only behind that detector with direct provider readback of each transition.
+
 ## 10. Cross-repository model
 
 ### CROSS_REPO.AUTHORITY.001
