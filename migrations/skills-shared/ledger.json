@@ -74,11 +74,18 @@
     },
     {
       "id": "lancedb-retrieval-projection",
-      "disposition": "REVALIDATE",
-      "claim": "Admission requires a same-task A/B win in quality, context size, latency, or cost.",
-      "physical_evidence": [],
-      "non_claims": ["Architecture diagrams do not prove that a vector store is needed."],
-      "next_issue": "EXP-LANCEDB-01"
+      "disposition": "DROP",
+      "claim": "The same-task A/B ran and LanceDB lost it: on one corpus, one embedder, and one top-5 budget it reached the target file for 12 of 17 tasks against the landed path's 16, and spent 55% more context doing it.",
+      "physical_evidence": [
+        "ed3c/noodles#11 pinned lancedb 0.37.1 on one corpus and one embedder: recall@5 0.706 against the landed arm's 0.941, and a ranking byte-identical to the same vectors scored with no store at all",
+        "migrations/skills-shared/lancedb-ab-evidence.json"
+      ],
+      "non_claims": [
+        "Architecture diagrams do not prove that a vector store is needed.",
+        "DROP records a measured loss on this repository at this budget; it is not a proof that no vector store can help a larger corpus.",
+        "The store-free control arm, not the A/B gap, is what attributes the result to LanceDB: the B arm's chunker differs from grepai's, so the gap alone would have measured the chunker."
+      ],
+      "validation_receipt": "migrations/skills-shared/lancedb-ab-evidence.json"
     },
     {
       "id": "git-town-stacked-pr",
