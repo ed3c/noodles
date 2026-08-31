@@ -102,6 +102,12 @@ Noodle owns scheduling, orders, process isolation, and worktrees. pstack owns P-
 
 No layer may become a substitute scheduler, generic worktree manager, generic review framework, mutable requirement-status store, or provider authority merely because it can observe another layer.
 
+### OWNERSHIP.TASK_PROFILE_SOURCE.001
+
+`policy/fitness.json` is the only committed definition of the Codex task profiles. The repository gate, the schedule output contract, the carrier shim, and the contract tests MUST derive their expectation from that one key rather than pin a second copy, so a profile transition touches one file plus at most one staged acceptance. A surface that cannot read the definition — Noodle's own runtime config and frozen provider fixtures — is an exemption declared in the same policy file, not an undeclared duplicate.
+
+The L admission boundary is `verify_repository`: it rejects any tracked file outside the declared exemptions that writes an admitted task model literally, and it rejects a target tree whose profiles differ from the verifying engine tree's definition. The carrier fails closed before spawn when that single definition is unreadable or is not exactly two well-formed schedule/execute profiles, and continues to reject unadmitted, ambiguous, or reasoning-overriding launches.
+
 ## 5. Golden Path invariants
 
 ```text

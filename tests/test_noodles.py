@@ -39,7 +39,8 @@ from tests.support import (
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
-TASK_PROFILES = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_task_profiles"]
+TASK_PROFILES = skill_contract.task_profiles(ENGINE_ROOT)
+EXECUTE_MODEL = TASK_PROFILES["execute"]["model"]
 
 class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
@@ -114,12 +115,35 @@ class RepositoryGateTests(unittest.TestCase):
     def test_codex_task_profiles_are_exact(self) -> None:
         with (CANDIDATE_ROOT / ".noodle.toml").open("rb") as handle:
             config = tomllib.load(handle)
-        expected = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
-        self.assertEqual(TASK_PROFILES, expected)
-        self.assertEqual(config["routing"]["defaults"]["model"], expected["schedule"]["model"])
+        self.assertEqual(set(TASK_PROFILES), {"schedule", "execute"})
+        self.assertEqual(config["routing"]["defaults"]["model"], TASK_PROFILES["schedule"]["model"])
         self.assertEqual(config["agents"]["codex"]["path"], ".agents/bin")
         result = self.verify()
         self.assertTrue(result["ok"], result["errors"])
+
+    def test_a_second_task_profile_literal_is_rejected(self) -> None:
+        for relative in ("noodles.py", ".agents/bin/codex", "tests/test_schedule_contract.py"):
+            with self.subTest(reader=relative):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / relative
+                path.write_text(path.read_text() + f'\n# constraint: planted second definition {EXECUTE_MODEL}\n')
+                self.commit(root)
+                result = self.verify(root)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any(f"{relative} pins task model" in item for item in result["errors"]), result["errors"])
+
+    def test_task_profile_literal_exemption_must_name_tracked_paths(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / "policy/fitness.json"
+        policy = json.loads(path.read_text())
+        policy["task_profile_literal_exempt_paths"] = [*policy["task_profile_literal_exempt_paths"], "policy/absent.json"]
+        path.write_text(json.dumps(policy, indent=2) + "\n")
+        self.commit(root)
+        result = noodles.verify_repository(root, root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("untracked path: policy/absent.json" in item for item in result["errors"]), result["errors"])
 
     def test_runtime_lock_pins_expected_release(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/runtime.lock.json").read_text())
@@ -365,7 +389,7 @@ class RepositoryGateTests(unittest.TestCase):
         proposed = {
             "orders": [{
                 "id": "ed3c/noodles#31",
-                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}],
             }]
         }
         self.assertEqual(skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES), [])
