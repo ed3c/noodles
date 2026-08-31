@@ -185,7 +185,7 @@ class MetricsFeatureEvidenceHandoffTests(unittest.TestCase):
             "draft": False,
             "body": f"Refs {SUBJECT}",
             "head": {"sha": self.head},
-            "base": {"ref": "main"},
+            "base": {"ref": "main", "sha": cmd(["git", "rev-parse", "main"], self.root)},
         }
 
     def assert_rejected(self, pattern: str) -> None:

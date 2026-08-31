@@ -772,6 +772,95 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
     }
 
 
+def registered_worktrees(root: Path) -> dict[Path, dict[str, str]]:
+    # constraint: ed3c/noodles#46 - Git's own worktree registry is the single registry;
+    # constraint: this reads it, it does not keep a second copy and does not create worktrees.
+    records: dict[Path, dict[str, str]] = {}
+    current: dict[str, str] = {}
+    for line in [*git(root, "worktree", "list", "--porcelain").splitlines(), ""]:
+        if line:
+            key, _, value = line.partition(" ")
+            current[key] = value
+            continue
+        if current:
+            records[Path(current["worktree"]).resolve()] = current
+            current = {}
+    return records
+
+
+def session_worktree_paths(project: Path) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for spawn in sorted((project / ".noodle" / "sessions").glob("*/spawn.json")):
+        payload = load_json(spawn)
+        if not isinstance(payload, dict):
+            raise GateError(f"Noodle session spawn record is not an object: {spawn}")
+        declared = str(payload.get("worktree_path") or "").strip()
+        if declared:
+            paths[spawn.parent.name] = Path(declared).expanduser().resolve()
+    return paths
+
+
+def execute_provenance_admission(
+    root: Path,
+    subject_value: str,
+    session_id: str,
+    head: str,
+    base_sha: str,
+    default_branch: str,
+) -> dict[str, Any]:
+    # constraint: ed3c/noodles#46 - I2 provenance: one exact order binds one exact session,
+    # constraint: one Git-registered worktree, one non-default branch, one candidate head, and
+    # constraint: one reconciled provider base. Every other shape fails closed here, before any
+    # constraint: Issue state or handoff mutation, so a rejected candidate leaves no residue.
+    subject = parse_subject(subject_value)
+    root = root.resolve()
+    context = validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
+    project = Path(context["project"]).resolve()
+    repository = runtime_gh_repo_from_git(root, error_cls=GateError)
+    if repository != subject.repo:
+        raise GateError(f"execute worktree repository {repository} != order repository {subject.repo}")
+    common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    if common.parent != project:
+        raise GateError(f"execute worktree {root} is foreign: git common directory {common} is outside Noodle project {project}")
+    registry = registered_worktrees(root)
+    entry = registry.get(root)
+    if entry is None:
+        raise GateError(f"execute worktree {root} is not a registered Git worktree of {common}")
+    branch_ref = entry.get("branch") or ""
+    if not branch_ref:
+        raise GateError(f"execute admission requires an attached branch; worktree {root} has a detached HEAD at {entry.get('HEAD')}")
+    branch = branch_ref.removeprefix("refs/heads/")
+    if branch == default_branch:
+        raise GateError(f"execute admission refuses default branch {default_branch}; the shared control checkout is read/reconcile only")
+    expected_branch = execute_branch(subject_value)
+    if branch != expected_branch:
+        raise GateError(f"execute branch {branch} != exact order branch {expected_branch}")
+    duplicates = sorted(str(path) for path, item in registry.items() if path != root and item.get("branch") == branch_ref)
+    if duplicates:
+        raise GateError(f"execute branch {branch} is already checked out in registered worktree {duplicates[0]}")
+    sharing = sorted(name for name, path in session_worktree_paths(project).items() if path == root and name != session_id)
+    if sharing:
+        raise GateError(f"execute worktree {root} is registered to sessions {session_id} and {sharing[0]}; provenance is ambiguous")
+    if entry.get("HEAD") != head or git(root, "rev-parse", "HEAD") != head:
+        raise GateError(f"execute worktree HEAD {entry.get('HEAD')} != admitted candidate head {head}")
+    if not HEX40_RE.fullmatch(base_sha or ""):
+        raise GateError(f"execute admission requires an exact reconciled provider base; got {base_sha!r}")
+    if run(["git", "merge-base", "--is-ancestor", base_sha, head], cwd=root, check=False).returncode != 0:
+        raise GateError(f"execute branch {branch} does not contain admitted provider base {base_sha}")
+    return {
+        "order": subject_value,
+        "session_id": session_id,
+        "session_spawn": str(project / ".noodle" / "sessions" / session_id / "spawn.json"),
+        "repository": repository,
+        "git_common_dir": str(common),
+        "worktree_path": str(root),
+        "branch": branch,
+        "default_branch": default_branch,
+        "candidate_head": head,
+        "base_sha": base_sha,
+    }
+
+
 def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str, Any]) -> dict[str, Any]:
     subject = parse_subject(subject_value)
     if subject.repo != runtime_gh_repo_from_git(root, error_cls=GateError):
@@ -787,7 +876,14 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     if pr.get("head", {}).get("sha") != head:
         raise GateError("handoff PR head does not match current worktree HEAD")
     session_id = os.getenv("NOODLE_SESSION_ID", "").strip()
-    validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
+    provenance = execute_provenance_admission(
+        root,
+        subject_value,
+        session_id,
+        head,
+        str(pr.get("base", {}).get("sha") or ""),
+        str(policy["default_branch"]),
+    )
     resolve_locked_runtime_binary(root, error_cls=GateError)
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
@@ -873,6 +969,7 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
         "state": "awaiting_land",
         "acceptance": feature_contract.BASELINE_CONTRACT_ID,
         "base": base_ref,
+        "provenance": provenance,
         "tree": evidence["tree"],
         "feature": specialized["feature_id"] if specialized else None,
         "feature_code_surface_sha256": specialized["code_surface_sha256"] if specialized else None,
