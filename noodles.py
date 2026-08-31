@@ -80,6 +80,9 @@ N_CLASS_EVIDENCE_RE = re.compile(
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
 ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
+# constraint: this module's own tree carries the one committed task-profile definition it verifies
+# constraint: a target tree against, so a mutated copy's drifted policy still fails closed here.
+ENGINE_ROOT = Path(__file__).resolve().parent
 class GateError(RuntimeError):
     """A fail-closed policy or physical readback failure."""
 @dataclass(frozen=True)
@@ -387,12 +390,33 @@ def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
     return errors
 
 
+def validate_task_profile_single_source(root: Path, paths: set[str], policy: dict[str, Any], profiles: dict[str, dict[str, str]]) -> list[str]:
+    # constraint: an admitted task model may be written down only in policy/fitness.json and in the
+    # constraint: exempt surfaces that cannot read it (Noodle's own .noodle.toml, frozen provider
+    # constraint: fixtures); every other tracked file must derive it, so a sixth literal fails here.
+    errors: list[str] = []
+    exempt = set(policy["task_profile_literal_exempt_paths"])
+    for missing in sorted(exempt - paths):
+        errors.append(f"task profile literal exemption names an untracked path: {missing}")
+    models = sorted({profile["model"] for profile in profiles.values()})
+    for relative in sorted(paths - exempt):
+        try:
+            text = (root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for model in models:
+            if model in text:
+                errors.append(f"{relative} pins task model {model!r}; derive it from policy/fitness.json via skill_contract.task_profiles")
+    return errors
+
+
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
     policy = load_json(policy_root / "policy/fitness.json")
     errors: list[str] = []
-    required_task_profiles = policy.get("required_codex_task_profiles"); expected_task_profiles = {"schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"}, "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}
+    expected_task_profiles = skill_contract.task_profiles(ENGINE_ROOT)
+    required_task_profiles = policy.get("required_codex_task_profiles")
     if required_task_profiles != expected_task_profiles: errors.append(f"policy required_codex_task_profiles must be exactly {expected_task_profiles!r}")
     try:
         entries = tracked_entries(root)
@@ -403,6 +427,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if mode not in allowed_modes:
             errors.append(f"forbidden git mode {mode}: {relative}")
     paths = {relative for _, relative in entries}
+    errors.extend(validate_task_profile_single_source(root, paths, policy, expected_task_profiles))
     errors.extend(validate_noodle_worktree_ignore(root, paths))
     errors.extend(validate_agent_document_route(root, paths, policy))
     for required in policy["required_paths"]:
