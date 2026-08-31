@@ -134,6 +134,33 @@ ends, so no `blobs/sha256/*` object exists anywhere yet. That spool is a bounded
 the durable store. Custody is evidence: never correctness, never merge authority, and no admission
 path reads it.
 
+The hosted agentic lane's mutation boundary is judged as data at the trusted boundary, never by the
+job that proposes it. One target-local execution task is identified by the sha256 of its exact typed
+declaration — target, subject, provider body digest, base head, runtime, evidence policy, write
+boundary — so the idempotency nonce is derived and never supplied, and a duplicate dispatch converges
+on the same task instead of creating a second one. Issue prose is never an input: an injected
+paragraph changes the body digest, which makes an in-flight dispatch stale, but it can never widen
+the target, the lane, or the boundary. `gha_apply_admission` then judges one Agent proposal — one
+branch, one PR body, one changed-path set — inside `verify_pull_request`, which runs from the trusted
+checkout of the default branch. Trusted workflow bytes are refused first and unconditionally, so a
+task whose declared boundary contains `.github` still cannot rewrite the gate that judges it; a
+default-branch push, a foreign branch, a path outside the declared boundary, a `Closes` or multi-line
+PR body, and a candidate carrying no bound evidence publication each fail closed with their own
+diagnostic. Failure routing is deterministic and outside model judgment: a capability refusal
+produces the idempotent `local-noodle` handoff and no hosted branch at all, while a portable runtime
+failure returns the task to the bounded repair lane and stops at `REPAIR_MAX_ATTEMPTS`.
+
+Three halves of that lane are named absent, not implied present. The gh-aw workflow source, its
+compiled lock workflow, and the pinned compiler/action commits are not here: `policy/fitness.json`
+pins `max_workflows` to exactly 2 and `verify_repository` enforces equality, so a third workflow file
+needs its own atom (`ed3c/noodles#265`). Cross-repository `repository_dispatch` stays held by
+`policy/github.json`'s `cross_repository_status`, so the seven declaration comparisons in
+`gha_execution_task` are self-consistent at the same-repository canary and refuse a real foreign
+sender only after `ed3c/noodles#266`; the machine-readable origin digest in the PR body belongs to
+that same atom, because the lander's exactly-one-`Refs`-line invariant has to be widened with it. And
+no Issue declares `gha-agentic` yet, so this gate has executed zero times on the provider: its
+evidence is L, never R, until `ed3c/noodles#267` runs one live canary.
+
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 
 ```text
