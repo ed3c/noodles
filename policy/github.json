@@ -4,6 +4,10 @@
   "allowed_repositories": [
     "ed3c/noodles"
   ],
+  "commit_identity": {
+    "name": "ed3c",
+    "email": "ed3c@users.noreply.github.com"
+  },
   "default_branch": "main",
   "required_check": "verify",
   "merge_method": "merge",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import codex_isolation
+import collections
 import daemon_lease
 import feature_contract
 import fnmatch
@@ -16,6 +17,7 @@ import re
 import retrieval_contract
 import schedule_domain
 import runtime_contract
+import select
 import signal
 import skill_contract
 import stat
@@ -31,7 +33,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from claim_contract import sweep_dead_claims
 from disposition_contract import sweep_closure_dispositions
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
@@ -77,6 +79,21 @@ MARKER_PATTERNS = {
 }
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
 COMPONENT_MAP_PATH = "policy/components.json"
+SUPERVISE_LOG_RELATIVE = ".noodle/supervise.log"
+SUPERVISE_TAIL_LINES = 40
+SUPERVISE_POLL_SECONDS = 1.0
+SUPERVISE_TERMINATE_GRACE = 10.0
+DEFAULT_WEDGE_SECONDS = 1500.0
+DEFAULT_ROTATE_AFTER_SECONDS = 3000.0
+DEFAULT_RESTART_BACKOFF_SECONDS = 180.0
+RATE_LIMIT_TAIL_RE = re.compile(r"rate limit", re.IGNORECASE)
+SECONDARY_BURST_REMAINING = 500
+SECONDARY_BURST_COOLDOWN_SECONDS = 180.0
+RATE_LIMIT_COOLDOWN_CEILING_SECONDS = 4000.0
+RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS = 600.0
+RATE_LIMIT_RESET_MARGIN_SECONDS = 60.0
+TOKEN_COMMAND_ENV = "NOODLES_TOKEN_COMMAND"
+GH_CARRIER_RELATIVE = ".agents/bin/gh"
 COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 COMPARE_FILES_CEILING = 300
 COMPONENT_INTRODUCTION_HEADING = "component introduction"
@@ -1588,6 +1605,332 @@ def start_unattended(
             process.terminate()
 
 
+def git_ok(root: Path, *args: str) -> bool:
+    return run(["git", *args], cwd=root, check=False).returncode == 0
+
+
+def commit_identity(root: Path) -> tuple[str, str]:
+    identity = protection_policy(root).get("commit_identity")
+    name = str(identity.get("name") or "").strip() if isinstance(identity, dict) else ""
+    email = str(identity.get("email") or "").strip() if isinstance(identity, dict) else ""
+    if not name or not email:
+        raise GateError("policy/github.json must declare commit_identity with a non-empty name and email")
+    return name, email
+
+
+def identity_git_argv(root: Path) -> list[str]:
+    name, email = commit_identity(root)
+    # constraint: inline -c only - writing git config mutates shared checkout state that every other session on this tree reads.
+    return ["git", "-c", f"user.name={name}", "-c", f"user.email={email}", "-c", "commit.gpgsign=false"]
+
+
+def unsaved_content_commits(root: Path, provider_head: str, local_head: str) -> list[str]:
+    # constraint: a daemon-made local merge commit carries no unique content, so containment is demanded only of non-merge commits.
+    revisions = [line.strip() for line in git(root, "rev-list", "--no-merges", f"{provider_head}..{local_head}").splitlines() if line.strip()]
+    return [revision for revision in revisions if not git(root, "branch", "-r", "--contains", revision, check=False).strip()]
+
+
+def heal_control_checkout(root: Path, default_branch: str, *, salvage_push: bool = True) -> dict[str, Any]:
+    branch = git(root, "branch", "--show-current")
+    if branch != default_branch:
+        raise GateError(f"heal refuses a control checkout on {branch or '<detached>'}, not default branch {default_branch}")
+    dirty = [line for line in git(root, "status", "--porcelain=v1", "--untracked-files=all").splitlines() if line.strip()]
+    if dirty:
+        raise GateError("heal refuses a dirty control checkout: " + "; ".join(dirty[:5]))
+    remote_ref = f"refs/remotes/origin/{default_branch}"
+    git(root, "fetch", "--quiet", "--no-tags", "origin", f"refs/heads/{default_branch}:{remote_ref}")
+    local_head = git(root, "rev-parse", "HEAD")
+    provider_head = git(root, "rev-parse", remote_ref)
+    actions: list[str] = []
+    salvage_ref = ""
+    if local_head != provider_head and not git_ok(root, "merge-base", "--is-ancestor", local_head, provider_head):
+        unsaved = unsaved_content_commits(root, provider_head, local_head)
+        if unsaved:
+            if not salvage_push:
+                raise GateError(f"heal refuses to reset {branch}: unsaved content commits {' '.join(unsaved)}")
+            salvage_ref = f"salvage-{default_branch}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+            git(root, "push", "--quiet", "origin", f"{local_head}:refs/heads/{salvage_ref}")
+            git(root, "fetch", "--quiet", "--no-tags", "origin", f"refs/heads/{salvage_ref}:refs/remotes/origin/{salvage_ref}")
+            if git(root, "rev-parse", f"refs/remotes/origin/{salvage_ref}") != local_head:
+                raise GateError(f"salvage push readback failed for origin/{salvage_ref}; refusing to reset {branch}")
+            actions.append("salvage_push")
+        git(root, "update-ref", f"refs/heads/{default_branch}", provider_head, local_head)
+        git(root, "reset", "--hard", "--quiet", provider_head)
+        actions.append("lossless_reset")
+    if git(root, "rev-parse", "HEAD") != provider_head:
+        git(root, "merge", "--ff-only", "--quiet", remote_ref)
+        actions.append("fast_forward")
+    healed_head = git(root, "rev-parse", "HEAD")
+    if healed_head != provider_head:
+        raise GateError(f"heal readback drift: local {healed_head} provider {provider_head}")
+    project = runtime_contract.noodle_project_root(root, error_cls=GateError)
+    lease_path = project / daemon_lease.LOCK_RELATIVE
+    lease_pid, lease_text = daemon_lease.read_lease(project)
+    if lease_pid is not None and not daemon_lease.process_alive(lease_pid):
+        lease_path.unlink()
+        if lease_path.exists():
+            raise GateError(f"stale lease readback failed: {lease_path} survived removal")
+        actions.append("cleared_stale_lease")
+    elif lease_pid is not None:
+        raise GateError(f"heal refuses to touch {lease_path}: pid {lease_pid} is alive")
+    elif lease_text:
+        raise GateError(f"heal refuses an unreadable lease: {lease_path} holds {lease_text!r}")
+    status = daemon_lease.read_status(project)
+    if not lease_path.exists() and str(status.get("loop_state") or "") in daemon_lease.LIVE_LOOP_STATES:
+        # constraint: with no lease a live loop_state is stale by construction, and daemon_lease.reject_existing_lease refuses to start over it.
+        write_json(project / daemon_lease.STATUS_RELATIVE, {**status, "loop_state": "idle"})
+        if str(daemon_lease.read_status(project).get("loop_state") or "") != "idle":
+            raise GateError("status-ghost cure readback failed")
+        actions.append("cured_status_ghost")
+    return {
+        "branch": default_branch,
+        "local_head_before": local_head,
+        "provider_head": provider_head,
+        "local_head_after": healed_head,
+        "salvage_ref": salvage_ref,
+        "actions": actions,
+    }
+
+
+def rate_limit_cooldown(payload: Any, now: float) -> float:
+    core = payload.get("resources", {}).get("core") if isinstance(payload, dict) else None
+    if not isinstance(core, dict):
+        raise GateError("rate limit readback is missing resources.core")
+    remaining = int(core.get("remaining") or 0)
+    reset = float(core.get("reset") or 0)
+    if remaining > SECONDARY_BURST_REMAINING:
+        # constraint: a full primary bucket means the 403 was secondary limiting, whose window is short and unrelated to reset.
+        return SECONDARY_BURST_COOLDOWN_SECONDS
+    wait = reset - now + RATE_LIMIT_RESET_MARGIN_SECONDS
+    return wait if 0 < wait < RATE_LIMIT_COOLDOWN_CEILING_SECONDS else RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS
+
+
+def rotation_env(base: Mapping[str, str], token_command: str) -> dict[str, str]:
+    env = dict(base)
+    env.setdefault("NOODLE_NO_BROWSER", "1")
+    if not token_command.strip():
+        return env
+    token = run(["bash", "-c", token_command]).stdout.strip()
+    if not token or any(character.isspace() for character in token):
+        raise GateError(f"{TOKEN_COMMAND_ENV} produced no single-token installation credential")
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    return env
+
+
+def run_supervised_generation(
+    root: Path,
+    argv: Sequence[str],
+    *,
+    wedge_seconds: float,
+    rotate_after_seconds: float,
+    env: Mapping[str, str] | None = None,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    process = subprocess.Popen(
+        list(argv),
+        cwd=str(root),
+        env=dict(env) if env is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    started = last_output = now_fn()
+    tail: collections.deque[str] = collections.deque(maxlen=SUPERVISE_TAIL_LINES)
+    reason = "exited"
+    while process.poll() is None:
+        ready, _, _ = select.select([process.stdout], [], [], SUPERVISE_POLL_SECONDS)
+        now = now_fn()
+        # constraint: the deadlines are checked every pass, not only on a silent one - a chatty generation must still rotate.
+        if now - started >= rotate_after_seconds:
+            reason = "rotation"
+            break
+        if now - last_output >= wedge_seconds:
+            reason = "wedge"
+            break
+        if not ready:
+            continue
+        line = process.stdout.readline()
+        if line:
+            tail.append(line.rstrip("\n"))
+            last_output = now
+            continue
+        try:
+            process.wait(timeout=SUPERVISE_TERMINATE_GRACE)
+        except subprocess.TimeoutExpired:
+            reason = "output_closed"
+        break
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=SUPERVISE_TERMINATE_GRACE)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=SUPERVISE_TERMINATE_GRACE)
+    # ponytail: the pipe is drained non-blocking because a surviving grandchild can hold its write end open forever; a blocking read would wedge the supervisor itself.
+    try:
+        os.set_blocking(process.stdout.fileno(), False)
+        for line in (process.stdout.read() or "").splitlines():
+            tail.append(line)
+    except (BlockingIOError, OSError, ValueError):
+        pass
+    process.stdout.close()
+    return {
+        "reason": reason,
+        "returncode": int(process.returncode if process.returncode is not None else -1),
+        "seconds": round(now_fn() - started, 3),
+        "tail": "\n".join(tail),
+    }
+
+
+def append_supervise_log(root: Path, receipt: Mapping[str, Any]) -> None:
+    project = runtime_contract.noodle_project_root(root, error_cls=GateError)
+    path = project / SUPERVISE_LOG_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **receipt}, sort_keys=True) + "\n")
+
+
+def supervise(
+    root: Path,
+    control_url: str,
+    *,
+    generations: int = 0,
+    wedge_seconds: float = DEFAULT_WEDGE_SECONDS,
+    rotate_after_seconds: float = DEFAULT_ROTATE_AFTER_SECONDS,
+    backoff_seconds: float = DEFAULT_RESTART_BACKOFF_SECONDS,
+    child_argv: Sequence[str] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    rate_limit_fn: Callable[[], Any] | None = None,
+) -> list[dict[str, Any]]:
+    default_branch = str(protection_policy(root)["default_branch"])
+    argv = list(child_argv or [sys.executable, str(root / "noodles.py"), "start", "--control-url", control_url])
+    read_rate_limit = rate_limit_fn or (lambda: gh_api("rate_limit"))
+    receipts: list[dict[str, Any]] = []
+    generation = 0
+    while generations <= 0 or generation < generations:
+        generation += 1
+        receipt: dict[str, Any] = {"generation": generation}
+        try:
+            receipt["heal"] = heal_control_checkout(root, default_branch)
+            env = rotation_env(os.environ, os.environ.get(TOKEN_COMMAND_ENV, ""))
+        except GateError as exc:
+            receipt["error"] = str(exc)
+            receipt["cooldown"] = backoff_seconds
+            receipts.append(receipt)
+            append_supervise_log(root, receipt)
+            sleep_fn(backoff_seconds)
+            continue
+        receipt.update(run_supervised_generation(
+            root, argv, wedge_seconds=wedge_seconds, rotate_after_seconds=rotate_after_seconds, env=env
+        ))
+        cooldown = 0.0
+        if receipt["returncode"] != 0 and RATE_LIMIT_TAIL_RE.search(receipt["tail"]):
+            cooldown = rate_limit_cooldown(read_rate_limit(), time.time())
+        elif receipt["returncode"] != 0 and receipt["reason"] == "exited":
+            cooldown = backoff_seconds
+        receipt["cooldown"] = cooldown
+        receipts.append(receipt)
+        append_supervise_log(root, receipt)
+        if cooldown > 0:
+            sleep_fn(cooldown)
+    return receipts
+
+
+def paced_gh(root: Path, argv: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    carrier = root / GH_CARRIER_RELATIVE
+    if not os.access(carrier, os.X_OK):
+        raise GateError(f"paced gh carrier is missing or not executable: {carrier}")
+    return run([str(carrier), *argv], cwd=root, check=check)
+
+
+def ceremony_commit(root: Path, message: str, paths: Sequence[str]) -> dict[str, Any]:
+    if not message.strip():
+        raise GateError("ceremony commit requires a non-empty message")
+    name, email = commit_identity(root)
+    if paths:
+        run(["git", "add", "--", *paths], cwd=root)
+    result = run([*identity_git_argv(root), "commit", "-m", message], cwd=root, check=False)
+    if result.returncode != 0:
+        # constraint: a rejected commit leaves the shared index staged, and the next session's commit would carry these paths under its own message.
+        if paths:
+            run(["git", "restore", "--staged", "--", *paths], cwd=root, check=False)
+        raise GateError(f"ceremony commit rejected: {(result.stderr or result.stdout).strip()}")
+    head, author_name, author_email, committer_name, committer_email = git(root, "log", "-1", "--format=%H%n%an%n%ae%n%cn%n%ce").splitlines()
+    if (author_name, author_email, committer_name, committer_email) != (name, email, name, email):
+        raise GateError(
+            f"commit identity readback failed at {head}: author {author_name} <{author_email}> committer {committer_name} <{committer_email}> != {name} <{email}>"
+        )
+    return {"verb": "commit", "head": head, "identity": f"{name} <{email}>", "paths": list(paths)}
+
+
+def ceremony_rebase(root: Path, upstream: str) -> dict[str, Any]:
+    before = git(root, "rev-parse", "HEAD")
+    result = run([*identity_git_argv(root), "rebase", upstream], cwd=root, check=False)
+    if result.returncode != 0:
+        run(["git", "rebase", "--abort"], cwd=root, check=False)
+        raise GateError(f"ceremony rebase onto {upstream} failed and was aborted: {(result.stderr or result.stdout).strip()}")
+    for state in ("rebase-merge", "rebase-apply"):
+        if Path(git(root, "rev-parse", "--git-path", state)).exists():
+            raise GateError(f"ceremony rebase onto {upstream} left {state} in progress")
+    return {"verb": "rebase", "upstream": upstream, "before": before, "head": git(root, "rev-parse", "HEAD")}
+
+
+def branch_tip_readback(gh_api_fn: Callable[..., Any], repository: str, branch: str) -> str:
+    payload = gh_api_fn(f"repos/{repository}/git/ref/heads/{branch}")
+    sha = payload.get("object", {}).get("sha") if isinstance(payload, dict) else None
+    if not isinstance(sha, str) or not HEX40_RE.fullmatch(sha):
+        raise GateError(f"branch tip readback failed for {repository} {branch}")
+    return sha
+
+
+def select_workflow_run(gh_api_fn: Callable[..., Any], repository: str, head_sha: str, workflow: str) -> dict[str, Any]:
+    runs = [item for item in github_protection.workflow_runs_for_head(gh_api_fn, GateError, repository, head_sha) if item["name"] == workflow]
+    if not runs:
+        raise GateError(f"no {workflow!r} workflow run for {repository} head {head_sha}")
+    return max(runs, key=lambda item: (item["run_attempt"], item["id"]))
+
+
+def workflow_run_readback(gh_api_fn: Callable[..., Any], repository: str, run_id: int) -> dict[str, Any]:
+    payload = gh_api_fn(f"repos/{repository}/actions/runs/{run_id}")
+    head_sha = payload.get("head_sha") if isinstance(payload, dict) else None
+    if not isinstance(head_sha, str) or not HEX40_RE.fullmatch(head_sha) or int(payload.get("id") or 0) != run_id:
+        raise GateError(f"workflow run readback failed for {repository} run {run_id}")
+    return {"id": run_id, "name": str(payload.get("name") or ""), "head_sha": head_sha, "head_branch": str(payload.get("head_branch") or "")}
+
+
+def ceremony_run(gh_api_fn: Callable[..., Any], repository: str, branch: str, workflow: str) -> dict[str, Any]:
+    branch_tip = branch_tip_readback(gh_api_fn, repository, branch)
+    return {"verb": "run", "repository": repository, "branch": branch, "branch_tip": branch_tip, "run": select_workflow_run(gh_api_fn, repository, branch_tip, workflow)}
+
+
+def ceremony_rerun(
+    root: Path,
+    gh_api_fn: Callable[..., Any],
+    repository: str,
+    branch: str,
+    *,
+    workflow: str | None = None,
+    run_id: int | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    branch_tip = branch_tip_readback(gh_api_fn, repository, branch)
+    if run_id is not None:
+        selected = workflow_run_readback(gh_api_fn, repository, run_id)
+    elif workflow:
+        selected = select_workflow_run(gh_api_fn, repository, branch_tip, workflow)
+    else:
+        raise GateError("ceremony rerun requires --workflow or --run-id")
+    if selected["head_sha"] != branch_tip:
+        raise GateError(
+            f"ceremony rerun refused: run {selected['id']} head {selected['head_sha']} != {branch} tip {branch_tip}; "
+            "rerunning a stale head cancels the live head's run under the per-PR concurrency group"
+        )
+    if not dry_run:
+        paced_gh(root, ["run", "rerun", str(selected["id"]), "--repo", repository])
+    return {"verb": "rerun", "repository": repository, "branch": branch, "branch_tip": branch_tip, "run": selected, "dry_run": dry_run}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="noodles")
     parser.add_argument("--root", default=None, help="repository root (testing/audit only)")
@@ -1651,6 +1994,31 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     start.add_argument("--interval", type=float, default=5.0)
     start.add_argument("--admission-timeout", type=float, default=daemon_lease.DEFAULT_ADMISSION_TIMEOUT)
+    supervise_command = sub.add_parser("supervise")
+    supervise_command.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
+    supervise_command.add_argument("--generations", type=int, default=0, help="stop after N daemon generations (0 = unbounded)")
+    supervise_command.add_argument("--wedge-seconds", type=float, default=DEFAULT_WEDGE_SECONDS)
+    supervise_command.add_argument("--rotate-after", type=float, default=DEFAULT_ROTATE_AFTER_SECONDS)
+    supervise_command.add_argument("--heal-only", action="store_true", help="run the heal conditions and print the receipt without spawning a daemon")
+    ceremony = sub.add_parser("ceremony")
+    ceremony_sub = ceremony.add_subparsers(dest="ceremony_verb", required=True)
+    ceremony_commit_command = ceremony_sub.add_parser("commit")
+    ceremony_commit_command.add_argument("-m", "--message", required=True)
+    ceremony_commit_command.add_argument("--path", action="append", default=[])
+    ceremony_rebase_command = ceremony_sub.add_parser("rebase")
+    ceremony_rebase_command.add_argument("upstream")
+    ceremony_run_command = ceremony_sub.add_parser("run")
+    ceremony_run_command.add_argument("--workflow", required=True)
+    ceremony_run_command.add_argument("--branch", required=True)
+    ceremony_run_command.add_argument("--repository")
+    ceremony_rerun_command = ceremony_sub.add_parser("rerun")
+    ceremony_rerun_command.add_argument("--branch", required=True)
+    ceremony_rerun_command.add_argument("--workflow")
+    ceremony_rerun_command.add_argument("--run-id", type=int)
+    ceremony_rerun_command.add_argument("--repository")
+    ceremony_rerun_command.add_argument("--dry-run", action="store_true")
+    ceremony_gh_command = ceremony_sub.add_parser("gh")
+    ceremony_gh_command.add_argument("argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -1792,6 +2160,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "start":
             return start_unattended(root, args.control_url, args.interval, args.admission_timeout)
+        if args.command == "supervise":
+            if args.heal_only:
+                print(json.dumps(heal_control_checkout(root, str(protection_policy(root)["default_branch"])), indent=2, sort_keys=True))
+                return 0
+            receipts = supervise(
+                root,
+                args.control_url,
+                generations=args.generations,
+                wedge_seconds=args.wedge_seconds,
+                rotate_after_seconds=args.rotate_after,
+            )
+            print(json.dumps({"generations": receipts}, indent=2, sort_keys=True))
+            return 0
+        if args.command == "ceremony":
+            repository = str(protection_policy(root)["repository"])
+            if args.ceremony_verb == "commit":
+                print(json.dumps(ceremony_commit(root, args.message, args.path), indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "rebase":
+                print(json.dumps(ceremony_rebase(root, args.upstream), indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "run":
+                print(json.dumps(ceremony_run(gh_api, args.repository or repository, args.branch, args.workflow), indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "rerun":
+                receipt = ceremony_rerun(
+                    root,
+                    gh_api,
+                    args.repository or repository,
+                    args.branch,
+                    workflow=args.workflow,
+                    run_id=args.run_id,
+                    dry_run=args.dry_run,
+                )
+                print(json.dumps(receipt, indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "gh":
+                child = list(args.argv[1:] if args.argv[:1] == ["--"] else args.argv)
+                result = paced_gh(root, child, check=False)
+                sys.stdout.write(result.stdout)
+                sys.stderr.write(result.stderr)
+                return int(result.returncode)
     except GateError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

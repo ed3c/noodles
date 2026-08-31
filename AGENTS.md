@@ -111,10 +111,15 @@ Do not use `Closes`, `Fixes`, or `Resolves`. Only the provider lander closes the
 ./noodles verify
 ./noodles providers sync
 ./noodles github protect audit
-./noodles start
+./noodles start      # one daemon generation
+./noodles supervise  # unattended: heal, restart, rotate, cool down
 ```
 
-`./noodles start` fails closed unless local fitness, pinned providers, and GitHub protection readback all pass.
+`./noodles start` fails closed unless local fitness, pinned providers, and GitHub protection readback all pass. `./noodles supervise` owns unattended operation per `AUTONOMY.SUPERVISED_RUNNER.001`; `./noodles supervise --heal-only` prints the heal receipt without spawning a daemon.
+
+## Ceremony entrypoints
+
+Conventions every agent would otherwise have to remember at every call site are executables, not prose. Use `./noodles ceremony <verb>` and keep no duplicate rulebook: `commit`/`rebase` apply the repository commit identity inline, `run` selects a workflow run by name at the provider-read branch tip, `rerun` refuses a run whose head is not that tip (`--dry-run` proves the guard), and `gh` routes through the paced carrier. The invariants live in `AUTONOMY.CEREMONY_ENTRYPOINT.001`.
 
 ## Entropy and quality budget
 
