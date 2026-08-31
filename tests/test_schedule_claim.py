@@ -264,6 +264,73 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(self.published_orders(), [])
         self.assertEqual(brief["claims"][0]["status"], "dependency_changed")
 
+    def test_absent_winner_is_named_not_in_winners_and_carries_its_meaning(self) -> None:
+        predecessor = issue(81, state="ready")
+        dependent = issue(82, depends_on=f"{REPOSITORY}#81")
+        provider = FakeProvider([dependent], {81: predecessor, 82: dependent})
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(brief["winners"], [])
+        self.assertEqual(brief["claims"], [{
+            "subject": f"{REPOSITORY}#82",
+            "status": "not_in_winners",
+            "meaning": skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["not_in_winners"],
+        }])
+        self.assertEqual(skill_contract.validate_cycle_receipt(brief), [])
+        with self.assertRaisesRegex(noodles.GateError, "undefined claim status: 'not_frontier'"):
+            noodles.schedule_claim_outcome(f"{REPOSITORY}#82", "not_frontier")
+
+    def test_planted_receipt_status_drift_fails_verify_closed(self) -> None:
+        receipt_path = self.root / ".noodle/schedule-cycle.json"
+        receipt_path.parent.mkdir(exist_ok=True)
+        defined = skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["not_in_winners"]
+        base = {
+            "schema_version": noodles.SCHEMA_VERSION,
+            "frontier": [],
+            "winners": [],
+            "components": [],
+            "max_useful_workers": 0,
+            "claims": [],
+            "destination": str(self.root / ".noodle/orders-next.json"),
+        }
+        plants = (
+            ("retired status literal", {"status": "not_frontier", "meaning": defined}, "undefined status 'not_frontier'"),
+            ("paraphrased meaning", {"status": "not_in_winners", "meaning": "already claimed"}, "must carry its exact meaning"),
+        )
+        for label, claim, diagnostic in plants:
+            with self.subTest(plant=label):
+                receipt_path.write_text(json.dumps(dict(base, claims=[{"subject": f"{REPOSITORY}#82", **claim}])))
+                result = noodles.verify_repository(self.root, CANDIDATE_ROOT)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any(diagnostic in item for item in result["errors"]), result["errors"])
+        receipt_path.write_text(json.dumps(dict(base, claims=[{"subject": f"{REPOSITORY}#82", "status": "not_in_winners", "meaning": defined}])))
+        self.assertEqual(
+            [item for item in noodles.verify_repository(self.root, CANDIDATE_ROOT)["errors"] if "schedule cycle receipt" in item],
+            [],
+        )
+
+    def test_cycle_summary_contradicting_the_receipt_fails_closed(self) -> None:
+        provider = FakeProvider([issue(82)])
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        quoted = "# cycle\n\n" + "\n".join(skill_contract.cycle_summary_lines(brief)) + "\n"
+        self.assertIn(f"max_useful_workers: {brief['max_useful_workers']}", quoted)
+        self.assertEqual(skill_contract.validate_cycle_summary(brief, quoted), [])
+        contradiction = quoted.replace(f"{REPOSITORY}#82: claimed", f"{REPOSITORY}#82: not_in_winners", 1)
+        self.assertNotEqual(contradiction, quoted)
+        errors = skill_contract.validate_cycle_summary(brief, contradiction)
+        self.assertTrue(any("does not quote the receipt verbatim" in item for item in errors), errors)
+        summary_path = self.root / ".noodle/schedule-summary.md"
+        with mock.patch.object(skill_contract.Path, "cwd", return_value=self.root), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            summary_path.write_text(quoted)
+            self.assertEqual(skill_contract.main(["summary", str(summary_path)]), 0)
+            summary_path.write_text(contradiction)
+            self.assertEqual(skill_contract.main(["summary", str(summary_path)]), 1)
+        self.assertIn("schedule summary FAIL", stderr.getvalue())
+
     def test_publish_cli_reports_the_cycle_worker_count(self) -> None:
         provider = FakeProvider([issue(82)])
         self.write_candidate([f"{REPOSITORY}#82"])

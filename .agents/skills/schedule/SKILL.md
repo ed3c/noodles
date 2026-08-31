@@ -69,6 +69,33 @@ Admission is oldest-first among ready P0 Issues: prove disjointness against the 
 
 Before deferring a sibling behind an active order, re-verify that the blocking claim is alive: an active order whose session is dead and whose execute branch no longer exists on the provider is stale residue to report for recovery, not a write-boundary blocker.
 
+## Cycle summary
+
+The publish gate writes the deterministic cycle receipt to `.noodle/schedule-cycle.json`. That receipt is the single frontier authority for the cycle, and every status value in it carries its own fixed `meaning` string.
+
+Quote `frontier`, `winners`, `max_useful_workers`, and every per-subject status line verbatim from `.noodle/schedule-cycle.json`. Never re-derive, rename, or paraphrase a decision the receipt already states. Write the summary to `.noodle/schedule-summary.md` using the receipt's exact lines:
+
+```text
+frontier: <receipt frontier array as compact JSON>
+winners: <receipt winners array as compact JSON>
+max_useful_workers: <receipt max_useful_workers>
+owner/repo#N: <status> - <that status's meaning from the receipt>
+```
+
+Then validate the summary against the receipt before publishing it:
+
+```bash
+python3 skill_contract.py summary .noodle/schedule-summary.md
+```
+
+A summary that contradicts the receipt fails this step and names the missing verbatim line. Correct the summary; never edit the receipt to match a story.
+
+Status meanings are owned by `skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS` and emitted in the receipt. Read them there; this skill never restates them.
+
+### Diagnostic routing
+
+- signal: consecutive empty proposals while `mise.json` still lists schedulable ready issues; action: quote the receipt verbatim, then run the starvation diagnostic in order (remote claim branches vs their subject issue states -> claimed components vs ready pool -> receipt status definitions), and publish the diagnostic as data, never a re-derived causal story; why: a re-derived causal story misdiagnosed the 2026-08-31 starvation for hours.
+
 ## Prohibitions
 
 - Do not schedule prose-only architecture migration.

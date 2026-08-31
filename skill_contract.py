@@ -43,6 +43,25 @@ EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `sa
 EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
 EXECUTE_UNSUPPORTED_PHRASE = "Unsupported routes fail closed:"
 EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
+SCHEDULE_SUMMARY_COMMAND = "python3 skill_contract.py summary .noodle/schedule-summary.md"
+SCHEDULE_RECEIPT_VERBATIM_PHRASE = (
+    "Quote `frontier`, `winners`, `max_useful_workers`, and every per-subject status line verbatim from "
+    "`.noodle/schedule-cycle.json`. Never re-derive, rename, or paraphrase a decision the receipt already states."
+)
+SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE = (
+    "- signal: consecutive empty proposals while `mise.json` still lists schedulable ready issues; "
+    "action: quote the receipt verbatim, then run the starvation diagnostic in order "
+    "(remote claim branches vs their subject issue states -> claimed components vs ready pool -> "
+    "receipt status definitions), and publish the diagnostic as data, never a re-derived causal story; "
+    "why: a re-derived causal story misdiagnosed the 2026-08-31 starvation for hours."
+)
+SCHEDULE_CLAIM_STATUS_MEANINGS = {
+    "claimed": "this cycle created the subject's exact execute branch on the provider",
+    "claimed_elsewhere": "the subject's exact execute branch already existed, so another executor holds the claim",
+    "dependency_changed": "the subject stopped reading back schedulable before its branch was claimed",
+    "frontier_changed": "the subject left the winner set between proposal and claim",
+    "not_in_winners": "the subject was absent from the winner set this cycle computed; this is not another executor's claim",
+}
 COMPACT_ORDER_TOP_LEVEL_FIELDS = frozenset({"orders", "action_needed"})
 COMPACT_ORDER_FIELDS = frozenset({"id", "plan", "rationale", "stages", "title"})
 COMPACT_STAGE_FIELDS = frozenset({"do", "extra", "extra_prompt", "group", "model", "prompt", "runtime", "with"})
@@ -113,6 +132,9 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
         (SCHEDULE_ACTIVE_ORDER_PHRASE, "active-order preservation"),
         (SCHEDULE_PUBLISH_COMMAND, "deterministic publish gate"),
         (SCHEDULE_TASK_MODEL_PHRASE, "task-model routing"),
+        (SCHEDULE_RECEIPT_VERBATIM_PHRASE, "receipt-verbatim summary"),
+        (SCHEDULE_SUMMARY_COMMAND, "deterministic summary gate"),
+        (SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE, "starvation diagnostic routing"),
     )
     errors = []
     for phrase, label in required_contracts:
@@ -360,6 +382,81 @@ def validate_schedule_output(
     return errors
 
 
+def validate_cycle_receipt(receipt: Any) -> list[str]:
+    # constraint: ed3c/noodles#191 - the schedule receipt is the single frontier
+    # constraint: authority, so every status it publishes must be one of the
+    # constraint: machine-owned values carrying that value's exact meaning.
+    if not isinstance(receipt, dict):
+        return ["schedule cycle receipt must be a JSON object"]
+    errors = [
+        f"schedule cycle receipt {key} must be an array"
+        for key in ("frontier", "winners")
+        if not isinstance(receipt.get(key), list)
+    ]
+    if not isinstance(receipt.get("max_useful_workers"), int) or isinstance(receipt.get("max_useful_workers"), bool):
+        errors.append("schedule cycle receipt max_useful_workers must be an integer")
+    claims = receipt.get("claims")
+    if not isinstance(claims, list):
+        return errors + ["schedule cycle receipt claims must be an array"]
+    defined = ", ".join(sorted(SCHEDULE_CLAIM_STATUS_MEANINGS))
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict) or not isinstance(claim.get("subject"), str):
+            errors.append(f"schedule cycle receipt claim[{index}] must be an object with a string subject")
+            continue
+        status = claim.get("status")
+        meaning = SCHEDULE_CLAIM_STATUS_MEANINGS.get(status) if isinstance(status, str) else None
+        if meaning is None:
+            errors.append(
+                f"schedule cycle receipt claim[{index}] has undefined status {status!r}; defined statuses: {defined}"
+            )
+            continue
+        if claim.get("meaning") != meaning:
+            errors.append(
+                f"schedule cycle receipt claim[{index}] status {status!r} must carry its exact meaning {meaning!r}"
+            )
+    return errors
+
+
+def cycle_summary_lines(receipt: dict[str, Any]) -> list[str]:
+    lines = [
+        f"frontier: {json.dumps(receipt['frontier'], separators=(',', ':'))}",
+        f"winners: {json.dumps(receipt['winners'], separators=(',', ':'))}",
+        f"max_useful_workers: {receipt['max_useful_workers']}",
+    ]
+    lines.extend(f"{claim['subject']}: {claim['status']} - {claim['meaning']}" for claim in receipt["claims"])
+    return lines
+
+
+def validate_cycle_summary(receipt: Any, summary: str) -> list[str]:
+    # constraint: ed3c/noodles#191 - a published cycle summary that contradicts
+    # constraint: the receipt fails closed here; containment of every required
+    # constraint: line is what makes "quote it" mechanically checkable.
+    errors = validate_cycle_receipt(receipt)
+    if errors:
+        return errors
+    return [
+        f"cycle summary does not quote the receipt verbatim: missing {line!r}"
+        for line in cycle_summary_lines(receipt)
+        if line not in summary
+    ]
+
+
+def _summary_command(root: Path, summary_path: Path) -> int:
+    receipt_path = root / ".noodle/schedule-cycle.json"
+    try:
+        receipt = _read_json(receipt_path, "schedule cycle receipt")
+        summary = summary_path.read_text(encoding="utf-8")
+    except (ValueError, OSError) as exc:
+        print(f"schedule summary FAIL: {exc}", file=sys.stderr)
+        return 1
+    errors = validate_cycle_summary(receipt, summary)
+    if errors:
+        print("schedule summary FAIL: " + "; ".join(errors), file=sys.stderr)
+        return 1
+    print(f"schedule summary PASS: {summary_path} quotes {receipt_path} verbatim")
+    return 0
+
+
 def _read_json(path: Path, label: str) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -410,8 +507,14 @@ def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+    if len(args) == 2 and args[0] == "summary":
+        return _summary_command(Path.cwd(), Path(args[1]))
     if len(args) != 2 or args[0] != "publish":
-        print("usage: python3 skill_contract.py publish .noodle/orders-next.candidate.json", file=sys.stderr)
+        print(
+            "usage: python3 skill_contract.py publish .noodle/orders-next.candidate.json\n"
+            "       python3 skill_contract.py summary .noodle/schedule-summary.md",
+            file=sys.stderr,
+        )
         return 2
     try:
         from noodles import schedule_publish
