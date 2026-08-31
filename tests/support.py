@@ -491,8 +491,7 @@ def write_handoff_noodle_stub(path: Path, version: str, blocking: bool = True) -
 
 
 def execute_branch_name(subject: str) -> str:
-    repo, _, number = subject.partition("#")
-    return f"{repo.replace('/', '-')}-{number}-0-execute"
+    return noodles.execute_branch(subject)
 
 
 def handoff_fixture(

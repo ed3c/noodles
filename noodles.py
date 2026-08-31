@@ -812,13 +812,15 @@ def execute_provenance_admission(
     # constraint: one Git-registered worktree, one non-default branch, one candidate head, and
     # constraint: one reconciled provider base. Every other shape fails closed here, before any
     # constraint: Issue state or handoff mutation, so a rejected candidate leaves no residue.
-    subject = parse_subject(subject_value)
+    # constraint: fail fast on a malformed subject before any worktree readback.
+    parse_subject(subject_value)
     root = root.resolve()
     context = validate_handoff_session(root, subject_value, session_id, error_cls=GateError)
     project = Path(context["project"]).resolve()
+    # constraint: repository identity is checked once, by execute_handoff before this is
+    # constraint: reached (noodles.py ~866); re-deriving it here from the same root would
+    # constraint: reject nothing new since nothing mutates origin's remote URL in between.
     repository = runtime_gh_repo_from_git(root, error_cls=GateError)
-    if repository != subject.repo:
-        raise GateError(f"execute worktree repository {repository} != order repository {subject.repo}")
     common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     if common.parent != project:
         raise GateError(f"execute worktree {root} is foreign: git common directory {common} is outside Noodle project {project}")
@@ -835,7 +837,15 @@ def execute_provenance_admission(
     expected_branch = execute_branch(subject_value)
     if branch != expected_branch:
         raise GateError(f"execute branch {branch} != exact order branch {expected_branch}")
-    duplicates = sorted(str(path) for path, item in registry.items() if path != root and item.get("branch") == branch_ref)
+    # constraint: a `prunable` entry is git's own signal that the worktree directory is gone
+    # constraint: (removed without `git worktree remove`); it is not a live conflict and must
+    # constraint: not block this branch, or a stale registry record would need a manual
+    # constraint: `git worktree prune` before any future handoff for that order could proceed.
+    duplicates = sorted(
+        str(path)
+        for path, item in registry.items()
+        if path != root and item.get("branch") == branch_ref and "prunable" not in item
+    )
     if duplicates:
         raise GateError(f"execute branch {branch} is already checked out in registered worktree {duplicates[0]}")
     sharing = sorted(name for name, path in session_worktree_paths(project).items() if path == root and name != session_id)
@@ -845,7 +855,11 @@ def execute_provenance_admission(
         raise GateError(f"execute worktree HEAD {entry.get('HEAD')} != admitted candidate head {head}")
     if not HEX40_RE.fullmatch(base_sha or ""):
         raise GateError(f"execute admission requires an exact reconciled provider base; got {base_sha!r}")
-    if run(["git", "merge-base", "--is-ancestor", base_sha, head], cwd=root, check=False).returncode != 0:
+    merge_base = run(["git", "merge-base", "--is-ancestor", base_sha, head], cwd=root, check=False)
+    if merge_base.returncode == 128:
+        detail = merge_base.stderr.strip() or merge_base.stdout.strip() or "object not present"
+        raise GateError(f"execute admission cannot verify provider base {base_sha} in worktree {root}: {detail}")
+    if merge_base.returncode != 0:
         raise GateError(f"execute branch {branch} does not contain admitted provider base {base_sha}")
     return {
         "order": subject_value,

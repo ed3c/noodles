@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -121,6 +122,23 @@ class ExecuteProvenanceAdmissionTests(unittest.TestCase):
         cmd(["git", "checkout", "-q", self.branch], self.root)
         self.reject(f"does not contain admitted provider base {stale}", base_sha=stale)
         self.reject("requires an exact reconciled provider base", base_sha="")
+
+    def test_base_object_not_present_in_worktree_is_distinguished_from_not_an_ancestor(self) -> None:
+        missing = "deadbeef" * 5
+        self.reject(f"cannot verify provider base {missing} in worktree {self.root}", base_sha=missing)
+
+    def test_prunable_stale_worktree_entry_does_not_block_the_branch(self) -> None:
+        duplicate = self.temp_dir / "duplicate"
+        cmd(["git", "worktree", "add", "--force", "-q", str(duplicate), self.branch], self.root)
+        shutil.rmtree(duplicate)
+        receipt = self.admit()
+        self.assertEqual(receipt["branch"], self.branch)
+
+    def test_unreadable_spawn_record_in_an_unrelated_session_fails_the_handoff_closed(self) -> None:
+        unrelated = self.sessions / "unrelated-session"
+        unrelated.mkdir(parents=True)
+        (unrelated / "spawn.json").write_text("not json")
+        self.reject(r"cannot read JSON .*unrelated-session/spawn\.json")
 
     def test_two_disjoint_orders_pass_only_with_distinct_provenance(self) -> None:
         other_subject = "ed3c/noodles#34"
