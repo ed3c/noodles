@@ -13,7 +13,8 @@
       "issue_contract.py",
       ".agents/*",
       ".noodle.toml",
-      ".noodle/*"
+      ".noodle/*",
+      "skill_contract.py"
     ],
     "verify": [
       "AGENTS.md",
