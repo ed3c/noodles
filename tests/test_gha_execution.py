@@ -31,7 +31,9 @@ BRANCH = "ed3c-noodles-900189-0-execute"
 HEAD_SHA = "a" * 40
 BASE_SHA = "c" * 40
 RUN_ENV = {"GITHUB_RUN_ID": "189", "GITHUB_RUN_ATTEMPT": "1"}
-EVIDENCE = {"status": "custody_unadmitted", "folder": "GitHub-Actions-Evidence/v1/x", "manifest_sha256": "d" * 64}
+# constraint: ed3c/noodles#188 - the custody root literal lives in exactly one executable constant,
+# constraint: so this fixture references it instead of restating it and becoming a second writer.
+EVIDENCE = {"status": "custody_unadmitted", "folder": f"{noodles.EVIDENCE_CUSTODY_ROOT}/canary", "manifest_sha256": "d" * 64}
 # constraint: ed3c/noodles#189 - the injection is issue prose, exactly where an untrusted author can
 # constraint: write. It asks for every escape the gates below refuse; no gate ever reads it.
 INJECTION = (
