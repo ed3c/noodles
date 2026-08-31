@@ -24,9 +24,11 @@
       "id": "grepai-candidate-retrieval-law",
       "disposition": "MIGRATE",
       "claim": "Semantic retrieval may produce candidates that require exact path and source readback.",
-      "physical_evidence": ["skills-shared#256 live argv/source readback and nonsense-query nearest neighbours"],
-      "non_claims": ["A miss is not absence proof and a hit is not source truth."],
-      "next_issue": "MIG-GREPAI-01"
+      "physical_evidence": [
+        "skills-shared#256 live argv/source readback and nonsense-query nearest neighbours",
+        "ed3c/noodles#7 pinned grepai 0.30.0 argv against an out-of-tree index: 5 candidates read back from candidate source, nonsense control outscored the real query (0.531 > 0.402), zero candidate-tree residue"
+      ],
+      "non_claims": ["A miss is not absence proof and a hit is not source truth."]
     },
     {
       "id": "serena-symbol-navigation",

@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import retrieval_contract
 import schedule_domain
 import runtime_contract
 import signal
@@ -445,6 +446,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         errors.append(f"invalid .noodle.toml: {exc}")
     errors.extend(validate_runtime_lock(root))
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
+    errors.extend(retrieval_contract.validate_retrieval_lock(root))
     errors.extend(validate_migration_ledger(root))
     for executable in policy["required_executables"]:
         full = root / executable
@@ -1377,6 +1379,9 @@ def build_parser() -> argparse.ArgumentParser:
     runtime.add_argument("action", choices=["check", "discover"])
     providers = sub.add_parser("providers")
     providers.add_argument("action", choices=["check", "sync"])
+    retrieval = sub.add_parser("retrieval")
+    retrieval.add_argument("action", choices=["probe"])
+    retrieval.add_argument("--index-root", required=True)
     issue = sub.add_parser("issue")
     issue_sub = issue.add_subparsers(dest="issue_action", required=True)
     issue_validate = issue_sub.add_parser("validate")
@@ -1456,6 +1461,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "providers":
             receipts = provider_sync(root) if args.action == "sync" else provider_check(root)
             print(json.dumps(receipts, indent=2, sort_keys=True))
+            return 0
+        if args.command == "retrieval":
+            receipt = retrieval_contract.retrieval_probe(root, Path(args.index_root), error_cls=GateError)
+            write_json(root / retrieval_contract.EVIDENCE_PATH, receipt)
+            print(json.dumps(receipt, indent=2, sort_keys=True))
             return 0
         if args.command == "issue":
             if args.issue_action == "validate":
