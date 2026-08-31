@@ -698,10 +698,17 @@ def workflow_boundary_readback(
         merge_step = _workflow_step(land_job, "Exact-head merge and Issue closure readback", errors, "land job missing exact-head merge step", "land exact-head merge step must stay enabled")
         if merge_step is not None:
             _workflow_checks(errors, [(merge_step.get("env", {}).get("GH_TOKEN"), "${{ github.token }}", "land merge step must receive GH_TOKEN from github.token"), (merge_step.get("env", {}).get("NOODLES_GITHUB_PROTECTION_TOKEN"), "${{ steps.app-token.outputs.token }}", "land workflow must pass the protection-read token only to the land step"), (merge_step.get("env", {}).get("NOODLES_REQUIRE_PROTECTION_READ_TOKEN"), "1", "land workflow must require a separate protection-read token"), (merge_step.get("run"), 'python3 noodles.py github land --event "$GITHUB_EVENT_PATH" --receipt "$GITHUB_WORKSPACE/receipt/noodles-receipt.json"', "land merge step must execute noodles.py github land with the exact receipt path")], normalize=True)
+        train_token = _workflow_step(land_job, "Mint landing-train push GitHub App token", errors, "land job missing landing-train push token mint step", "land landing-train push token mint step must stay enabled")
+        if train_token is not None:
+            _workflow_checks(errors, [(train_token.get("id"), "train-token", "landing-train push token step must keep id: train-token"), (train_token.get("uses"), "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1", "landing-train push token must be minted with the pinned GitHub App action"), (train_token.get("with", {}).get("client-id"), "${{ vars.NOODLES_APP_CLIENT_ID }}", "landing-train push token step must read client-id from vars.NOODLES_APP_CLIENT_ID"), (train_token.get("with", {}).get("private-key"), "${{ secrets.NOODLES_APP_PRIVATE_KEY }}", "landing-train push token step must read private-key from secrets.NOODLES_APP_PRIVATE_KEY"), (train_token.get("with", {}).get("repositories"), "${{ github.event.repository.name }}", "landing-train push token must be scoped to the current repository"), (train_token.get("with", {}).get("permission-contents"), "write", "landing-train push token must be scoped to Contents: write")], normalize=True)
+        train_step = _workflow_step(land_job, "Landing train mechanical rebase", errors, "land job missing landing-train rebase step", "land landing-train rebase step must stay enabled")
+        if train_step is not None:
+            _workflow_checks(errors, [(train_step.get("env", {}).get("GH_TOKEN"), "${{ github.token }}", "landing-train rebase step must receive GH_TOKEN from github.token"), (train_step.get("env", {}).get("NOODLES_TRAIN_PUSH_TOKEN"), "${{ steps.train-token.outputs.token }}", "land workflow must pass the train push token only to the landing-train step"), (train_step.get("run"), "python3 noodles.py github train", "landing-train rebase step must execute noodles.py github train")], normalize=True)
         for step in land_job.get("steps", []):
-            if step.get("name") == "Exact-head merge and Issue closure readback": continue
-            if "NOODLES_GITHUB_PROTECTION_TOKEN" in step.get("env", {}): errors.append("land workflow must pass the protection-read token only to the land step")
-            if "NOODLES_REQUIRE_PROTECTION_READ_TOKEN" in step.get("env", {}): errors.append("land workflow must require the separate protection-read token only on the land step")
+            if step.get("name") != "Exact-head merge and Issue closure readback":
+                if "NOODLES_GITHUB_PROTECTION_TOKEN" in step.get("env", {}): errors.append("land workflow must pass the protection-read token only to the land step")
+                if "NOODLES_REQUIRE_PROTECTION_READ_TOKEN" in step.get("env", {}): errors.append("land workflow must require the separate protection-read token only on the land step")
+            if step.get("name") != "Landing train mechanical rebase" and "NOODLES_TRAIN_PUSH_TOKEN" in step.get("env", {}): errors.append("land workflow must pass the train push token only to the landing-train step")
     evidence = {
         "verify_workflow_path": ".github/workflows/verify.yml",
         "verify_workflow_sha256": sha256_file_fn(verify_path) if verify_path.exists() else None,
@@ -724,6 +731,11 @@ def workflow_boundary_readback(
         "land_job_uses_separate_protection_token": land_job is not None and any(
             step.get("name") == "Exact-head merge and Issue closure readback"
             and _normalize_workflow_text(step.get("env", {}).get("NOODLES_GITHUB_PROTECTION_TOKEN")) == "${{ steps.app-token.outputs.token }}"
+            for step in land_job.get("steps", [])
+        ),
+        "land_job_confines_train_push_token": land_job is not None and any(
+            step.get("name") == "Landing train mechanical rebase"
+            and _normalize_workflow_text(step.get("env", {}).get("NOODLES_TRAIN_PUSH_TOKEN")) == "${{ steps.train-token.outputs.token }}"
             for step in land_job.get("steps", [])
         ),
     }

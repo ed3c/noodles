@@ -19,6 +19,7 @@ import skill_contract
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import tokenize
 import tomllib
@@ -947,6 +948,123 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     }
 
 
+def train_failback_marker(head_sha: str) -> str:
+    return f"<!-- noodles-train-failback: {head_sha} -->"
+
+
+def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Oldest open awaiting_land PR whose branch is behind the default branch; a head already failed back waits for its owner."""
+    for pr in sorted(pulls, key=lambda item: (str(item.get("created_at") or ""), int(item.get("number") or 0))):
+        head = pr.get("head") or {}
+        if pr.get("state") != "open" or pr.get("draft"):
+            continue
+        if (pr.get("base") or {}).get("ref") != default_branch or (head.get("repo") or {}).get("full_name") != repository:
+            continue
+        try:
+            subject_value = parse_pr_reference(pr.get("body") or "")
+            issue = issue_read(subject_value)
+        except GateError:
+            continue
+        contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
+        if issue.get("state") != "open" or contract["state"] != "awaiting_land":
+            continue
+        head_sha = str(head.get("sha") or "")
+        compare = gh_api(f"repos/{repository}/compare/{default_branch}...{head_sha}")
+        if int((compare or {}).get("behind_by") or 0) <= 0:
+            continue
+        comments = gh_api(f"repos/{repository}/issues/{pr['number']}/comments?per_page=100")
+        if any(train_failback_marker(head_sha) in str(comment.get("body") or "") for comment in comments or []):
+            continue
+        return pr
+    return None
+
+
+def train_rebase(workdir: Path, remote_url: str, default_branch: str, head_ref: str, head_sha: str) -> dict[str, Any]:
+    """Mechanical rebase only: git's textual replay, any conflict aborts; the force-push holds the observed-head lease."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    git(workdir, "init", "--quiet", "--initial-branch", "noodles-train-scratch")
+    git(workdir, "remote", "add", "origin", remote_url)
+    git(
+        workdir,
+        "fetch",
+        "--quiet",
+        "origin",
+        f"+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}",
+        f"+refs/heads/{head_ref}:refs/remotes/origin/{head_ref}",
+    )
+    remote_tip = git(workdir, "rev-parse", f"refs/remotes/origin/{head_ref}")
+    if remote_tip != head_sha:
+        raise GateError(f"landing train head drifted for {head_ref}: selected {head_sha} but remote is {remote_tip}")
+    base_sha = git(workdir, "rev-parse", f"refs/remotes/origin/{default_branch}")
+    git(workdir, "checkout", "--quiet", "-B", head_ref, head_sha)
+    rebase = run(
+        [
+            "git",
+            "-c", "user.name=noodles-train",
+            "-c", "user.email=noodles-train@users.noreply.github.com",
+            "-c", "commit.gpgsign=false",
+            "rebase", f"refs/remotes/origin/{default_branch}",
+        ],
+        cwd=workdir,
+        check=False,
+    )
+    if rebase.returncode != 0:
+        conflicts = sorted(path for path in git(workdir, "diff", "--name-only", "--diff-filter=U", check=False).splitlines() if path)
+        run(["git", "rebase", "--abort"], cwd=workdir, check=False)
+        return {"rebased": False, "base_sha": base_sha, "conflicts": conflicts, "detail": rebase.stderr.strip() or rebase.stdout.strip()}
+    new_head = git(workdir, "rev-parse", "HEAD")
+    git(workdir, "push", "--quiet", f"--force-with-lease=refs/heads/{head_ref}:{head_sha}", "origin", f"HEAD:refs/heads/{head_ref}")
+    pushed = git(workdir, "ls-remote", "origin", f"refs/heads/{head_ref}").split()
+    if not pushed or pushed[0] != new_head:
+        raise GateError(f"landing train push readback failed for {head_ref}: expected {new_head}, remote has {pushed[0] if pushed else 'nothing'}")
+    return {"rebased": True, "base_sha": base_sha, "new_head": new_head}
+
+
+def landing_train(root: Path, remote_url: str | None = None) -> dict[str, Any]:
+    policy = protection_policy(root)
+    repository = str(policy["repository"])
+    default_branch = str(policy["default_branch"])
+    pulls = gh_api(f"repos/{repository}/pulls?state=open&base={default_branch}&sort=created&direction=asc&per_page=100")
+    if not isinstance(pulls, list):
+        raise GateError("landing train pull request listing readback failed")
+    selected = train_select(repository, default_branch, pulls)
+    if selected is None:
+        return {"action": "idle", "repository": repository, "selected": None}
+    head_ref = str(selected["head"]["ref"])
+    head_sha = str(selected["head"]["sha"])
+    pr_number = int(selected["number"])
+    if remote_url is None:
+        token = os.getenv("NOODLES_TRAIN_PUSH_TOKEN", "").strip()
+        if not token:
+            raise GateError("landing train push token absent: NOODLES_TRAIN_PUSH_TOKEN must carry the scoped Contents-write App token")
+        remote_url = f"https://x-access-token:{token}@github.com/{repository}"
+    with tempfile.TemporaryDirectory(prefix="noodles-train-") as temp_name:
+        outcome = train_rebase(Path(temp_name), remote_url, default_branch, head_ref, head_sha)
+    receipt = {
+        "repository": repository,
+        "pr_number": pr_number,
+        "head_ref": head_ref,
+        "old_head": head_sha,
+        "base_sha": outcome["base_sha"],
+    }
+    if not outcome["rebased"]:
+        named = ", ".join(outcome["conflicts"]) if outcome["conflicts"] else (outcome["detail"] or "unknown rebase failure")
+        gh_api(
+            f"repos/{repository}/issues/{pr_number}/comments",
+            method="POST",
+            payload={
+                "body": (
+                    f"{train_failback_marker(head_sha)}\n"
+                    f"Landing train fail-back: mechanical rebase of `{head_ref}` ({head_sha}) onto `{default_branch}` "
+                    f"({outcome['base_sha']}) stopped on conflicts in: {named}. The train never auto-resolves content; "
+                    "rebase manually and push a new head to re-enter the queue."
+                )
+            },
+        )
+        return {"action": "failback", "conflicts": outcome["conflicts"], **receipt}
+    return {"action": "rebased", "new_head": outcome["new_head"], **receipt}
+
+
 def http_json(url: str, *, payload: Any | None = None) -> Any:
     data = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
@@ -1216,6 +1334,7 @@ def build_parser() -> argparse.ArgumentParser:
     land = github_sub.add_parser("land")
     land.add_argument("--event", required=True)
     land.add_argument("--receipt", required=True)
+    github_sub.add_parser("train")
     reconcile = sub.add_parser("reconcile")
     reconcile.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
     reconcile.add_argument("--watch", action="store_true")
@@ -1315,6 +1434,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.github_action == "land":
                 result = land_pull_request(root, Path(args.event), Path(args.receipt))
                 print(json.dumps(result, indent=2, sort_keys=True))
+                return 0
+            if args.github_action == "train":
+                print(json.dumps(landing_train(root), indent=2, sort_keys=True))
                 return 0
         if args.command == "reconcile":
             if args.watch:
