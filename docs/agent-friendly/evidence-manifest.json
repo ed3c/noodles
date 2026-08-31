@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "subject": {"repository": "ed3c/noodles", "revision": "b9d4a56d29fcdbf3f56f29411018a1afdcc43e05"},
+  "evidence": [
+    {"evidence_id":"E-DOC-ROUTE","kind":"DETERMINISTIC_TEST","authority":"L","path":"tests/test_agent_friendly_architecture.py","locator":"AgentFriendlyArchitectureTests.test_document_route_and_agent_friendly_spec_readback","supports":["AF.CONTEXT_ROUTE"],"limits":"Validates declared route shape and planted fourth-hop rejection; does not prove Agent comprehension."},
+    {"evidence_id":"E-SYSTEM-AF","kind":"CONTRACT","authority":"N","path":"contracts/system-v1.md","locator":"Agent-friendly architecture / AF-01..AF-06","supports":["AF.BEST_PATH","AF.FORBIDDEN","AF.WRITER","AF.ISOLATION","AF.EXCEPTIONS"],"limits":"Specification declares requirements; executable authority remains at named gates/readbacks."},
+    {"evidence_id":"E-VERIFY-REPO","kind":"IMPLEMENTATION","authority":"L","path":"noodles.py","locator":"verify_repository","supports":["AF.FORBIDDEN"],"limits":"Authority applies when the verifier executes against the bound subject; source presence alone is N."},
+    {"evidence_id":"E-ISSUE-PARSER","kind":"IMPLEMENTATION","authority":"L","path":"noodles.py","locator":"parse_issue_contract / parse_pr_reference","supports":["AF.BEST_PATH","AF.FORBIDDEN"],"limits":"Covers exact marker/reference parsing, not all architecture invariants."},
+    {"evidence_id":"E-SINGLE-PROFILE","kind":"IMPLEMENTATION","authority":"L","path":"skill_contract.py","locator":"validate_task_profile_single_source","supports":["AF.WRITER"],"limits":"One concrete single-source rule; not repository-wide semantic duplicate-writer proof."},
+    {"evidence_id":"E-FITNESS","kind":"POLICY","authority":"N","path":"policy/fitness.json","locator":"root JSON","supports":["AF.FORBIDDEN"],"limits":"Most complexity thresholds are report-only warnings; enabled provider count is a failing fitness limit."},
+    {"evidence_id":"E-COMPONENTS","kind":"POLICY","authority":"N","path":"policy/components.json","locator":"components","supports":["AF.ISOLATION","AF.EXCEPTIONS"],"limits":"Normal surfaces are bounded, but contract maps to '*' and therefore requires surrounding admission/proof for narrowing."},
+    {"evidence_id":"E-AGENTS","kind":"GUIDANCE","authority":"P","path":"AGENTS.md","locator":"Golden Path / Agent-friendly shortest path / Guarantee classes","supports":["AF.BEST_PATH","AF.ISOLATION","AF.EXCEPTIONS"],"limits":"Guidance and routing are not correctness proof."},
+    {"evidence_id":"E-PROVIDER","kind":"PROVIDER_CONTRACT","authority":"R","path":"contracts/system-v1.md","locator":"Authority model / Golden Path / Verification architecture","supports":["AF.BEST_PATH"],"limits":"This manifest binds the provider contract, not a specific current workflow-run receipt; no current run is claimed here."}
+  ],
+  "global_negative_claims": [
+    "AGENTS.md prose is not mechanical enforcement.",
+    "Phrase-presence tests do not prove runtime architecture correctness.",
+    "Report-only fitness thresholds are not hard admission gates.",
+    "The contract:* component does not make unrestricted cross-component mutation the normal path.",
+    "Noodles mutation isolation is not evidence of Dune-style Feature-owned folders or reserved-file auto-discovery.",
+    "Local tests alone do not authorize provider completion.",
+    "One-writer is not mechanically proven across arbitrary repository semantics."
+  ]
+}
