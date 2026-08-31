@@ -25,12 +25,11 @@ def _engine():
 
 
 def find_open_pr_for_subject(repository: str, subject_value: str) -> dict[str, Any]:
-    # constraint: ed3c/noodles#99 - correlate on the same two keys (exact lane branch, exact
-    # constraint: `Refs` body) that schedule_publish's refusal used, via the shared
-    # constraint: noodles.matching_open_pull_requests exit. A body-only lookup here could miss
-    # constraint: the exact PR schedule just refused admission on and pointed the caller to.
     engine = _engine()
-    matches = engine.matching_open_pull_requests(repository, subject_value)
+    pulls = engine.gh_api(f"repos/{repository}/pulls?state=open&per_page=100")
+    if not isinstance(pulls, list):
+        raise engine.GateError(f"open PR readback failed for {repository}")
+    matches = [item for item in pulls if isinstance(item, dict) and engine.parse_pr_reference(item.get("body") or "") == subject_value]
     if len(matches) != 1:
         raise engine.GateError(f"expected exactly one open PR referencing {subject_value}, got {len(matches)}")
     return matches[0]

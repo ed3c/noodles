@@ -2828,9 +2828,10 @@ def matching_open_pull_requests(repository: str, subject_value: str) -> list[dic
     # constraint: instead - the exact lane branch, or the exact `Refs owner/repo#N` body every
     # constraint: PR here must carry. Paginated like open_issues: an unpaginated read silently
     # constraint: stops matching past the provider's first page of open pull requests.
-    # constraint: This is the one exit both schedule_publish's refusal and repair_contract's
-    # constraint: find_open_pr_for_subject route through, so they can never disagree on which
-    # constraint: PR a subject already has open.
+    # constraint: repair_contract.find_open_pr_for_subject does not route through this exit yet
+    # constraint: (ed3c/noodles#272): repair_contract.py is not in the "schedule" component and
+    # constraint: that map is read from the trusted default branch, not the candidate, so this
+    # constraint: PR cannot widen its own component boundary to use it.
     lane = execute_branch(subject_value)
     matched: list[dict[str, Any]] = []
     page = 1

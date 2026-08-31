@@ -14,8 +14,7 @@
       ".agents/*",
       ".noodle.toml",
       ".noodle/*",
-      "skill_contract.py",
-      "repair_contract.py"
+      "skill_contract.py"
     ],
     "verify": [
       "AGENTS.md",

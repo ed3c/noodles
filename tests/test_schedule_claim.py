@@ -12,7 +12,6 @@ from unittest import mock
 
 import issue_contract
 import noodles
-import repair_contract
 import schedule_domain
 import skill_contract
 from tests.support import CANDIDATE_ROOT, copy_tracked
@@ -386,19 +385,6 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(self.published_orders(), [])
         self.assertEqual(brief["claims"][0]["status"], "open_pr_exists")
         self.assertEqual(brief["claims"][0]["pull_requests"], [f"{REPOSITORY}#9"])
-
-    def test_repair_owner_finds_the_pr_schedule_refused_on_when_the_body_drifted(self) -> None:
-        # constraint: ed3c/noodles#99 - schedule_publish's refusal names OPEN_PR_REPAIR_OWNER as the
-        # constraint: remedy for "open_pr_exists". If repair_contract.find_open_pr_for_subject used a
-        # constraint: different correlation than the refusal did, the exact PR schedule just refused
-        # constraint: admission on - branch-matched, body-drifted - would be unreachable from repair.
-        provider = FakeProvider(
-            [issue(82)],
-            pulls=[pull(9, body="WIP: no exact reference line", head_ref=noodles.execute_branch(f"{REPOSITORY}#82"))],
-        )
-        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
-            pr = repair_contract.find_open_pr_for_subject(REPOSITORY, f"{REPOSITORY}#82")
-        self.assertEqual(pr["number"], 9)
 
     def test_open_pr_beyond_the_first_page_of_pull_requests_still_refuses_admission(self) -> None:
         # constraint: ed3c/noodles#99 - correlation must paginate the provider's open pull request
