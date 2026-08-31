@@ -1173,25 +1173,35 @@ def train_failback_marker(head_sha: str) -> str:
     return f"<!-- noodles-train-failback: {head_sha} -->"
 
 
-def train_verify_failed_head(repository: str, head_sha: str) -> bool:
-    """Has this exact head already completed a trusted `verify` run concluded `failure`?
+def train_verify_failed_head(repository: str, head_sha: str, required_check: str) -> bool:
+    """Has this exact head already completed a trusted `verify` run concluded failed?
 
     Stateless starvation guard. A head that rebases cleanly never earns a fail-back marker, so a head
     whose verify is red for a reason a rebase cannot fix stays the oldest behind candidate forever and
     blocks every newer one. A COMPLETED failure at this exact head means re-selecting the same head only
     reproduces the same failure; the train defers to the owner pushing a new head, exactly like fail-back.
-    A success, an in-progress run, or no run at all is not a completed failure and never skips."""
-    runs = gh_api(f"repos/{repository}/actions/runs?head_sha={head_sha}&per_page=100") or {}
+    A success, an in-progress run, or no run at all is not a completed failure and never skips.
+
+    Reuses `workflow_runs_for_head` (the same runs-API surface `failed_required_workflow_run_readback`
+    is built on) instead of re-deriving the endpoint call, so a malformed payload raises here exactly as
+    it does everywhere else that reads this API, rather than reading as an untriggered guard. Matches the
+    repo's own failed-conclusion taxonomy (`FAILED_WORKFLOW_CONCLUSIONS`), not just literal `failure`, and
+    checks `event` the same way `trusted_workflow_run_readback` does. Stops short of that function's full
+    immutable-workflow-identity verification: this is an advisory skip signal evaluated for every behind
+    candidate, not the land-time trust boundary, and its only failure direction is deferring a candidate
+    to the next cycle, never landing anything."""
+    runs = github_protection.workflow_runs_for_head(gh_api, GateError, repository, head_sha)
     return any(
-        run.get("name") == "verify"
-        and run.get("path") == ".github/workflows/verify.yml"
-        and run.get("status") == "completed"
-        and run.get("conclusion") == "failure"
-        for run in (runs.get("workflow_runs") or [])
+        run["name"] == required_check
+        and run["path"] == ".github/workflows/verify.yml"
+        and run["event"] == "pull_request_target"
+        and run["status"] == "completed"
+        and run["conclusion"] in github_protection.FAILED_WORKFLOW_CONCLUSIONS
+        for run in runs
     )
 
 
-def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any]]) -> dict[str, Any] | None:
+def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any]], required_check: str) -> dict[str, Any] | None:
     """Oldest open awaiting_land PR whose branch is behind the default branch; a head already failed back, or already red at verify, waits for its owner."""
     for pr in sorted(pulls, key=lambda item: (str(item.get("created_at") or ""), int(item.get("number") or 0))):
         head = pr.get("head") or {}
@@ -1214,7 +1224,11 @@ def train_select(repository: str, default_branch: str, pulls: list[dict[str, Any
         comments = gh_api(f"repos/{repository}/issues/{pr['number']}/comments?per_page=100")
         if any(train_failback_marker(head_sha) in str(comment.get("body") or "") for comment in comments or []):
             continue
-        if train_verify_failed_head(repository, head_sha):
+        try:
+            skip = train_verify_failed_head(repository, head_sha, required_check)
+        except GateError:
+            continue
+        if skip:
             continue
         return pr
     return None
@@ -1268,7 +1282,7 @@ def landing_train(root: Path, remote_url: str | None = None) -> dict[str, Any]:
     pulls = gh_api(f"repos/{repository}/pulls?state=open&base={default_branch}&sort=created&direction=asc&per_page=100")
     if not isinstance(pulls, list):
         raise GateError("landing train pull request listing readback failed")
-    selected = train_select(repository, default_branch, pulls)
+    selected = train_select(repository, default_branch, pulls, str(policy["required_check"]))
     if selected is None:
         return {"action": "idle", "repository": repository, "selected": None}
     head_ref = str(selected["head"]["ref"])

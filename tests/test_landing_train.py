@@ -81,8 +81,13 @@ def seed_train_remote(base: Path, *, conflict: bool) -> dict[str, str]:
     return {"origin": str(origin), "head": head_sha, "main": main_sha}
 
 
-def verify_run(sha: str, status: str, conclusion: str | None) -> dict:
+def verify_run(sha: str, status: str, conclusion: str | None, *, run_id: int = 1) -> dict:
+    # constraint: id/run_attempt/pull_requests are the fields `workflow_runs_for_head` (the shared,
+    # constraint: already-owned runs-API normalizer) requires present before a run survives its filter.
     return {
+        "id": run_id,
+        "run_attempt": 1,
+        "pull_requests": [],
         "name": "verify",
         "path": ".github/workflows/verify.yml",
         "event": "pull_request_target",
@@ -142,7 +147,7 @@ class LandingTrainSelectionTests(unittest.TestCase):
         }
         behind = {sha_old: 1, sha_new: 1, sha_fresh: 0}
         with mock.patch.object(noodles, "gh_api", side_effect=train_api(pulls, issues, behind, {}, [])):
-            selected = noodles.train_select("ed3c/noodles", "main", pulls)
+            selected = noodles.train_select("ed3c/noodles", "main", pulls, "verify")
         self.assertIsNotNone(selected)
         self.assertEqual(selected["number"], 7)
 
@@ -160,7 +165,7 @@ class LandingTrainSelectionTests(unittest.TestCase):
         behind = {sha_stuck: 1, sha_next: 1}
         comments = {4: [{"body": noodles.train_failback_marker(sha_stuck) + "\nLanding train fail-back"}]}
         with mock.patch.object(noodles, "gh_api", side_effect=train_api(pulls, issues, behind, comments, [])):
-            selected = noodles.train_select("ed3c/noodles", "main", pulls)
+            selected = noodles.train_select("ed3c/noodles", "main", pulls, "verify")
         self.assertIsNotNone(selected)
         self.assertEqual(selected["number"], 6)
 
@@ -178,7 +183,7 @@ class LandingTrainSelectionTests(unittest.TestCase):
         behind = {stuck_sha: 1, sha_next: 1}
         api = train_api(pulls, issues, behind, {}, [], runs)
         with mock.patch.object(noodles, "gh_api", side_effect=api):
-            return noodles.train_select("ed3c/noodles", "main", pulls)
+            return noodles.train_select("ed3c/noodles", "main", pulls, "verify")
 
     def test_completed_verify_failure_at_the_current_head_yields_to_the_newer_behind_candidate(self) -> None:
         sha_stuck = "a" * 40
@@ -223,9 +228,9 @@ class LandingTrainSelectionTests(unittest.TestCase):
         # constraint: ed3c/noodles#65 pattern - the shape this rule reads is provider truth, so the predicate
         # constraint: is exercised against the actual runs API for a real red head and a real green head, not
         # constraint: only against fixtures this test wrote itself.
-        self.assertTrue(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_FAILURE_HEAD))
-        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_SUCCESS_HEAD))
-        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", "0" * 40))
+        self.assertTrue(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_FAILURE_HEAD, "verify"))
+        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_SUCCESS_HEAD, "verify"))
+        self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", "0" * 40, "verify"))
 
 
 class LandingTrainRebaseTests(unittest.TestCase):
