@@ -464,6 +464,12 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
     errors.extend(validate_comment_tags(root, paths))
+    schedule_receipt = root / ".noodle/schedule-cycle.json"
+    if schedule_receipt.exists():
+        try:
+            errors.extend(skill_contract.validate_cycle_receipt(load_json(schedule_receipt)))
+        except GateError as exc:
+            errors.append(f"schedule cycle receipt unreadable: {exc}")
     agents = (root / "AGENTS.md").read_text(encoding="utf-8", errors="ignore") if (root / "AGENTS.md").exists() else ""
     for phrase in policy["required_agent_phrases"]:
         if phrase not in agents:
@@ -1696,6 +1702,16 @@ def claim_execute_branch(repository: str, branch: str, head: str) -> dict[str, A
     return {"status": "claimed", "branch": branch, "head": head}
 
 
+def schedule_claim_outcome(subject: str, status: str, **extra: Any) -> dict[str, Any]:
+    # constraint: ed3c/noodles#191 - every publish outcome leaves through this
+    # constraint: one exit, so a status without a machine-owned meaning cannot
+    # constraint: reach the receipt and no reader has to re-derive one.
+    meaning = skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS.get(status)
+    if meaning is None:
+        raise GateError(f"schedule publish emitted undefined claim status: {status!r}")
+    return {"subject": subject, "status": status, "meaning": meaning, **extra}
+
+
 def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     root = root.resolve()
     candidate = candidate_path if candidate_path.is_absolute() else root / candidate_path
@@ -1728,23 +1744,23 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     default_branch = str(policy["default_branch"])
     for subject_value in sorted(order_by_subject, key=lambda value: (parse_subject(value).repo, parse_subject(value).number)):
         if subject_value not in initial_winners:
-            outcomes.append({"subject": subject_value, "status": "not_frontier"})
+            outcomes.append(schedule_claim_outcome(subject_value, "not_in_winners"))
             continue
         subject = parse_subject(subject_value)
         fresh = schedule_domain.schedule_decision(schedule_snapshot(subject.repo))
         if subject_value not in fresh.winners:
-            outcomes.append({"subject": subject_value, "status": "frontier_changed"})
+            outcomes.append(schedule_claim_outcome(subject_value, "frontier_changed"))
             continue
         contract = issue_contract_readback(subject_value)
         if not contract["schedulable"]:
-            outcomes.append({"subject": subject_value, "status": "dependency_changed", "reasons": contract["reasons"]})
+            outcomes.append(schedule_claim_outcome(subject_value, "dependency_changed", reasons=contract["reasons"]))
             continue
         default_ref = gh_api(f"repos/{subject.repo}/git/ref/heads/{default_branch}")
         head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
             raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
         claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
-        outcomes.append({"subject": subject_value, **claim})
+        outcomes.append(schedule_claim_outcome(subject_value, **claim))
         if claim["status"] == "claimed":
             claimed_orders.append(order_by_subject[subject_value])
 
@@ -1755,11 +1771,15 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     brief = {
         "schema_version": SCHEMA_VERSION,
         "frontier": list(decision.frontier),
+        "winners": list(decision.winners),
         "components": [list(component) for component in decision.components],
         "max_useful_workers": decision.max_useful_workers,
         "claims": outcomes,
         "destination": str(destination),
     }
+    receipt_errors = skill_contract.validate_cycle_receipt(brief)
+    if receipt_errors:
+        raise GateError("schedule cycle receipt rejected: " + "; ".join(receipt_errors))
     write_json(root / ".noodle/schedule-cycle.json", brief)
     return brief
 
