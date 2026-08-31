@@ -124,9 +124,12 @@ recomputes the same path instead of growing a second tree. A wrong-head or wrong
 missing or extra member, a short read, a tampered digest, an empty denominator, and a credential that
 reached the archive each fail closed, and a scrub diagnostic carries the member and pattern id but
 never the value. Durable Drive transport is not admitted — no Google credential path exists inside
-Actions — so the publication reports `custody_unadmitted` and the bytes stay on the GitHub artifact
-spool, which is a bounded retry spool and not the durable store. Custody is evidence: never
-correctness, never merge authority, and no admission path reads it.
+Actions — so the publication reports `custody_unadmitted`: today only the manifest itself — folder,
+digests, byte counts, blob paths, never raw content — reaches the GitHub artifact spool inside
+`noodles-receipt.json`; the member bytes it describes are read, hashed, and discarded when the job
+ends, so no `blobs/sha256/*` object exists anywhere yet. That spool is a bounded retry surface, not
+the durable store. Custody is evidence: never correctness, never merge authority, and no admission
+path reads it.
 
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 
