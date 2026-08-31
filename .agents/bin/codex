@@ -29,7 +29,7 @@ def policy_profiles(root: Path) -> dict[str, dict[str, str]]:
     # constraint: policy/fitness.json instead of pinning a second literal, and still fails closed when
     # constraint: that definition is unreadable or is not exactly two well-formed task profiles.
     if str(root) not in sys.path:
-        sys.path.append(str(root))
+        sys.path.insert(0, str(root))
     try:
         import skill_contract
     except ImportError as exc:
