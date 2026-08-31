@@ -31,6 +31,16 @@ Enforcement descends from repository shape, to static/CI gates, to mechanical di
 
 Issue admission and completion evidence remain separate seams. Every repository mutation receives the built-in baseline acceptance contract. An optional specialized oracle only adds evidence at completion and never replaces the built-in baseline acceptance contract. Verification-root changes use explicit owner authority plus the same mechanical and provider gates; there is no Issue-number bypass.
 
+### ENFORCEMENT.LADDER_MIGRATION.001
+
+An invariant whose rejection has been paid twice for the same reason MUST migrate up this hierarchy: it is re-sited at the strongest layer that can reject the candidate before the cost is incurred, and its diagnostic MUST name the supported path rather than only the violation. Prior-Issue history of a repeated rejection is an N-class recollection and does not discharge the migration.
+
+Trusted-transition rejection - a candidate changing a value the default-branch verifier pins - has exactly one supported path, the staged transition: widen acceptance on the default branch, then flip the pinned value, then retire the widened acceptance. Rerunning, rebasing, or re-pushing the same candidate cannot resolve it, because the rejecting verifier is the default branch's, not the candidate's.
+
+Admission boundary: `./noodles verify --trusted-preview`, which materializes the default-branch tree from the git object database, runs its test modules against the working-tree candidate under the trusted job's own env contract and command read back from the trusted workflow rather than restated, and reports the exact modules CI would red together with that staging recipe. Controls in `tests/test_trusted_preview.py` plant a pinned-literal change, require the local red plus the recipe, require green against a simulated staged default branch, and require an absent trusted controls step to fail closed rather than report green.
+
+The preview is local shift-left tooling and carries no L or R authority; the trusted CI job remains the only verification authority, and a preview receipt never substitutes for it.
+
 ## Agent-friendly architecture
 
 Predictable local Agent behavior is an architectural input. An Issue-solving Agent tends to copy the nearest working pattern, edit the file already in context, choose the shortest passing path, preserve code whose unseen callers are uncertain, and follow requested implementation details even when wider invariants are not visible. Noodles responds by shaping ownership, paths, diagnostics, and gates so the least surprising local action is also the system-correct action.

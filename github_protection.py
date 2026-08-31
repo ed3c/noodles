@@ -627,6 +627,31 @@ def run_bounded_gh_admission_eval(
     receipt["parent_unchanged"] = before == after
     receipt["temp_root_removed"] = not temp_root.exists()
     return receipt
+TRUSTED_CONTROLS_STEP = "Run trusted positive and planted-negative controls"
+def trusted_controls_contract(root: Path, *, error_cls: type[Exception]) -> tuple[dict[str, str], str]:
+    """Read back the trusted verify job's controls step exactly as the workflow declares it.
+
+    Returns its env mapping (GitHub expressions unexpanded) and its run command. Callers that
+    reproduce the trusted boundary elsewhere must read the contract here instead of restating the
+    literals, so a workflow edit can never leave a second copy pointing at the old boundary."""
+    verify_path = root / ".github/workflows/verify.yml"
+    if not verify_path.is_file():
+        raise error_cls(f"trusted verify workflow absent: {verify_path}")
+    model, parse_errors = _workflow_model(verify_path.read_text(encoding="utf-8", errors="ignore"), workflow_name="verify")
+    if parse_errors:
+        raise error_cls("; ".join(parse_errors))
+    job = model.get("jobs", {}).get("verify")
+    if not isinstance(job, dict):
+        raise error_cls("trusted verify workflow declares no verify job")
+    errors: list[str] = []
+    controls = _workflow_step(job, TRUSTED_CONTROLS_STEP, errors, "trusted verify job missing trusted controls step", "trusted verify controls step is disabled")
+    if controls is None:
+        raise error_cls("; ".join(errors))
+    env = {str(key): str(value) for key, value in controls.get("env", {}).items()}
+    run = _normalize_workflow_text(controls.get("run"))
+    if not env or not run:
+        raise error_cls("trusted verify controls step declares no env contract or no command")
+    return env, run
 def workflow_boundary_readback(
     root: Path,
     sha256_file_fn: Callable[[Path], str],
