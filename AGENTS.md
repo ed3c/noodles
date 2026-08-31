@@ -138,4 +138,13 @@ exact Issue
 → local Noodle reconciliation
 ```
 
+## 工程法則的實證歸屬 (Rule → Evidence Routing)
+
+全局 `~/.claude/CLAUDE.md` 的工程法則不直接指向迴圈目錄——法則層綁死在某個 repo 的
+目錄結構上，迴圈改名即斷。**本節是那一跳的落點**：法則指到這裡，這裡指到擁有實證的 Harness。
+
+| 法則主題 | 實證 Harness |
+|---|---|
+| 驗收參數飄移／宣稱前數解壓層數（表徵-性質邊界） | ed3c/noodles#191（收據自述語意）＋ ed3c/skill-concerns#13（monitor 同源三紀律） |
+
 Anything earlier is progress, not completion.
