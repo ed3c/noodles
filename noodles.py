@@ -1113,6 +1113,146 @@ def compare_changed_files(comparison: Any) -> list[str]:
     return sorted(changed)
 def merge_base_changed_files(repository: str, base_ref: str, head_sha: str) -> list[str]:
     return compare_changed_files(gh_api(f"repos/{repository}/compare/{base_ref}...{head_sha}"))
+EVIDENCE_CUSTODY_ROOT = "GitHub-Actions-Evidence/v1"
+EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_HEAD_RE = re.compile(r"[0-9a-f]{40}")
+EVIDENCE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+EVIDENCE_REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+EVIDENCE_MEMBER_RE = re.compile(r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*")
+EVIDENCE_RUNNER_ENV = ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion", "GITHUB_EVENT_NAME", "GITHUB_WORKFLOW_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")
+# constraint: ed3c/noodles#188 - bounded credential value shapes. They match a materialized
+# constraint: secret, never a `${{ secrets.X }}` reference, so a workflow that names a secret is
+# constraint: not a leak while a token that reached the archive is. A finding carries the member
+# constraint: and the pattern id only; the matched bytes are never copied into any diagnostic.
+EVIDENCE_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
+    ("github-token", re.compile(rb"gh[pousr]_[A-Za-z0-9]{30,}")),
+    ("github-pat", re.compile(rb"github_pat_[A-Za-z0-9_]{30,}")),
+    ("google-api-key", re.compile(rb"AIza[0-9A-Za-z_-]{35}")),
+    ("google-service-account-key", re.compile(rb"\"private_key_id\"[ \t]*:")),
+    ("openai-key", re.compile(rb"sk-[A-Za-z0-9_-]{32,}")),
+    ("private-key-block", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("authorization-header", re.compile(rb"(?i)authorization[ \t]*:[ \t]*(?:bearer|basic|token)[ \t]+[^\s\"']")),
+)
+EVIDENCE_CREDENTIAL_FILE_RE = re.compile(r"(?:^|/)gha-creds-[^/]*\.json$")
+def evidence_custody_folder(repository: str, issue_number: int, pr_number: int, head_sha: str, run_id: int, run_attempt: int) -> str:
+    """The one deterministic custody path for exactly this Issue, PR, candidate head, run, attempt.
+
+    The folder is the idempotency key: a retry of the same attempt recomputes the identical path
+    instead of growing a second tree, and every component is exact so nothing can be defaulted into
+    a path that names a run which never happened."""
+    if not EVIDENCE_REPOSITORY_RE.fullmatch(repository or ""):
+        raise GateError(f"evidence custody repository {repository!r} is not one exact owner/repo")
+    if not EVIDENCE_HEAD_RE.fullmatch(head_sha or ""):
+        raise GateError(f"evidence custody head {head_sha!r} is not one exact 40-hex candidate head")
+    for name, value in (("issue", issue_number), ("pr", pr_number), ("run id", run_id), ("run attempt", run_attempt)):
+        if type(value) is not int or value < 1:
+            raise GateError(f"evidence custody {name} {value!r} is not a positive integer")
+    return f"{EVIDENCE_CUSTODY_ROOT}/{repository}/issue-{issue_number}/pr-{pr_number}/{head_sha}/run-{run_id}-attempt-{run_attempt}"
+def evidence_blob_path(digest: str) -> str:
+    if not EVIDENCE_DIGEST_RE.fullmatch(digest or ""):
+        raise GateError(f"evidence blob digest {digest!r} is not one sha256 hex digest")
+    return f"{EVIDENCE_CUSTODY_ROOT}/blobs/sha256/{digest}"
+def evidence_scrub_findings(name: str, data: bytes) -> list[str]:
+    """Every bounded credential shape this member carries, named without carrying its value."""
+    findings = [f"{name}: generated-credential-file"] if EVIDENCE_CREDENTIAL_FILE_RE.search(name) else []
+    for pattern_id, pattern in EVIDENCE_SECRET_PATTERNS:
+        match = pattern.search(data)
+        if match is not None:
+            findings.append(f"{name}: {pattern_id} at byte offset {match.start()}")
+    return findings
+def build_evidence_publication(folder: str, members: Mapping[str, bytes]) -> dict[str, Any]:
+    """Package one run's evidence into the canonical manifest durable custody would carry.
+
+    Scrub runs before packaging and one finding refuses the whole publication, so there is no
+    partial archive and no secret value in any diagnostic. An empty member set is refused too: the
+    admitted non-case is a run that generated no extra files, never a run with no denominator."""
+    if not members:
+        raise GateError(f"evidence publication {folder} has an empty member denominator")
+    findings: list[str] = []
+    entries: list[dict[str, Any]] = []
+    for name in sorted(members):
+        data = members[name]
+        if not EVIDENCE_MEMBER_RE.fullmatch(name):
+            raise GateError(f"evidence member name {name!r} is not one exact relative archive path")
+        if not isinstance(data, bytes):
+            raise GateError(f"evidence member {name} must be exact bytes, got {type(data).__name__}")
+        findings.extend(evidence_scrub_findings(name, data))
+        digest = hashlib.sha256(data).hexdigest()
+        entries.append({"name": name, "sha256": digest, "bytes": len(data), "blob": evidence_blob_path(digest)})
+    if findings:
+        raise GateError("evidence publication scrub refused: " + "; ".join(findings))
+    manifest = {"schema_version": EVIDENCE_SCHEMA_VERSION, "folder": folder, "members": entries}
+    return {"folder": folder, "manifest": manifest, **evidence_manifest_digest(manifest)}
+def evidence_manifest_digest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    canonical = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    return {"manifest_sha256": hashlib.sha256(canonical).hexdigest(), "manifest_bytes": len(canonical)}
+def evidence_publication_readback(publication: Mapping[str, Any], folder: str, members: Mapping[str, bytes]) -> dict[str, Any]:
+    """Prove the manifest describes exactly these bytes under exactly this custody key.
+
+    This is the byte readback custody owes, run here against a second read of the packaged source
+    and reusable verbatim against a re-downloaded copy once a transport is admitted. A wrong-head
+    or wrong-attempt folder, a missing member, an extra member, a truncation, a tampered digest, and
+    a retry that would write a different manifest under the same key each fail closed here."""
+    errors: list[str] = []
+    if publication.get("folder") != folder:
+        errors.append(f"manifest folder {publication.get('folder')!r} != expected custody folder {folder!r}")
+    manifest = publication.get("manifest") or {}
+    recorded = {str(entry.get("name")): entry for entry in manifest.get("members") or []}
+    errors.extend(f"manifest member {name} is absent from the readback source" for name in sorted(set(recorded) - set(members)))
+    errors.extend(f"readback source member {name} is absent from the manifest" for name in sorted(set(members) - set(recorded)))
+    for name in sorted(set(recorded) & set(members)):
+        data = members[name]
+        if recorded[name].get("bytes") != len(data):
+            errors.append(f"member {name} manifest byte count {recorded[name].get('bytes')!r} != readback {len(data)}")
+        digest = hashlib.sha256(data).hexdigest()
+        if recorded[name].get("sha256") != digest:
+            errors.append(f"member {name} manifest sha256 {recorded[name].get('sha256')!r} != readback {digest}")
+    if publication.get("manifest_sha256") != evidence_manifest_digest(manifest)["manifest_sha256"]:
+        errors.append("published manifest digest does not describe the manifest it is published with")
+    if errors:
+        raise GateError("evidence publication readback refused: " + "; ".join(errors))
+    return {"folder": folder, "members": len(recorded), "bytes": sum(len(data) for data in members.values())}
+def evidence_publication_members(candidate_root: Path, receipt: Mapping[str, Any]) -> dict[str, bytes]:
+    """The exact bytes this run consumed and produced, read from the candidate as untrusted data.
+
+    Nothing here is executed: the verification receipt, the runner/tool metadata, the pinned
+    dependency locks and the pinned workflow definitions are hashed as bytes. The denominator stays
+    non-empty even for a candidate that produced no extra files."""
+    def canonical(value: Any) -> bytes:
+        return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+    members: dict[str, bytes] = {
+        "verification/receipt.json": canonical(dict(receipt)),
+        "runtime/runner.json": canonical({key.lower(): os.getenv(key) for key in EVIDENCE_RUNNER_ENV}),
+        "runtime/tools.json": canonical({"python": sys.version.split()[0], "platform": sys.platform}),
+    }
+    for prefix, pattern in (("policy", "policy/*.lock.json"), ("workflows", ".github/workflows/*.yml")):
+        for path in sorted(candidate_root.glob(pattern)):
+            try:
+                members[f"candidate/{prefix}/{path.name}"] = path.read_bytes()
+            except OSError as exc:
+                raise GateError(f"evidence publication cannot read candidate member {path.name}: {exc}") from exc
+    return members
+def evidence_publication(candidate_root: Path, receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Package, scrub and read back this run's evidence, and name the transport state exactly.
+
+    Durable custody transport is not admitted by this atom: no Google credential path exists inside
+    Actions, so the publication is packaged, scrubbed, digest-bound and reported as
+    `custody_unadmitted` while the bytes stay on the GitHub artifact spool. An execution with no
+    GitHub run identity has no custody key at all and says so. Neither absence is allowed to look
+    like a completed publication, and neither is correctness or merge authority."""
+    identity = [int(raw) if (raw := (os.getenv(name) or "").strip()).isdigit() else 0 for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")]
+    if min(identity) < 1:
+        return {"status": "run_identity_absent", "folder": None, "manifest_sha256": None, "members": 0,
+                "reason": "GITHUB_RUN_ID/GITHUB_RUN_ATTEMPT absent: this execution has no GitHub Actions custody key"}
+    folder = evidence_custody_folder(
+        str(receipt["repository"]), parse_subject(str(receipt["issue_subject"])).number,
+        int(receipt["pr_number"]), str(receipt["head_sha"]), identity[0], identity[1],
+    )
+    publication = build_evidence_publication(folder, evidence_publication_members(candidate_root, receipt))
+    readback = evidence_publication_readback(publication, folder, evidence_publication_members(candidate_root, receipt))
+    return {"status": "custody_unadmitted", **publication, **readback,
+            "reason": "no admitted Google Drive destination credential exists for GitHub Actions; the packaged evidence stays on the GitHub artifact spool"}
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
     event = load_json(event_path)
     pr = event.get("pull_request")
@@ -1164,8 +1304,9 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "metrics": result["metrics"],
         "component": contract["component"],
         "introduces": introductions,
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction"],
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction", "evidence-publication"],
     }
+    receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     write_json(receipt_path, receipt)
     return receipt
 
