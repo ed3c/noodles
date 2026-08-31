@@ -58,6 +58,19 @@ Enabled providers are fetched outside Git history under `.noodle/providers/` and
 
 `ed3c/skills-shared` remains unchanged and is a disabled compatibility source, not a Golden Path dependency.
 
+## Candidate-only retrieval
+
+`policy/retrieval.lock.json` pins the grepai executable, its exact version and binary digest, the full
+argv, the embed model digest, and both probe queries. `./noodles verify` gates that pin on every host,
+including CI where grepai is absent.
+
+`./noodles retrieval probe --index-root DIR` is the physical oracle. The index stays outside the
+candidate tree because `grepai init` writes `.grepai/` and appends to `.gitignore`. The contract is
+`query → candidate paths → direct source readback`: only paths and line ranges are taken from the tool
+and the bytes are read back from the candidate tree. `hit != source truth`, `miss != absence`, and the
+result authority is candidate-only — an empty result is reported as a missing, empty, or stale index,
+never as absence.
+
 ## Issue contract
 
 ```text
@@ -89,6 +102,7 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ./noodles runtime discover          # prove Noodle sees every configured skill path
 ./noodles providers sync            # exact detached provider checkouts
 ./noodles providers check           # HEAD/tree/license/blob/admission/SKILL/detached/clean readback
+./noodles retrieval probe --index-root DIR  # pinned grepai candidate paths + direct source readback
 ./noodles issue validate REPO#N     # exact Issue contract
 ./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
 ./noodles github protect audit
