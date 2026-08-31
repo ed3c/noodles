@@ -35,6 +35,7 @@
     ".agents/bin/gh",
     ".agents/skills/execute/SKILL.md",
     ".agents/skills/schedule/SKILL.md",
+    ".github/ISSUE_TEMPLATE/repository-mutating-atom.md",
     ".github/workflows/land.yml",
     ".github/workflows/verify.yml",
     ".noodle.toml",

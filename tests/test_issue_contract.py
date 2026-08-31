@@ -380,5 +380,155 @@ class BacklogAdapterTests(unittest.TestCase):
         self.assertTrue(next(item for item in items if item["id"] == "ed3c/noodles#90")["schedulable"])
 
 
+class IntakeNormalizerTests(unittest.TestCase):
+    """A nonconforming open issue is cured mechanically at intake exactly once, and never by content generation."""
+
+    def open_issue(self, number: int, body: str, title: str = "Intake atom") -> dict:
+        return {
+            "number": number,
+            "state": "open",
+            "title": title,
+            "body": body,
+            "html_url": f"https://github.test/{number}",
+        }
+
+    def sync(self, state: dict[int, dict]) -> tuple[list[dict], list[tuple[str, str, dict]]]:
+        writes: list[tuple[str, str, dict]] = []
+
+        def fake(endpoint: str, *, method: str = "GET", payload: dict | None = None, token: object | None = None) -> object:
+            if method == "GET" and endpoint == "repos/ed3c/noodles/issues?state=open&per_page=100":
+                return [dict(issue) for issue in state.values()]
+            if method == "GET" and endpoint.startswith("repos/ed3c/noodles/issues/"):
+                return dict(state[int(endpoint.rsplit("/", 1)[1])])
+            if method == "PATCH" and endpoint.startswith("repos/ed3c/noodles/issues/"):
+                writes.append((method, endpoint, dict(payload or {})))
+                number = int(endpoint.rsplit("/", 1)[1])
+                state[number]["body"] = (payload or {})["body"]
+                return dict(state[number])
+            if method == "POST" and endpoint.endswith("/comments"):
+                writes.append((method, endpoint, dict(payload or {})))
+                return {"id": len(writes)}
+            raise noodles.GateError(f"unexpected endpoint {method} {endpoint}")
+
+        printed: list[str] = []
+        with mock.patch.object(noodles, "gh_api", side_effect=fake), \
+             mock.patch.dict("os.environ", {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
+             mock.patch("builtins.print", side_effect=lambda line, **_: printed.append(line)):
+            self.assertEqual(noodles.adapter_sync(), 0)
+        return [json.loads(line) for line in printed], writes
+
+    def test_conforming_issue_is_never_written(self) -> None:
+        state = {82: self.open_issue(82, issue_body())}
+        items, writes = self.sync(state)
+        self.assertEqual(writes, [])
+        self.assertEqual(items[0]["status"], "ready")
+        self.assertTrue(items[0]["schedulable"])
+
+    def test_marker_free_issue_is_normalized_exactly_once(self) -> None:
+        original = "Implementation prose that nobody expressed as a contract.\n"
+        state = {151: self.open_issue(151, original, title="Nonconforming atom")}
+        items, writes = self.sync(state)
+        self.assertEqual([write[0] for write in writes], ["PATCH", "POST"])
+        normalized = state[151]["body"]
+        self.assertTrue(normalized.endswith("\n" + original), normalized)
+        contract = noodles.parse_issue_contract(normalized, "ed3c/noodles#151")
+        self.assertEqual(contract["state"], "blocked")
+        self.assertEqual(contract["blocker"]["owner"], "intake-normalizer")
+        self.assertEqual(contract["dependencies"], [])
+        self.assertEqual(items[0]["status"], "blocked")
+        self.assertFalse(items[0]["schedulable"])
+        for defect in ("noodles-role", "noodles-target", "noodles-subject", "noodles-state"):
+            with self.subTest(defect=defect):
+                self.assertIn(f"missing {defect} marker", contract["blocker"]["reason"])
+                self.assertIn(f"missing {defect} marker", writes[1][2]["body"])
+        self.assertIn("## Physical acceptance", writes[1][2]["body"])
+        _, resync = self.sync(state)
+        self.assertEqual(resync, [])
+
+    def test_normalization_never_authors_the_missing_sections(self) -> None:
+        state = {151: self.open_issue(151, "Only prose.\n")}
+        self.sync(state)
+        self.assertNotIn("## Goal", state[151]["body"])
+        self.assertFalse(self.sync(state)[0][0]["schedulable"])
+
+    def test_absent_dependency_marker_is_migrated_instead_of_blocked(self) -> None:
+        original = issue_body().replace("<!-- noodles-depends-on: none -->\n", "")
+        state = {82: self.open_issue(82, original)}
+        items, writes = self.sync(state)
+        self.assertEqual([write[0] for write in writes], ["PATCH"])
+        self.assertTrue(state[82]["body"].endswith("\n" + original))
+        self.assertEqual(items[0]["status"], "ready")
+        self.assertTrue(items[0]["schedulable"])
+        self.assertEqual(items[0]["dependencies"], [])
+        self.assertEqual(self.sync(state)[1], [])
+
+    def test_prose_dependency_declaration_is_converted_to_the_typed_marker(self) -> None:
+        original = issue_body(goal=f"Land the parser.\n\nDepends on: {PREDECESSOR}").replace(
+            "<!-- noodles-depends-on: none -->\n", ""
+        )
+        state = {
+            82: self.open_issue(82, original),
+            81: self.open_issue(81, predecessor_body()),
+        }
+        state[81]["state"] = "closed"
+        items, _ = self.sync(state)
+        dependent = next(item for item in items if item["id"] == SUBJECT)
+        self.assertEqual(dependent["dependencies"], [PREDECESSOR])
+        self.assertIn(f"<!-- noodles-depends-on: {PREDECESSOR} -->", state[82]["body"])
+
+    def test_ambiguous_dependency_prose_is_never_guessed(self) -> None:
+        original = issue_body(goal="Land the parser.\n\nDepends on: the parser rewrite").replace(
+            "<!-- noodles-depends-on: none -->\n", ""
+        )
+        state = {82: self.open_issue(82, original)}
+        items, writes = self.sync(state)
+        self.assertEqual(writes, [])
+        self.assertEqual(state[82]["body"], original)
+        self.assertFalse(items[0]["schedulable"])
+        self.assertIn("no noodles-depends-on marker", " ".join(items[0]["reasons"]))
+
+    def test_uncurable_defect_stays_visible_without_overwriting_the_authored_state(self) -> None:
+        offending = "docs/research/2026-08-29-note.md"
+        original = issue_body(acceptance=f"- Evidence: {offending}\n")
+        state = {82: self.open_issue(82, original)}
+        items, writes = self.sync(state)
+        self.assertEqual([write[0] for write in writes], ["PATCH", "POST"])
+        self.assertIn("<!-- noodles-state: ready -->", state[82]["body"])
+        self.assertNotIn("noodles-blocker", state[82]["body"])
+        self.assertEqual(items[0]["status"], "blocked")
+        self.assertIn(offending, items[0]["diagnostic"])
+        self.assertIn(offending, writes[1][2]["body"])
+        self.assertEqual(self.sync(state)[1], [])
+
+    def test_issue_template_file_normalizes_into_a_schedulable_contract(self) -> None:
+        text = (CANDIDATE_ROOT / ".github/ISSUE_TEMPLATE/repository-mutating-atom.md").read_text(encoding="utf-8")
+        authored = text.split("\n---\n", 1)[1].lstrip("\n")
+        self.assertIsNone(noodles.MARKER_PATTERNS["subject"].search(authored))
+        state = {900: self.open_issue(900, authored, title="Template atom")}
+        items, writes = self.sync(state)
+        self.assertEqual([write[0] for write in writes], ["PATCH"])
+        self.assertEqual(items[0]["status"], "ready")
+        self.assertTrue(items[0]["schedulable"], items[0]["reasons"])
+        self.assertEqual(items[0]["id"], "ed3c/noodles#900")
+
+
+class DependencyDerivationTests(unittest.TestCase):
+    """Only an explicit declaration line is converted; anything ambiguous refuses to derive."""
+
+    def test_derivations(self) -> None:
+        cases = {
+            "no declaration at all\n": "none",
+            "Depends on: none\n": "none",
+            "- **Blocked by**: ed3c/noodles#81\n": "ed3c/noodles#81",
+            "Depends on: #81, #90\n": "ed3c/noodles#81, ed3c/noodles#90",
+            "Depends on: the parser rewrite\n": None,
+            "Depends on: other/repo#3\n": None,
+            f"Depends on: {SUBJECT}\n": None,
+        }
+        for body, expected in cases.items():
+            with self.subTest(body=body):
+                self.assertEqual(issue_contract.derive_dependencies(body, SUBJECT), expected)
+
+
 if __name__ == "__main__":
     unittest.main()
