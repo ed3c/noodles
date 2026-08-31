@@ -30,11 +30,17 @@
     },
     {
       "id": "serena-symbol-navigation",
-      "disposition": "REVALIDATE",
-      "claim": "Only index and tool-surface visibility were previously observed.",
-      "physical_evidence": ["skills-shared#256 Serena index/tool surface"],
-      "non_claims": ["Symbol-to-reference navigation, bounded edit, tests, and receipts remain unproven."],
-      "next_issue": "VAL-SERENA-NAV-01"
+      "disposition": "MIGRATE",
+      "claim": "Read-only symbol navigation resolves find_symbol to find_referencing_symbols to direct source readback at a pinned Serena version against an exact repository commit, reports wrong, ambiguous, unsupported-language, and stale-index queries as bounded outcomes, and leaves no source diff or index residue.",
+      "physical_evidence": [
+        "ed3c/noodles#8 fresh read-only navigation receipt at serena-agent 1.7.0",
+        "migrations/skills-shared/serena-navigation-evidence.json"
+      ],
+      "non_claims": [
+        "No bounded edit, test execution, receipt lifecycle, or edit authority is admitted.",
+        "An index hit is not source truth: the stale-index control shows the reported location must still be read back from source.",
+        "No Serena executor is migrated by name and no enabled provider checkout is added."
+      ]
     },
     {
       "id": "isolated-worktree-scheduler",
