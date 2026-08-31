@@ -1152,7 +1152,11 @@ def skill_discovery_check(root: Path, noodle_binary: str | Path, *, error_cls: t
     return receipt
 
 
-SKILL_EVAL_SWEEP_SCHEMA = 1
+# constraint: input and output schemas are declared separately - a future bundle/manifest shape
+# constraint: change bumps SKILL_EVAL_OUTPUT_SCHEMA without forcing every caller-authored lane index
+# constraint: (checked against SKILL_EVAL_LANE_INDEX_SCHEMA) to be rewritten, and vice versa.
+SKILL_EVAL_LANE_INDEX_SCHEMA = 1
+SKILL_EVAL_OUTPUT_SCHEMA = 1
 SKILL_EVAL_MANIFEST_NAME = "skill-eval-sweep-manifest.json"
 SKILL_EVAL_LANDED_OUTCOME = "landed"
 SKILL_EVAL_LANE_TEXT_FIELDS = ("subject", "outcome", "completed_at", "verify_receipt", "merge_receipt")
@@ -1225,8 +1229,8 @@ def _skill_eval_lane(raw: Any, position: int, *, error_cls: type[Exception]) -> 
 
 def _skill_eval_lane_index(path: Path, *, error_cls: type[Exception]) -> list[dict[str, Any]]:
     payload = load_json(path, error_cls=error_cls)
-    if not isinstance(payload, dict) or payload.get("schema_version") != SKILL_EVAL_SWEEP_SCHEMA:
-        raise error_cls(f"skill-eval lane index {path} must declare schema_version {SKILL_EVAL_SWEEP_SCHEMA}")
+    if not isinstance(payload, dict) or payload.get("schema_version") != SKILL_EVAL_LANE_INDEX_SCHEMA:
+        raise error_cls(f"skill-eval lane index {path} must declare schema_version {SKILL_EVAL_LANE_INDEX_SCHEMA}")
     raw_lanes = payload.get("lanes")
     if not isinstance(raw_lanes, list) or not raw_lanes:
         raise error_cls(f"skill-eval lane index {path} carries no lanes")
@@ -1331,6 +1335,10 @@ def sweep_skill_eval(
     archive and a leaked credential each become a FATAL instead of a quietly thinner bundle. No
     verdict is produced: the behavioral judge that reads this output is agent-side and N-class, and
     no scheduling, verification, or landing path reads anything written here."""
+    # constraint: resolve before anything derives from it - the manifest's archive_root field is
+    # constraint: packaged evidence, so two callers pointing at the same directory through a
+    # constraint: different spelling (relative, trailing slash, `.` segment) must not fork the digest.
+    archive_root = archive_root.resolve()
     if not archive_root.is_dir():
         raise error_cls(f"skill-eval archive root is not a directory: {archive_root}")
     if out_dir.exists() and any(out_dir.iterdir()):
@@ -1345,7 +1353,7 @@ def sweep_skill_eval(
         payload = (
             json.dumps(
                 {
-                    "schema_version": SKILL_EVAL_SWEEP_SCHEMA,
+                    "schema_version": SKILL_EVAL_OUTPUT_SCHEMA,
                     "subject": lane["subject"],
                     "pr": lane["pr"],
                     "outcome": lane["outcome"],
@@ -1378,7 +1386,7 @@ def sweep_skill_eval(
             },
         ))
     manifest = {
-        "schema_version": SKILL_EVAL_SWEEP_SCHEMA,
+        "schema_version": SKILL_EVAL_OUTPUT_SCHEMA,
         "lane_index_sha256": sha256_file(index_path),
         "archive_root": str(archive_root),
         "selection": {

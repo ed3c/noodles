@@ -136,14 +136,34 @@ class SelectionTests(unittest.TestCase):
                 self.assertNotIn(banned, sweep_source)
 
     def test_two_runs_with_the_same_inputs_produce_byte_identical_output(self) -> None:
+        # constraint: the manifest never embeds out_dir (no field carries an out-relative or
+        # constraint: out-absolute path), so this is a plain equality: nothing here needs
+        # constraint: normalizing away.
         harness = default_harness(self)
         first = harness.sweep(sample=[f"{REPOSITORY}#703"])
         second_out = harness.root / "out-again"
         second = harness.sweep(out=second_out, sample=[f"{REPOSITORY}#703"])
-        self.assertEqual(json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True).replace(str(second_out), str(harness.out)))
+        self.assertEqual(json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True))
         for name in harness.residue():
             with self.subTest(bundle=name):
                 self.assertEqual((harness.out / name).read_bytes(), (second_out / name).read_bytes())
+
+    def test_respelling_the_same_archive_root_does_not_change_the_manifest(self) -> None:
+        """archive_root is packaged evidence (manifest['archive_root']); a caller pointing at the
+        identical directory through a different spelling must not fork the digest."""
+        harness = default_harness(self)
+        canonical = harness.sweep(sample=[f"{REPOSITORY}#703"])
+        respelled_root = harness.root / "archives" / ".." / "archives" / "."
+        self.assertNotEqual(str(respelled_root), str(harness.archive_root))
+        respelled = runtime_contract.sweep_skill_eval(
+            harness.index,
+            respelled_root,
+            harness.root / "out-respelled",
+            sample=[f"{REPOSITORY}#703"],
+            error_cls=noodles.GateError,
+        )
+        self.assertEqual(respelled["archive_root"], canonical["archive_root"])
+        self.assertEqual(json.dumps(respelled, sort_keys=True), json.dumps(canonical, sort_keys=True))
 
     def test_planted_negative_sample_subject_outside_the_window_fails_closed(self) -> None:
         harness = default_harness(self)

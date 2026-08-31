@@ -2220,6 +2220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(github_protection.run_bounded_gh_admission_eval(root, command, required_tools=args.tool, error_cls=GateError), indent=2, sort_keys=True))
             return 0
         if args.command == "skill-eval":
+            if args.skill_eval_action != "sweep":
+                raise GateError(f"unsupported skill-eval action: {args.skill_eval_action}")
             manifest = runtime_contract.sweep_skill_eval(
                 Path(args.lane_index),
                 Path(args.archive_root),
