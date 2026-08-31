@@ -10,6 +10,7 @@ from unittest import mock
 
 import claim_contract
 import noodles
+import skill_contract
 from tests.support import CANDIDATE_ROOT, ISSUE_DEPENDS_ON_MARKER, ISSUE_FEATURE_MARKER, cmd, handoff_fixture
 
 REPOSITORY = "ed3c/noodles"
@@ -282,7 +283,13 @@ class ClaimLifecycleTests(unittest.TestCase):
         }))
         with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
             brief = noodles.schedule_publish(self.root, candidate)
-        self.assertEqual(brief["claims"], [{"subject": SUBJECT, "status": "claimed", "branch": BRANCH, "head": MAIN_HEAD}])
+        self.assertEqual(brief["claims"], [{
+            "subject": SUBJECT,
+            "status": "claimed",
+            "meaning": skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["claimed"],
+            "branch": BRANCH,
+            "head": MAIN_HEAD,
+        }])
         published = json.loads((self.root / ".noodle" / "orders-next.json").read_text())["orders"]
         self.assertEqual([item["id"] for item in published], [SUBJECT])
         self.assertEqual(provider.refs[f"refs/heads/{BRANCH}"], MAIN_HEAD)
