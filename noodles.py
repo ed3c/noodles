@@ -1153,9 +1153,6 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     pr_readback = gh_api(f"repos/{repository}/pulls/{pr_number}")
     if not pr_readback.get("merged") or pr_readback.get("merge_commit_sha") != merge_sha:
         raise GateError("merged PR readback failed")
-    merged_at = str(pr_readback.get("merged_at") or "")
-    if not merged_at:
-        raise GateError("merged PR readback carries no merged_at timestamp")
     merge_commit = gh_api(f"repos/{repository}/git/commits/{merge_sha}")
     parents = {parent["sha"] for parent in merge_commit.get("parents", [])}
     if head_sha not in parents:
@@ -1179,7 +1176,18 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     closed_contract = parse_issue_contract(closed.get("body") or "", expected_subject=subject_value)
     if closed.get("state") != "closed" or closed_contract["state"] != "landed":
         raise GateError("issue closure readback failed")
-    anchor = post_receipt_anchor(repository, pr_number, merge_sha, merged_at)
+    # constraint: the merge and Issue closure above are already durable provider state by this point;
+    # constraint: the anchor comment is additive and N-class (see post_receipt_anchor's own docstring),
+    # constraint: so nothing past here - including a missing merged_at or a failed comment POST - may
+    # constraint: raise and report the land as failed once the merge and closure it is reporting on
+    # constraint: already succeeded.
+    try:
+        merged_at = str(pr_readback.get("merged_at") or "")
+        if not merged_at:
+            raise GateError("merged PR readback carries no merged_at timestamp")
+        anchor = post_receipt_anchor(repository, pr_number, merge_sha, merged_at)
+    except GateError:
+        anchor = "failed"
     return {
         "repository": repository,
         "pr_number": pr_number,

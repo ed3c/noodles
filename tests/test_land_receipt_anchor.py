@@ -42,10 +42,18 @@ def issue_body(state: str = "awaiting_land") -> str:
 class LandApi:
     """The provider surface land_pull_request actually calls, with the merge as real mutable state."""
 
-    def __init__(self, *, merge_allowed: bool = True, merged_at: str | None = MERGED_AT, comments: list | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        merge_allowed: bool = True,
+        merged_at: str | None = MERGED_AT,
+        comments: list | None = None,
+        fail_anchor_comments: bool = False,
+    ) -> None:
         self.merge_allowed = merge_allowed
         self.merged_at = merged_at
         self.comments = list(comments or [])
+        self.fail_anchor_comments = fail_anchor_comments
         self.posts: list[tuple[str, object]] = []
         self.merged = False
         self.issue = {"state": "open", "body": issue_body()}
@@ -78,6 +86,8 @@ class LandApi:
         if endpoint == f"repos/{REPOSITORY}/branches/main":
             return {"commit": {"sha": MERGE_SHA}}
         if endpoint == f"repos/{REPOSITORY}/issues/{PR_NUMBER}/comments?per_page=100":
+            if self.fail_anchor_comments:
+                raise noodles.GateError("simulated provider failure reading anchor comments")
             return list(self.comments)
         if endpoint == f"repos/{REPOSITORY}/issues/{PR_NUMBER}/comments" and method == "POST":
             self.posts.append((endpoint, payload))
@@ -155,10 +165,25 @@ class LandReceiptAnchorTests(unittest.TestCase):
         self.assertEqual(api.issue["state"], "open")
         self.assertIn("<!-- noodles-state: awaiting_land -->", api.issue["body"])
 
-    def test_planted_negative_merge_readback_without_a_timestamp_fails_before_any_anchor(self) -> None:
+    def test_planted_negative_merge_readback_without_a_timestamp_degrades_the_anchor_only(self) -> None:
+        # constraint: merged_at only feeds the decorative anchor comment - it must never turn an
+        # constraint: already-succeeded merge+closure into a reported land failure.
         api = LandApi(merged_at=None)
-        with self.assertRaisesRegex(noodles.GateError, "no merged_at timestamp"):
-            self.land(api)
+        result = self.land(api)
+        self.assertTrue(api.merged)
+        self.assertTrue(result["issue_closed"])
+        self.assertEqual(result["receipt_anchor"], "failed")
+        self.assertEqual(api.anchors(), [])
+
+    def test_planted_negative_anchor_post_failure_never_gates_an_already_succeeded_land(self) -> None:
+        # constraint: the anchor exists specifically to dodge GitHub's secondary content-creation limit -
+        # constraint: a provider failure posting it must degrade to receipt_anchor="failed", not raise
+        # constraint: after the merge and issue closure it is reporting on already happened.
+        api = LandApi(fail_anchor_comments=True)
+        result = self.land(api)
+        self.assertTrue(api.merged)
+        self.assertTrue(result["issue_closed"])
+        self.assertEqual(result["receipt_anchor"], "failed")
         self.assertEqual(api.anchors(), [])
 
     def test_anchor_is_n_class_no_admission_path_reads_it(self) -> None:
