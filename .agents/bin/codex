@@ -9,10 +9,6 @@ import sys
 from pathlib import Path
 
 
-EXPECTED_PROFILES = {
-    "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"},
-    "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
-}
 DIAGNOSTIC_SUBCOMMANDS = {"debug", "plugin"}
 ISOLATED_HOME = ".noodle/codex-isolation/home"
 ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
@@ -29,14 +25,19 @@ def repo_root() -> Path:
 
 
 def policy_profiles(root: Path) -> dict[str, dict[str, str]]:
+    # constraint: the carrier derives the admitted task profiles from the one committed definition in
+    # constraint: policy/fitness.json instead of pinning a second literal, and still fails closed when
+    # constraint: that definition is unreadable or is not exactly two well-formed task profiles.
+    if str(root) not in sys.path:
+        sys.path.append(str(root))
     try:
-        policy = json.loads((root / "policy/fitness.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"cannot read fitness policy: {exc}")
-    profiles = policy.get("required_codex_task_profiles")
-    if profiles != EXPECTED_PROFILES:
-        fail(f"task profiles must be exactly {EXPECTED_PROFILES!r}")
-    return profiles
+        import skill_contract
+    except ImportError as exc:
+        fail(f"cannot load the task profile reader: {exc}")
+    try:
+        return skill_contract.task_profiles(root)
+    except ValueError as exc:
+        fail(str(exc))
 
 
 def option_values(argv: list[str], short: str, long: str) -> list[str]:

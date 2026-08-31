@@ -367,6 +367,25 @@ def _read_json(path: Path, label: str) -> Any:
         raise ValueError(f"cannot read {label} {path}: {exc}") from exc
 
 
+def task_profiles(root: Path) -> dict[str, dict[str, str]]:
+    # constraint: policy/fitness.json holds the only committed definition of the codex task profiles.
+    # constraint: every other reader derives its expectation here so a profile change touches one file.
+    policy = _read_json(root / "policy/fitness.json", "fitness policy")
+    profiles = policy.get("required_codex_task_profiles") if isinstance(policy, dict) else None
+    if (
+        not isinstance(profiles, dict)
+        or set(profiles) != {"schedule", "execute"}
+        or not all(
+            isinstance(profile, dict)
+            and set(profile) == {"model", "reasoning_effort"}
+            and all(isinstance(value, str) and value for value in profile.values())
+            for profile in profiles.values()
+        )
+    ):
+        raise ValueError("fitness policy requires exact non-empty schedule/execute task profiles")
+    return profiles
+
+
 def validate_schedule_candidate(root: Path, candidate_path: Path) -> dict[str, Any]:
     root = root.resolve()
     runtime = root / ".noodle"
@@ -378,19 +397,7 @@ def validate_schedule_candidate(root: Path, candidate_path: Path) -> dict[str, A
     current_path = runtime / "orders.json"
     current = _read_json(current_path, "current orders") if current_path.exists() else {"orders": []}
     proposed = _read_json(candidate, "schedule candidate")
-    policy = _read_json(root / "policy/fitness.json", "fitness policy")
-    required_task_profiles = policy.get("required_codex_task_profiles") if isinstance(policy, dict) else None
-    if (
-        not isinstance(required_task_profiles, dict)
-        or set(required_task_profiles) != {"schedule", "execute"}
-        or not all(
-            isinstance(profile, dict)
-            and set(profile) == {"model", "reasoning_effort"}
-            and all(isinstance(value, str) and value for value in profile.values())
-            for profile in required_task_profiles.values()
-        )
-    ):
-        raise ValueError("fitness policy requires exact non-empty schedule/execute task profiles")
+    required_task_profiles = task_profiles(root)
     errors = validate_schedule_output(current, proposed, required_task_profiles)
     if errors:
         raise ValueError("schedule output rejected: " + "; ".join(errors))
