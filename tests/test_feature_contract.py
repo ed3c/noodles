@@ -212,12 +212,17 @@ class FeatureEvidenceHandoffTests(unittest.TestCase):
             "trusted_workflow_run_readback",
             return_value=failed_run,
         )
+        self.changed_files_patch = mock.patch.object(
+            noodles, "merge_base_changed_files", return_value=[FEATURE.code_surface]
+        )
         self.failed_run_patch.start()
         self.trusted_run_patch.start()
         self.gh_api_patch.start()
+        self.changed_files_patch.start()
         self.addCleanup(self.failed_run_patch.stop)
         self.addCleanup(self.trusted_run_patch.stop)
         self.addCleanup(self.gh_api_patch.stop)
+        self.addCleanup(self.changed_files_patch.stop)
         self.pr = {
             "state": "open",
             "draft": False,
@@ -248,6 +253,20 @@ class FeatureEvidenceHandoffTests(unittest.TestCase):
         set_state.assert_called_once_with(SUBJECT, "awaiting_land")
         self.assertEqual(receipt["feature"], FEATURE.feature_id)
         self.assertEqual(receipt["feature_code_surface_sha256"], code_surface_digest(self.root))
+        self.assertEqual(receipt["base"], "main")
+        self.assertEqual(receipt["feature_changed_node"], FEATURE.code_surface)
+        self.assertEqual(receipt["feature_journeys"], list(FEATURE.journeys))
+        self.assertEqual(receipt["feature_transitions"], list(FEATURE.transitions))
+
+    def test_changed_code_with_unmapped_journey_fails_closed_before_awaiting_land(self) -> None:
+        write_acceptance_evidence(self.root, self.head, FEATURE)
+        with mock.patch.object(noodles, "merge_base_changed_files", return_value=["issue_contract.py"]), \
+             mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
+             mock.patch.object(noodles, "issue_read", return_value={"body": ISSUE_BODY}), \
+             mock.patch.object(noodles, "issue_set_state") as set_state:
+            with self.assertRaisesRegex(noodles.GateError, "unmapped journey"):
+                noodles.execute_handoff(self.root, SUBJECT, 44, self.pr)
+        set_state.assert_not_called()
 
     def test_marker_free_issue_uses_mandatory_baseline_without_specialized_oracle(self) -> None:
         marker_free_body = ISSUE_BODY.replace(ISSUE_FEATURE_MARKER, "")
