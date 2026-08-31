@@ -122,6 +122,8 @@ Do not use `Closes`, `Fixes`, or `Resolves`. Only the provider lander closes the
 
 Adding a layer requires a physical failure that cannot be closed by strengthening the nearest existing contract/test. Delete a component when the same real task still passes without it.
 
+That law has a mechanical carrier, not just this paragraph: a candidate adding a new pinned lock entry or a new top-level module fails trusted verify unless its Issue answers both gate questions under `## Component introduction` (`VERIFICATION.COMPONENT_INTRODUCTION.001`). Version bumps of existing pinned entries are out of scope.
+
 ## Completion claim
 
 A task is complete only when:

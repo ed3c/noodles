@@ -79,6 +79,13 @@ REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\
 COMPONENT_MAP_PATH = "policy/components.json"
 COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 COMPARE_FILES_CEILING = 300
+COMPONENT_INTRODUCTION_HEADING = "component introduction"
+COMPONENT_INTRODUCTION_QUESTIONS = (
+    "which invalid state does this make impossible?",
+    "why can't strengthening the nearest existing contract close the same failure?",
+)
+# constraint: a pinned unit is any lock object carrying one of these identity keys; bumping such a key's value keeps the unit's path identical, so version bumps stay outside introduction detection.
+PINNING_KEYS = frozenset({"commit", "version", "release", "digest", "binary_sha256", "asset_sha256"})
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 P0_TITLE_RE = re.compile(r"^\[[A-Za-z0-9][A-Za-z0-9-]*-P0\](?:\s|$)")
@@ -435,7 +442,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     try:
         entries = tracked_entries(root)
     except GateError as exc:
-        return {"ok": False, "errors": [str(exc)], "metrics": {}}
+        return {"ok": False, "errors": [str(exc)], "metrics": {}, "introduces": []}
     allowed_modes = {"100644", "100755"}
     for mode, relative in entries:
         if mode not in allowed_modes:
@@ -519,6 +526,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         "warnings": metrics_result["warnings"],
         "warning_readback": metrics_result["warning_readback"],
         "metrics": metrics,
+        "introduces": introduced_components(policy_root, root),
     }
 def provider_check(root: Path) -> list[dict[str, Any]]:
     return runtime_provider_check(root, error_cls=GateError)
@@ -870,6 +878,61 @@ def component_surface_errors(component: str, components: dict[str, list[str]], c
     if offending:
         return [f"mutation outside admitted component {component!r}: {', '.join(offending)}"]
     return []
+def pinned_entries(root: Path) -> set[str]:
+    """Identity path of every pinned unit in this tree's `policy/*.lock.json` files.
+
+    A unit's path is built from container keys and list-item names only, so changing a pinned
+    scalar (a version, a commit) never changes the set; declaring a new dependency always does.
+    """
+    found: set[str] = set()
+
+    def walk(node: Any, prefix: str) -> None:
+        if isinstance(node, dict):
+            if PINNING_KEYS & set(node):
+                found.add(prefix)
+            for key, value in node.items():
+                walk(value, f"{prefix}.{key}")
+        elif isinstance(node, list):
+            for item in node:
+                name = item.get("name") if isinstance(item, dict) else None
+                walk(item, f"{prefix}[{name}]" if isinstance(name, str) and name else prefix)
+
+    for path in sorted((root / "policy").glob("*.lock.json")):
+        walk(load_json(path), path.name)
+    return found
+def introduced_components(base_root: Path, candidate_root: Path) -> list[str]:
+    """Components the candidate declares that the base tree does not: new pinned lock entries and
+    new top-level runtime modules. Language dependency manifests need no case here because
+    `forbidden_dependency_manifests` already rejects every one of them outright."""
+    base_modules = {path.name for path in base_root.glob("*.py")}
+    return sorted(
+        [f"pinned lock entry {entry}" for entry in pinned_entries(candidate_root) - pinned_entries(base_root)]
+        + [f"top-level module {path.name}" for path in candidate_root.glob("*.py") if path.name not in base_modules]
+    )
+def component_introduction_missing_answers(issue_body: str) -> list[str]:
+    section = next(
+        (block for block in re.split(r"(?m)^#{1,6}\s+", issue_body or "") if block.lower().startswith(COMPONENT_INTRODUCTION_HEADING)),
+        "",
+    ).lower()
+    missing: list[str] = []
+    for question in COMPONENT_INTRODUCTION_QUESTIONS:
+        _, found, answer = section.partition(question)
+        for other in COMPONENT_INTRODUCTION_QUESTIONS:
+            if other != question:
+                answer = answer.partition(other)[0]
+        if not found or not answer.strip(" \t\r\n-*+>#"):
+            missing.append(question)
+    return missing
+def component_introduction_errors(introductions: Sequence[str], issue_body: str) -> list[str]:
+    if not introductions:
+        return []
+    missing = component_introduction_missing_answers(issue_body)
+    if not missing:
+        return []
+    return [
+        f"candidate introduces {', '.join(introductions)}; the driving issue must answer both gate "
+        f"questions under a '## Component introduction' section, unanswered: {' | '.join(missing)}"
+    ]
 def compare_changed_files(comparison: Any) -> list[str]:
     if not isinstance(comparison, dict) or not isinstance(comparison.get("files"), list):
         raise GateError("provider compare readback has no files list")
@@ -920,6 +983,10 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     )
     if surface_errors:
         raise GateError("candidate component-surface gate failed: " + "; ".join(surface_errors))
+    introductions = introduced_components(root, candidate_root)
+    introduction_errors = component_introduction_errors(introductions, issue.get("body") or "")
+    if introduction_errors:
+        raise GateError("candidate component-introduction gate failed: " + "; ".join(introduction_errors))
     result = verify_repository(candidate_root, root)
     if not result["ok"]:
         raise GateError("candidate repository gate failed: " + "; ".join(result["errors"]))
@@ -934,7 +1001,8 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "workflow_run_id": int(os.getenv("GITHUB_RUN_ID", "0")),
         "metrics": result["metrics"],
         "component": contract["component"],
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface"],
+        "introduces": introductions,
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction"],
     }
     write_json(receipt_path, receipt)
     return receipt
