@@ -54,9 +54,14 @@
     {
       "id": "scip-semantic-graph",
       "disposition": "REVALIDATE",
-      "claim": "Architecture hypothesis only; fresh exact-commit indexing and lookup evidence is required.",
+      "claim": "A fresh exact-commit indexing and lookup receipt now exists; promoting the disposition is a separate evidence-admission decision, not a consequence of the receipt existing.",
       "physical_evidence": [],
-      "non_claims": ["SCIP was absent from the historical physical run."],
+      "non_claims": [
+        "SCIP was absent from the historical physical run.",
+        "The receipt covers Python-only lookup at one exact commit and grants no capability status by itself.",
+        "No migration-by-name, complete language coverage, edit authority, or required dependency of code-intelligence v1."
+      ],
+      "validation_receipt": "migrations/skills-shared/scip-validation.json",
       "next_issue": "VAL-SCIP-01"
     },
     {
