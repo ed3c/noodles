@@ -2076,6 +2076,14 @@ def build_parser() -> argparse.ArgumentParser:
     eval_sub = sub.add_parser("eval").add_subparsers(dest="eval_action", required=True)
     eval_gh = eval_sub.add_parser("gh-boundary")
     eval_gh.add_argument("--tool", action="append", default=[]); eval_gh.add_argument("child_command", nargs=argparse.REMAINDER)
+    skill_eval_sub = sub.add_parser("skill-eval").add_subparsers(dest="skill_eval_action", required=True)
+    skill_eval_sweep = skill_eval_sub.add_parser("sweep")
+    skill_eval_sweep.add_argument("--lane-index", required=True, help="caller-supplied lane index; the sweep reads no clock and no live backlog")
+    skill_eval_sweep.add_argument("--archive-root", required=True)
+    skill_eval_sweep.add_argument("--out", required=True)
+    skill_eval_sweep.add_argument("--sample", action="append", default=[], help="explicit owner/repo#N lane to package on top of every non-landed lane")
+    skill_eval_sweep.add_argument("--since", default="")
+    skill_eval_sweep.add_argument("--until", default="")
     github = sub.add_parser("github")
     github_sub = github.add_subparsers(dest="github_action", required=True)
     protect = github_sub.add_parser("protect")
@@ -2210,6 +2218,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise GateError(f"unsupported eval action: {args.eval_action}")
             command = list(args.child_command[1:] if args.child_command[:1] == ["--"] else args.child_command)
             print(json.dumps(github_protection.run_bounded_gh_admission_eval(root, command, required_tools=args.tool, error_cls=GateError), indent=2, sort_keys=True))
+            return 0
+        if args.command == "skill-eval":
+            manifest = runtime_contract.sweep_skill_eval(
+                Path(args.lane_index),
+                Path(args.archive_root),
+                Path(args.out),
+                sample=args.sample,
+                since=args.since,
+                until=args.until,
+                error_cls=GateError,
+            )
+            print(json.dumps(manifest, indent=2, sort_keys=True))
             return 0
         if args.command == "github":
             if args.github_action == "protect":
