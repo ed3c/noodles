@@ -44,7 +44,11 @@
       "migrations/*",
       ".agents/*",
       ".noodle.toml",
-      ".noodle/*"
+      ".noodle/*",
+      "structural_contract.py",
+      "retrieval_contract.py",
+      "scip_validation.py",
+      "README.md"
     ],
     "contract": [
       "*"
