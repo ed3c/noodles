@@ -511,6 +511,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
                 errors.append(f"backlog adapter action {action} must route through {expected_adapter}")
         errors.extend(validate_backlog_scheduler(root, noodle_config))
         errors.extend(validate_execute_task(root, noodle_config))
+        errors.extend(runtime_contract.validate_execute_route_bundle_contract(root))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         errors.append(f"invalid .noodle.toml: {exc}")
     errors.extend(validate_runtime_lock(root))

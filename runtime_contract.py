@@ -352,6 +352,60 @@ def _validate_execute_route_files(root: Path, required_skill_paths: dict[str, di
             raise error_cls(f"execute routing contract does not name route bundle {route_bundle_path(route)}")
 
 
+# constraint: ed3c/noodles#174 monitor finding 7 - a route's traversal (data, above) must keep naming
+# constraint: the same leaf skill(s) as its own "Immutable route fixtures" bullet in the committed
+# constraint: SKILL.md (prose), or a bundle could silently assemble the wrong skill's bytes under the
+# constraint: right route name. Parsed from the real bullet text rather than a second hardcoded mapping,
+# constraint: so the two can only agree by construction, not by two authors remembering to match.
+_ROUTE_FIXTURE_BULLET_RE = re.compile(r"^- `(?P<label>[^`]+)` -> (?P<rhs>.+?); oracle ", re.M)
+
+
+def _route_fixture_bullets(routing: str) -> dict[str, str]:
+    return {
+        match["label"].strip().lower().replace(" ", "-"): match["rhs"]
+        for match in _ROUTE_FIXTURE_BULLET_RE.finditer(routing)
+    }
+
+
+def _route_traversal_leaf_identity(path: str) -> str:
+    leaf = Path(path)
+    return leaf.parent.name if path.endswith("/SKILL.md") else leaf.stem
+
+
+def validate_execute_route_bundle_contract(root: Path) -> list[str]:
+    """monitor findings 7 and 8 - static, provider-checkout-free check of the committed execute
+    SKILL.md text, reachable from verify_repository (./noodles verify, the gate that runs on every
+    PR head) without a live noodle binary or a materialized provider checkout - unlike
+    _validate_execute_route_files above, which only runs through skill_discovery_check and therefore
+    never ran in CI."""
+    skill_file = root / PROJECT_SKILLS_ROOT / "execute" / "SKILL.md"
+    if not skill_file.is_file():
+        return [f"execute skill missing at {skill_file}"]
+    routing = skill_file.read_text(encoding="utf-8")
+    errors: list[str] = []
+    if EXECUTE_ROUTE_BUNDLE_PHRASE not in routing:
+        errors.append("execute routing contract does not point cooks at the pinned route bundles")
+    bullets = _route_fixture_bullets(routing)
+    for route, paths in EXECUTE_ROUTE_TRAVERSALS.items():
+        bundle_path = route_bundle_path(route)
+        if bundle_path not in routing:
+            errors.append(f"execute routing contract does not name route bundle {bundle_path}")
+        bullet = bullets.get(route)
+        if bullet is None:
+            errors.append(f"execute routing contract has no immutable-route-fixture bullet for route {route!r}")
+            continue
+        for leaf_path in paths[1:]:
+            # constraint: paths[0] is the shared poteto-mode entrypoint, common to every route and
+            # constraint: not itself named per-route in the fixture bullets.
+            identity = _route_traversal_leaf_identity(leaf_path)
+            if identity not in bullet:
+                errors.append(
+                    f"execute routing contract fixture for route {route!r} does not name {identity!r} "
+                    f"(traversal leaf {leaf_path!r})"
+                )
+    return errors
+
+
 def run(
     argv: Sequence[str],
     *,

@@ -7,8 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from runtime_contract import EXECUTE_ROUTE_BUNDLE_PHRASE, EXECUTE_ROUTE_TRAVERSALS, route_bundle_path
-
 
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
 SCHEDULE_ACTIVE_ORDER_PHRASE = "Do not re-emit any active non-schedule order."
@@ -45,24 +43,6 @@ EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `sa
 EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
 EXECUTE_UNSUPPORTED_PHRASE = "Unsupported routes fail closed:"
 EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
-# constraint: ed3c/noodles#174 monitor finding 7 - each route's traversal (runtime_contract) must keep
-# constraint: naming the same leaf skill(s) as its documented fixture bullet, or a bundle could silently
-# constraint: assemble the wrong skill's bytes under the right route name. Bound here, not re-derived by
-# constraint: parsing the doc, because these bullet constants are already independently grepped against
-# constraint: the real committed file below.
-EXECUTE_ROUTE_FIXTURE_BULLETS = {
-    "investigation": EXECUTE_INVESTIGATION_ROUTE,
-    "function-boundary-feature-work": EXECUTE_FEATURE_ROUTE,
-    "long-multi-phase-work": EXECUTE_MULTI_PHASE_ROUTE,
-    "verification-skill-work": EXECUTE_VERIFICATION_ROUTE,
-    "cli-control": EXECUTE_CONTROL_CLI_ROUTE,
-    "pre-commit-cleanup": EXECUTE_DESLOP_ROUTE,
-}
-
-
-def _route_traversal_leaf_identity(path: str) -> str:
-    leaf = Path(path)
-    return leaf.parent.name if path.endswith("/SKILL.md") else leaf.stem
 SCHEDULE_SUMMARY_COMMAND = "python3 skill_contract.py summary .noodle/schedule-summary.md"
 SCHEDULE_RECEIPT_VERBATIM_PHRASE = (
     "Quote `frontier`, `winners`, `max_useful_workers`, and every per-subject status line verbatim from "
@@ -207,27 +187,6 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
         )
         if not present:
             errors.append(f"project task skill {skill_name!r} missing {label} contract")
-    # constraint: ed3c/noodles#174 monitor finding 8 - this is the ./noodles verify gate that actually
-    # constraint: runs on every PR head; the route-bundle pointer must be checked here, not only through
-    # constraint: skill_discovery_check (reachable solely via a live noodle binary, outside CI).
-    if EXECUTE_ROUTE_BUNDLE_PHRASE not in content:
-        errors.append(f"project task skill {skill_name!r} missing route bundle pointer contract")
-    for route, paths in EXECUTE_ROUTE_TRAVERSALS.items():
-        bundle_path = route_bundle_path(route)
-        if f"`{bundle_path}`" not in content:
-            errors.append(f"project task skill {skill_name!r} missing route bundle path {bundle_path!r}")
-        bullet = EXECUTE_ROUTE_FIXTURE_BULLETS.get(route)
-        if bullet is None:
-            errors.append(f"project task skill {skill_name!r} has no fixture-bullet binding declared for route {route!r}")
-            continue
-        # constraint: paths[0] is the shared poteto-mode entrypoint, already checked above.
-        for leaf_path in paths[1:]:
-            identity = _route_traversal_leaf_identity(leaf_path)
-            if identity not in bullet:
-                errors.append(
-                    f"project task skill {skill_name!r} route {route!r} traversal leaf {leaf_path!r} "
-                    f"(identity {identity!r}) is not named by its documented fixture bullet"
-                )
     return errors
 
 

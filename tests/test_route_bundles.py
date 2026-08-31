@@ -238,22 +238,22 @@ class ExecuteRoutingPointerTests(unittest.TestCase):
 
 
 class VerifyGateBundleBindingTests(unittest.TestCase):
-    """monitor findings 7 and 8: the guard above runs only through skill_discovery_check, which needs
-    a live noodle binary and is not reachable from `./noodles verify` - the gate that actually runs on
-    every PR head. These exercise the same two failure modes through skill_contract.validate_execute_task,
-    the function `verify_repository` calls directly."""
+    """monitor findings 7 and 8: _validate_execute_route_files above runs only through
+    skill_discovery_check, which needs a live noodle binary and is not reachable from
+    `./noodles verify` - the gate that actually runs on every PR head. These exercise the same two
+    failure modes through runtime_contract.validate_execute_route_bundle_contract, the static,
+    provider-checkout-free check verify_repository calls directly (both carrier-owned surfaces)."""
 
-    def task_config(self, root: Path, content: str) -> dict[str, Any]:
-        skill_dir = root / "skills" / "execute"
+    def skill_root(self, root: Path, content: str) -> None:
+        skill_dir = root / runtime_contract.PROJECT_SKILLS_ROOT / "execute"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
-        return {"skills": {"paths": ["skills"]}}
 
     def test_verify_gate_passes_on_the_committed_skill(self) -> None:
         with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
             root = Path(name)
-            config = self.task_config(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
-            self.assertEqual(skill_contract.validate_execute_task(root, config), [])
+            self.skill_root(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
+            self.assertEqual(runtime_contract.validate_execute_route_bundle_contract(root), [])
 
     def test_verify_gate_catches_a_deleted_bundle_pointer(self) -> None:
         content = EXECUTE_SKILL.read_text(encoding="utf-8")
@@ -261,9 +261,9 @@ class VerifyGateBundleBindingTests(unittest.TestCase):
         self.assertNotEqual(stripped, content)
         with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
             root = Path(name)
-            config = self.task_config(root, stripped)
-            errors = skill_contract.validate_execute_task(root, config)
-        self.assertIn("missing route bundle pointer contract", "; ".join(errors))
+            self.skill_root(root, stripped)
+            errors = runtime_contract.validate_execute_route_bundle_contract(root)
+        self.assertIn("does not point cooks at the pinned route bundles", "; ".join(errors))
 
     def test_verify_gate_catches_a_route_bundle_mislabeled_to_the_wrong_skill(self) -> None:
         # constraint: monitor finding 7 - if cli-control's traversal were edited to point at deslop
@@ -277,13 +277,10 @@ class VerifyGateBundleBindingTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
             root = Path(name)
-            config = self.task_config(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
-            with mock.patch.dict(skill_contract.EXECUTE_ROUTE_TRAVERSALS, swapped):
-                errors = skill_contract.validate_execute_task(root, config)
-        self.assertTrue(
-            any("not named by its documented fixture bullet" in error for error in errors),
-            errors,
-        )
+            self.skill_root(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
+            with mock.patch.dict(runtime_contract.EXECUTE_ROUTE_TRAVERSALS, swapped):
+                errors = runtime_contract.validate_execute_route_bundle_contract(root)
+        self.assertTrue(any("does not name 'deslop'" in error for error in errors), errors)
 
 
 class NativeCompatNamespaceTests(unittest.TestCase):
