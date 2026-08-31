@@ -1,0 +1,392 @@
+{
+  "capability_id": "serena-bounded-edit",
+  "guard_names": [
+    "scope_violation",
+    "stale_index",
+    "reference_drift",
+    "immutable_tests_failed",
+    "immutable_tests_mutated"
+  ],
+  "immutable_tests": {
+    "argv": [
+      "/opt/homebrew/bin/python3",
+      "-m",
+      "unittest",
+      "tests.test_provider_replacement"
+    ],
+    "interpreter_version": "3.14.6",
+    "module": "tests.test_provider_replacement",
+    "protected_prefix": "tests/"
+  },
+  "navigation": {
+    "find_referencing_symbols": {
+      "query": {
+        "name_path": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py"
+      },
+      "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa",
+      "referencing_files": [
+        "noodles.py",
+        "runtime_contract.py"
+      ]
+    },
+    "find_symbol": {
+      "body": "def validate_skill_config_paths(skill_paths: list[str]) -> list[str]:\n    errors: list[str] = []\n    if CONTROL_NOODLE_DISCOVERY_ROOT not in skill_paths:\n        errors.append(f\".noodle.toml skills.paths must include {CONTROL_NOODLE_DISCOVERY_ROOT}\")\n    if RETIRED_PROVIDER_DISCOVERY_ROOT in skill_paths:\n        errors.append(\".noodle.toml skills.paths must not retain retired matt-engineering discovery\")\n    return errors",
+      "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+      "matches": [
+        {
+          "body_location": {
+            "end_line": 58,
+            "start_line": 52
+          },
+          "kind": "Function",
+          "name_path": "validate_skill_config_paths",
+          "relative_path": "provider_contract.py"
+        }
+      ],
+      "query": {
+        "name_path_pattern": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py"
+      }
+    },
+    "source_readback": [
+      {
+        "line": 438,
+        "occurrences": 1,
+        "relative_path": "noodles.py",
+        "text": "errors.extend(runtime_contract.validate_skill_config_paths([str(path) for path in noodle_config.get(\"skills\", {}).get(\"paths\", [])]))",
+        "text_sha256": "470990449ee06dd0faff79dd35f933ce7e95994d7419cb1ddebed7c8d2a76d7e"
+      },
+      {
+        "line": 26,
+        "occurrences": 1,
+        "relative_path": "runtime_contract.py",
+        "text": "validate_skill_config_paths,",
+        "text_sha256": "b518cfcae08032d997354cb456b02fced3ff24d4ab7de84d10e104634bf1f823"
+      }
+    ]
+  },
+  "pin": {
+    "commit": "949a27ef1e5fda1a6e7b561e777bcece345c6ffd",
+    "context": "agent",
+    "distribution": {
+      "index": "https://pypi.org/simple",
+      "package": "serena-agent",
+      "sdist_sha256": "1ef15db14ee5426f3e3dc48fdd7bb7e864d1f35359115eaa3bdd7248b1533ce6",
+      "version": "1.7.0",
+      "wheel_sha256": "6dbf1459670d96fb0595f84932adef34260a6fe14ba5135b901fdb3c8c76e891"
+    },
+    "editing_tools": [
+      "replace_symbol_body"
+    ],
+    "fixed_tools": [
+      "find_symbol",
+      "find_referencing_symbols",
+      "replace_symbol_body"
+    ],
+    "language_backend": "LSP",
+    "modes": [],
+    "python": "3.13.1",
+    "source": "https://github.com/oraios/serena.git"
+  },
+  "residue": {
+    "paths_created_by_invocation": [],
+    "serena_folder_in_repository": false,
+    "tree_unchanged": true,
+    "workspace_removed": true,
+    "worktree_unchanged": true
+  },
+  "runs": {
+    "bounded_edit": {
+      "admitted": true,
+      "blocked_by": [],
+      "declared_scope": [
+        "provider_contract.py"
+      ],
+      "designated_guard": null,
+      "drift": {
+        "applied": false
+      },
+      "drifted_reference_sites": [],
+      "edit": {
+        "body_sha256": "af7dc314bbc18d2ea7091355bb99623fe8a240ac1dd1be764089d6c0a71d0501",
+        "name_path": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py",
+        "result": "OK",
+        "tool": "replace_symbol_body"
+      },
+      "edit_changed_paths": [
+        "provider_contract.py"
+      ],
+      "edit_readback": true,
+      "immutable_test_files_unchanged": true,
+      "immutable_tests": {
+        "passed": true,
+        "returncode": 0,
+        "summary": "OK"
+      },
+      "navigation": {
+        "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+        "match_count": 1,
+        "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa"
+      },
+      "navigation_body_present_at_edit_time": true,
+      "out_of_scope_paths": [],
+      "reference_sites_intact": true,
+      "root_outside_repository": true,
+      "steps": [
+        "export",
+        "find_symbol",
+        "find_referencing_symbols",
+        "replace_symbol_body",
+        "immutable_tests",
+        "diff_readback"
+      ],
+      "total_changed_paths_vs_commit": [
+        "provider_contract.py"
+      ]
+    },
+    "changed_reference": {
+      "admitted": false,
+      "blocked_by": [
+        "reference_drift"
+      ],
+      "declared_scope": [
+        "provider_contract.py"
+      ],
+      "designated_guard": "reference_drift",
+      "drift": {
+        "applied": true,
+        "relative_path": "noodles.py",
+        "semantics_preserving": true
+      },
+      "drifted_reference_sites": [
+        "noodles.py"
+      ],
+      "edit": {
+        "body_sha256": "af7dc314bbc18d2ea7091355bb99623fe8a240ac1dd1be764089d6c0a71d0501",
+        "name_path": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py",
+        "result": "OK",
+        "tool": "replace_symbol_body"
+      },
+      "edit_changed_paths": [
+        "provider_contract.py"
+      ],
+      "edit_readback": true,
+      "immutable_test_files_unchanged": true,
+      "immutable_tests": {
+        "passed": true,
+        "returncode": 0,
+        "summary": "OK"
+      },
+      "navigation": {
+        "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+        "match_count": 1,
+        "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa"
+      },
+      "navigation_body_present_at_edit_time": true,
+      "out_of_scope_paths": [],
+      "reference_sites_intact": false,
+      "root_outside_repository": true,
+      "steps": [
+        "export",
+        "find_symbol",
+        "find_referencing_symbols",
+        "drift_control",
+        "replace_symbol_body",
+        "immutable_tests",
+        "diff_readback"
+      ],
+      "total_changed_paths_vs_commit": [
+        "noodles.py",
+        "provider_contract.py"
+      ]
+    },
+    "failing_immutable_test": {
+      "admitted": false,
+      "blocked_by": [
+        "immutable_tests_failed"
+      ],
+      "declared_scope": [
+        "provider_contract.py"
+      ],
+      "designated_guard": "immutable_tests_failed",
+      "drift": {
+        "applied": false
+      },
+      "drifted_reference_sites": [],
+      "edit": {
+        "body_sha256": "08a3d45f45a996a46570b88d9d3c43b8d62344733b0ab3c7d22624d28652ac6d",
+        "name_path": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py",
+        "result": "OK",
+        "tool": "replace_symbol_body"
+      },
+      "edit_changed_paths": [
+        "provider_contract.py"
+      ],
+      "edit_readback": true,
+      "immutable_test_files_unchanged": true,
+      "immutable_tests": {
+        "passed": false,
+        "returncode": 1,
+        "summary": "FAILED (failures=1)"
+      },
+      "navigation": {
+        "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+        "match_count": 1,
+        "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa"
+      },
+      "navigation_body_present_at_edit_time": true,
+      "out_of_scope_paths": [],
+      "reference_sites_intact": true,
+      "root_outside_repository": true,
+      "steps": [
+        "export",
+        "find_symbol",
+        "find_referencing_symbols",
+        "replace_symbol_body",
+        "immutable_tests",
+        "diff_readback"
+      ],
+      "total_changed_paths_vs_commit": [
+        "provider_contract.py"
+      ]
+    },
+    "out_of_scope_edit": {
+      "admitted": false,
+      "blocked_by": [
+        "scope_violation"
+      ],
+      "declared_scope": [
+        "provider_contract.py"
+      ],
+      "designated_guard": "scope_violation",
+      "drift": {
+        "applied": false
+      },
+      "drifted_reference_sites": [],
+      "edit": {
+        "body_sha256": "a449b3e9cfa65a386aedddc63fdd6def1dcfd3886158bdf66bd6ceadca37e6b0",
+        "name_path": "validate_enabled_provider_names",
+        "relative_path": "runtime_contract.py",
+        "result": "OK",
+        "tool": "replace_symbol_body"
+      },
+      "edit_changed_paths": [
+        "runtime_contract.py"
+      ],
+      "edit_readback": true,
+      "immutable_test_files_unchanged": true,
+      "immutable_tests": {
+        "passed": true,
+        "returncode": 0,
+        "summary": "OK"
+      },
+      "navigation": {
+        "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+        "match_count": 1,
+        "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa"
+      },
+      "navigation_body_present_at_edit_time": true,
+      "out_of_scope_paths": [
+        "runtime_contract.py"
+      ],
+      "reference_sites_intact": true,
+      "root_outside_repository": true,
+      "steps": [
+        "export",
+        "find_symbol",
+        "find_referencing_symbols",
+        "replace_symbol_body",
+        "immutable_tests",
+        "diff_readback"
+      ],
+      "total_changed_paths_vs_commit": [
+        "runtime_contract.py"
+      ]
+    },
+    "stale_symbol_index": {
+      "admitted": false,
+      "blocked_by": [
+        "stale_index"
+      ],
+      "declared_scope": [
+        "provider_contract.py"
+      ],
+      "designated_guard": "stale_index",
+      "drift": {
+        "applied": true,
+        "relative_path": "provider_contract.py",
+        "semantics_preserving": true
+      },
+      "drifted_reference_sites": [],
+      "edit": {
+        "body_sha256": "af7dc314bbc18d2ea7091355bb99623fe8a240ac1dd1be764089d6c0a71d0501",
+        "name_path": "validate_skill_config_paths",
+        "relative_path": "provider_contract.py",
+        "result": "OK",
+        "tool": "replace_symbol_body"
+      },
+      "edit_changed_paths": [
+        "provider_contract.py"
+      ],
+      "edit_readback": true,
+      "immutable_test_files_unchanged": true,
+      "immutable_tests": {
+        "passed": true,
+        "returncode": 0,
+        "summary": "OK"
+      },
+      "navigation": {
+        "body_sha256": "c880834070a9b00df25e75657140097087e1486abef15e1a00b4c421682c7868",
+        "match_count": 1,
+        "reference_sites_sha256": "24b1abb8362007de1f43cefa64dad36c15a2fed2cc3c5dba5dcbedf79856dfaa"
+      },
+      "navigation_body_present_at_edit_time": false,
+      "out_of_scope_paths": [],
+      "reference_sites_intact": true,
+      "root_outside_repository": true,
+      "steps": [
+        "export",
+        "find_symbol",
+        "find_referencing_symbols",
+        "drift_control",
+        "replace_symbol_body",
+        "immutable_tests",
+        "diff_readback"
+      ],
+      "total_changed_paths_vs_commit": [
+        "provider_contract.py"
+      ]
+    }
+  },
+  "schema_version": 1,
+  "subject": {
+    "commit": "bfa0f22fad31eee4b5ffdf639d951f4b2d0229dc",
+    "declared_scope": [
+      "provider_contract.py"
+    ],
+    "relative_path": "provider_contract.py",
+    "repository": "ed3c/noodles",
+    "symbol": "validate_skill_config_paths",
+    "tree": "9f887939ed0005747a393afbba7a9d919b600727",
+    "uncommitted_paths_at_probe_time": [
+      "migrations/skills-shared/serena_bounded_edit_probe.py"
+    ]
+  },
+  "subject_issue": "ed3c/noodles#12",
+  "tool_surface": {
+    "editing_tools_exposed": [
+      "replace_symbol_body"
+    ],
+    "exposed_tools": [
+      "find_referencing_symbols",
+      "find_symbol",
+      "replace_symbol_body"
+    ],
+    "project_serena_folder": "/private/var/folders/l6/44bf7nvs64j60f1mpyy88hdm0000gn/T/serena-bounded-edit-28vi4vy0/bounded_edit-data",
+    "project_serena_folder_inside_repository": false
+  }
+}

@@ -88,6 +88,20 @@
       "non_claims": ["No stacked-PR dependency is added to the Golden Path."]
     },
     {
+      "id": "serena-bounded-edit",
+      "disposition": "REVALIDATE",
+      "claim": "A bounded edit lifecycle ran physically at pinned Serena 1.7.0 against an exact repository commit: find_symbol to find_referencing_symbols to one allowlisted symbol-body edit to immutable tests to diff and source readback to cleanup, admitted only when the produced diff stayed inside the declared path scope, the navigated body still matched source at edit time, every reference site still read back, and the immutable tests stayed unchanged and green.",
+      "physical_evidence": [],
+      "non_claims": [
+        "Promoting the disposition is a separate evidence-admission decision, not a consequence of the receipt existing.",
+        "The boundary is the external diff gate, not the tool: the allowlisted symbol editor edited an out-of-scope file without complaint and only the scope guard stopped the run.",
+        "No generic executor, autonomous refactor authority, or multi-file semantic correctness is admitted.",
+        "No production admission beyond this tested atom and no enabled provider checkout is added."
+      ],
+      "validation_receipt": "migrations/skills-shared/serena-bounded-edit-evidence.json",
+      "next_issue": "VAL-SERENA-EDIT-01"
+    },
+    {
       "id": "full-code-intelligence-chain",
       "disposition": "DROP",
       "claim": "Individual adapter observations did not prove a causal production pipeline.",
