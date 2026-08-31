@@ -290,12 +290,13 @@ class RepositoryGateTests(unittest.TestCase):
         stable_refusal = "Unsupported routes fail closed:"
         self.assertEqual(skill_contract.EXECUTE_UNSUPPORTED_PHRASE, stable_refusal)
 
-        branded_result = self.verify()
-        self.assertTrue(branded_result["ok"], branded_result["errors"])
-        branded_content = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
-        branded_rules = [line for line in branded_content.splitlines() if line.startswith(stable_refusal)]
-        self.assertEqual(len(branded_rules), 1)
-        self.assertIn("`control-ui`", branded_rules[0])
+        shipped_result = self.verify()
+        self.assertTrue(shipped_result["ok"], shipped_result["errors"])
+        shipped_content = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
+        shipped_rules = [line for line in shipped_content.splitlines() if line.startswith(stable_refusal)]
+        self.assertEqual(len(shipped_rules), 1)
+        self.assertNotIn("`control-ui`", shipped_rules[0])
+        self.assertIn("any engineering route not in the admitted fixtures above", shipped_rules[0])
 
         cases = (
             ("generic", "Unsupported routes fail closed: any route not explicitly admitted above.", True),

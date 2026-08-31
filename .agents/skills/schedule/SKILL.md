@@ -10,9 +10,9 @@ Use this skill only for scheduling. Do not implement code here.
 
 ## Inputs
 
-Read the backlog adapter output. Each valid item has an exact ID `owner/repo#N`, a provider-backed state, its declared `dependencies`, a derived `schedulable` flag with exact `reasons`, and the provider `body_sha256`.
+Read the backlog adapter output. Each valid item has an exact ID `owner/repo#N`, a provider-backed lifecycle state, declared `dependencies`, a derived `schedulable` flag with exact `reasons`, and the provider `body_sha256`.
 
-Read `./noodles issue contract owner/repo#N` for the typed goal, physical acceptance, and non-claims of an item you intend to schedule. Never invent a `gh` command and never re-derive dependency waiting by hand.
+Read `./noodles issue contract owner/repo#N` before scheduling. The provider Issue body is the canonical mutable work-order content; do not copy its goal, claim, acceptance prose, or non-claims into a second scheduler-owned truth.
 
 ## Admission
 
@@ -23,10 +23,10 @@ Schedule an item only when all are true:
 3. Issue state is `ready`.
 4. The target repository is admitted by `policy/github.json`.
 5. The adapter reports `schedulable: true`, which means every declared predecessor read back closed and `landed`.
-6. The Issue describes one repository-mutating atom or one evidence-only audit atom.
+6. The Issue role is the parser-admitted `repository-mutating-atom`.
 7. No other executor claims the Issue: its exact execute branch does not already exist on the provider and its marker is not `in_progress`. A provider-rejected branch creation is another executor's claim; skip it without ordering or marker edits.
 
-Do not schedule an item whose `reasons` are non-empty, and never patch an Issue marker to represent dependency waiting: eligibility is re-derived from provider truth on every sync. Reject when the target, subject, acceptance evidence, or non-claims are ambiguous. Reserve `blocked` for a real blocker with an explicit `<!-- noodles-blocker: owner: reason -->`.
+Do not schedule an item whose `reasons` are non-empty, and never patch an Issue marker to represent dependency waiting: eligibility is re-derived from provider truth on every sync. Reserve `blocked` for a true blocker with an explicit `<!-- noodles-blocker: owner: reason -->`.
 
 ## Ownership boundary
 
@@ -44,26 +44,26 @@ Never write `.noodle/orders-next.json` directly. A rejected candidate must be co
 
 ## Order construction
 
-Create one order per Issue. Use the exact Issue subject as `order_id`.
+Create one order per admitted Issue. Use the exact Issue subject as `order_id`.
 
-The order must have exactly one `execute` stage. Do not create generic planning, review, shipping, or human-approval stages. pstack performs engineering lifecycle routing inside the execute stage.
+The order has exactly one `execute` stage. Do not create generic planning, review, shipping, or human-approval stages. pstack performs engineering lifecycle routing inside the execute stage.
 
-Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model on the order's only `execute` stage. The repository-owned Codex carrier applies the paired reasoning effort from the same profile. Do not infer a model alias, substitute another supported model, add a reasoning field that pinned Noodle cannot parse, or rely on the routing default: the schedule carrier and execute carrier are intentionally distinct task types.
+Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model on the order's only `execute` stage. The repository-owned Codex carrier applies the paired reasoning effort from the same profile. Do not infer aliases or add fields pinned Noodle cannot parse.
 
-Pass this context verbatim:
+Pass only stable identity/provenance needed for execute to re-read provider truth:
 
 ```text
 subject: owner/repo#N
 target: owner/repo
-claim: exact claim from Issue
-physical acceptance: exact positive/negative/readback/residue requirements
-non-claims: exact exclusions
-dependencies: exact landed subjects
+provider_body_sha256: exact digest returned by ./noodles issue contract
+dependencies: exact declared subjects
 ```
+
+The execute stage MUST re-read `./noodles issue contract owner/repo#N` and reject body-digest drift before using Issue prose. The order is a routing envelope, not a copy of the Issue.
 
 ## Parallelism
 
-Sibling Issues may run concurrently only when their target paths/contracts are disjoint or the Issue explicitly records a safe merge boundary. Dependency edges, not optimistic Agent judgment, determine ordering.
+Sibling Issues may run concurrently only when their typed admitted write boundaries are disjoint. Until the repository's write-boundary admission contract says so, do not infer disjointness from prose or optimistic Agent judgment. Dependency edges determine ordering; numeric concurrency caps do not prove correctness.
 
 Admission is oldest-first among ready P0 Issues: prove disjointness against the oldest ready P0, and when the overlap cannot be proven, defer the newer sibling - never the older Issue. A whole-loop atom therefore drains the queue and runs solo instead of starving behind a stream of narrower newcomers.
 
@@ -104,7 +104,8 @@ Status meanings are owned by `skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS` and
 - Do not ask an Agent to merge or close an Issue.
 - Do not create a custom worktree; Noodle owns it.
 - Do not add a capability that an external owner already supplies.
+- Do not copy provider Issue prose into orders as mutable scheduler truth.
 
 ## Output
 
-Publish Noodle orders with exact IDs and dependency order through the ownership gate above. If nothing is admitted, publish `{"orders": []}` and record the fail-closed reason.
+Publish Noodle orders with exact IDs and provider-backed provenance through the ownership gate above. If nothing is admitted, publish `{"orders": []}` and preserve the exact fail-closed reason.

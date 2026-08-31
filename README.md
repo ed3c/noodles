@@ -9,34 +9,33 @@ GitHub Issue
     ↓
 Noodle scheduler / orders / worktrees
     ↓
-external pstack + engineering skills       P
+external pstack engineering routing          P
     ↓
 smallest implementation atom
     ↓
-noodles local gate + physical readback      L
+noodles local gate + physical readback       L
     ↓
-trusted GitHub exact-head lander            R
+trusted GitHub exact-head lander             R
     ↓
 merge + Issue closure readback
     ↓
 Noodle machine reconciliation
 ```
 
-## One call order
+## Bootstrap and normal entrypoint
+
+One-time/operator bootstrap uses the CLI and lock files as the source of truth:
 
 ```bash
 ./noodles verify
 ./noodles runtime check
 ./noodles providers sync
-./noodles github protect apply   # one-time, requires an admin-capable gh token
-./noodles start
+./noodles github protect apply
 ```
 
-After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree to emit deterministic repair receipts, and reconciles completed provider landings without a Human Verifier.
+After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the locked Noodle runtime, synchronizes locked external Skills, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree, and reconciles completed provider landings without a routine Human Verifier.
 
-## Why Noodle stays `supervised`
-
-Noodle `auto` merges a completed worktree into local `main`. That is useful orchestration, but it is not GitHub exact-head/provider enforcement. `supervised` is used as a machine containment point. The GitHub lander merges and closes; `noodles reconcile` then fast-forwards local `main` and releases the Noodle review automatically.
+For exact runtime/provider versions, commits, digests, and admitted paths, read `policy/runtime.lock.json` and `policy/providers.lock.json` or run the corresponding readback command. This README intentionally does not duplicate those mutable pin values.
 
 ## Authority
 
@@ -46,17 +45,6 @@ Noodle `auto` merges a completed worktree into local `main`. That is useful orch
 | pstack / Agent Skills | engineering playbooks and knowledge | correctness |
 | `noodles` local gate | inventory, contracts, controls, readback, residue | provider state |
 | GitHub | protected branch, exact-head merge, event/closure readback | model reasoning quality |
-
-## External skills
-
-The admitted upstream Noodle runtime is pinned in `policy/runtime.lock.json` to an exact release tag, tag commit, platform asset digest, and installed binary digest. `./noodles runtime check` reads those values back from the live `poteto/noodle` release plus the local binary that `./noodles start` will execute.
-
-Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits:
-
-- Cursor pstack: `cursor/plugins@68836ddaf5697224520f1847d90cdb90ca8babaa`, `pstack/skills`;
-- skill-concerns control-noodle: `ed3c/skill-concerns@c91dbd04d1997b2e0f77907c9c2a40f55b787107`, `skills/control-noodle`, admission tree digest `969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581`.
-
-`ed3c/skills-shared` remains unchanged and is a disabled compatibility source, not a Golden Path dependency.
 
 ## Candidate-only retrieval
 
@@ -71,71 +59,66 @@ and the bytes are read back from the candidate tree. `hit != source truth`, `mis
 result authority is candidate-only — an empty result is reported as a missing, empty, or stale index,
 never as absence.
 
-## Issue contract
+## Issue and delivery contract
 
-```text
-<!-- noodles-role: repository-mutating-atom -->
-<!-- noodles-target: ed3c/noodles -->
-<!-- noodles-subject: ed3c/noodles#123 -->
-<!-- noodles-state: ready -->
-<!-- noodles-feature: verification-skill-oracle -->
-<!-- noodles-depends-on: none -->
+The parser and provider readback are the canonical Issue-contract owners. Inspect an exact Issue without copying its marker schema here:
+
+```bash
+./noodles issue validate ed3c/noodles#123
+./noodles issue contract ed3c/noodles#123
 ```
 
-`./noodles issue contract ed3c/noodles#123` returns that contract read-only, with the provider body digest and schedulability derived from each declared predecessor's own landed/closed readback.
+The read-only contract exposes the exact provider body digest, declared dependencies, derived schedulability/reasons, and typed sections owned by the Issue/provider bytes. Dependency waiting is derived from predecessor provider truth; it is not mirrored in this README or stored as another status.
 
-The implementation PR contains exactly:
+An implementation PR body is exactly:
 
 ```text
 Refs ed3c/noodles#123
 ```
 
-The Agent never uses an auto-close keyword and never merges or closes the Issue. The lander does that after exact-head readback.
+The Agent never uses an auto-close keyword and never merges or closes the Issue. The trusted lander does that only after exact-head readback.
 
 ## Commands
 
 ```bash
-./noodles verify                    # deterministic repository gate
-./noodles metrics --json            # entropy and quality disclosure
-./noodles structural verify         # pinned tree-sitter ranges read back from the real source bytes
-./noodles runtime check             # exact release/commit/asset/binary readback
-./noodles runtime discover          # prove Noodle sees every configured skill path
-./noodles providers sync            # exact detached provider checkouts
-./noodles providers check           # HEAD/tree/license/blob/admission/SKILL/detached/clean readback
+./noodles verify                         # deterministic repository gate
+./noodles metrics --json                 # architecture-health disclosure
+./noodles structural verify              # pinned tree-sitter ranges read back from real source bytes
+./noodles runtime check                  # exact release/commit/asset/binary readback
+./noodles runtime discover               # prove Noodle sees configured skill paths
+./noodles providers sync                 # materialize exact locked providers
+./noodles providers check                # detached/clean/head/tree/license/blob readback
 ./noodles retrieval probe --index-root DIR  # pinned grepai candidate paths + direct source readback
-./noodles issue validate REPO#N     # exact Issue contract
-./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
+./noodles issue validate REPO#N          # exact Issue syntax/contract validation
+./noodles issue contract REPO#N          # typed provider-backed Issue readback
+./noodles issue handoff REPO#N --pr N    # exact PR/head/body + provider handoff
+./noodles acceptance verify              # mandatory exact-head baseline acceptance
+./noodles feature verify FEATURE         # additive specialized physical oracle
 ./noodles github protect audit
 ./noodles github protect apply
-./noodles repair                    # read failed awaiting_land PR lanes and emit exact repair receipts
-./noodles reconcile                 # one machine reconciliation pass
-./noodles start                     # unattended Noodle + reconciliation
+./noodles repair                         # exact failed awaiting_land repair lane
+./noodles reconcile                      # provider-landed machine reconciliation
+./noodles start                          # normal unattended entrypoint
 ```
 
-## Fitness budget
+Use command `--help`, the nearest Skill, and executable tests for step-level procedure. `AGENTS.md` is only the stable bootloader and pointer map.
 
-The executable budget is `policy/fitness.json`. It limits tracked files, root surfaces, maximum file size, markdown share, entropy range, test/code ratio, external providers, workflows, dependency manifests, special Git modes, and runtime residue.
+## Why Noodle stays `supervised`
 
-```bash
-./noodles metrics --json
-```
+Noodle's local execution/review lifecycle is orchestration, not GitHub exact-head provider enforcement. `supervised` is a machine containment point: GitHub verifies/lands the exact head; `noodles reconcile` then fast-forwards the admitted local default branch and releases the corresponding Noodle state after provider readback.
 
-Metrics are N-class disclosure. `./noodles metrics --json` reports every metric and emits explicit architecture warnings/readback when report-only thresholds are exceeded.
+## Fitness and architecture health
 
-`./noodles verify` fails only physical repository invariants. Provider count, workflow count, runtime dependency manifests, tracked residue, and the other exact repository contracts remain L-class gates. Architecture-health indicators such as module size, markdown share, line entropy, test/code ratio, and tracked-file count stay visible as warnings and do not become correctness proof by appearing in a failing gate.
+`policy/fitness.json` owns repository invariants and report thresholds. `./noodles verify` fails physical repository/authority violations. `./noodles metrics --json` reports architecture-health indicators such as module size, tracked surfaces, markdown share, line entropy, and test/code ratio; those indicators do not become correctness proof or force line golfing.
 
-Resolve module-size pressure at a real module seam. Do not delete useful newlines, compress readable code, or revert already useful seams merely to shrink a metric.
+Resolve complexity pressure at a real seam. Before adding a registry, manager, router, or document layer, demonstrate a physical failure the nearest existing seam cannot close.
 
 ## Migration
 
-`migrations/skills-shared/ledger.json` starts from observed claims, not architecture prose. The only dispositions are:
+`migrations/skills-shared/ledger.json` owns migration dispositions and evidence ceilings. It starts from observed claims rather than architecture prose. The admitted disposition vocabulary remains local to that ledger; this README does not duplicate its current capability state.
 
-```text
-MIGRATE | REVALIDATE | ADAPT_EXTERNAL | DROP | HOLD
-```
-
-The migration law is `NO PROSE MIGRATION`: evidence or a fresh experiment first, smallest atom second.
+`ed3c/skills-shared` remains unchanged and is not a Golden Path runtime dependency.
 
 ## Current scope
 
-The v1 provider policy admits `ed3c/noodles`. Different repositories require target-local Noodle/worktree authority, trusted workflows, protection, token-scope readback, and a live canary. That expansion is intentionally held behind Issues rather than hidden behind an unproven “multi-repo” claim.
+The current provider policy admits `ed3c/noodles`. Cross-repository execution requires target-local Noodle/worktree authority, target-local physical oracles, trusted provider enforcement, and a live target-repository canary. The System Specification owns that stable rule; open Issues own implementation state.

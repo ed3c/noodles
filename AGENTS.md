@@ -1,150 +1,71 @@
 # AGENTS.md
 
-`noodles` is a clean control/evidence extension around upstream Noodle. It is not `skills-shared v2`, not another scheduler, and not another Agent OS.
-
-## Golden Path
-
-1. Read the exact GitHub Issue and validate its `noodles-*` markers.
-2. Let Noodle own scheduling, process isolation, and worktrees.
-3. Load external engineering knowledge through pinned provider paths.
-4. Route the task with pstack; read only the nearest relevant contract and test.
-5. Implement the smallest independently useful atom in the Noodle worktree.
-6. Run `./noodles verify`, commit, push, set the Issue to `awaiting_land`, then open one PR with exactly one `Refs owner/repo#N` line.
-7. Let trusted GitHub workflows verify the exact head, merge with that head SHA, read back the merge event, then close the exact Issue.
-8. Let `./noodles reconcile` fast-forward local `main` and release Noodle's supervised containment point after provider readback.
-
-Human Verifier is not an operational state. A person may set goals, change constraints, or handle an admitted escalation; a person is never the routine correctness oracle or merge gate.
+`noodles` is a clean control/evidence extension around upstream Noodle. It is not `skills-shared v2`, another scheduler, or another Agent OS.
 
 ## Agent document route
 
 Repository-owned context uses at most three nodes:
 
-1. `AGENTS.md` supplies always-loaded ownership and execution laws.
-2. `contracts/system-v1.md` is loaded only for claim boundaries, delivery topology, cross-repository admission, or another system-level decision.
-3. The exact Issue selects the nearest executable contract/test; inspect its implementation and evidence, then stop document traversal.
+1. Read `AGENTS.md` for stable ownership, isolation, authority, and routing laws.
+2. Read `contracts/system-v1.md` only when the exact Issue names a system-level requirement or decision.
+3. Read the exact Issue and its nearest executable contract/test; then stop document traversal.
 
-`./noodles verify` checks this route's declared nodes and pointers. That proves document structure, not Agent cognition: choosing and reading the route remains P-class.
+`./noodles verify` checks the declared route and pointers. That proves repository structure, not Agent cognition: choosing and applying the route remains P-class.
 
-## Agent-friendly shortest path
+## Stable laws
 
-Make the locally obvious path the globally correct path: exact Issue → isolated Noodle worktree → nearest executable contract/test → mandatory baseline acceptance and any applicable physical oracle → exact-head provider gate. Keep one obvious owner/writer for each durable value, and admit exceptions only as exact bounded atoms.
+- Noodle owns scheduling, orders, process isolation, and worktrees.
+- pstack `poteto-mode` owns P-class engineering playbook selection; it never grants correctness or landing authority.
+- noodles owns target-local deterministic admission, evidence binding, domain invariants, and policy hooks.
+- Git owns candidate source identity; GitHub owns protected default-branch merge and Issue-closure reality.
+- Repository mutation occurs only in a Noodle-owned isolated worktree. The shared control checkout is read/reconcile only.
+- Human Verifier is not an operational state. Human involvement is reserved for goals, constraint changes, genuine product preference, root-authority transitions, or admitted escalation.
+- **NO PROSE MIGRATION.** A capability or authority claim does not enter noodles merely because prose, a diagram, or another Agent repeats it; use the owning executable/provider admission seam.
+- P/N never become L/R through repetition, review consensus, prose, or a moved heading.
+- Every repository mutation runs `./noodles acceptance verify`. An optional `<!-- noodles-feature: feature-id -->` adds a specialized oracle; it never replaces mandatory baseline acceptance.
+- Follow the Dune-derived Agent-friendly requirements `AF-01` through `AF-06` in `contracts/system-v1.md`: make the supported path locally obvious and shortcuts mechanically fail.
+- Domain knowledge belongs at the nearest executable contract/test/oracle. A nearby file or Skill is not evidence until the declared operation executes and its exact state is read back.
+- Do not create a custom scheduler, worktree manager, generic retry/review/release framework, mutable requirement-status store, or unproven registry.
 
-For the Dune-derived rationale, ownership map, limits of current enforcement, and requirements `AF-01` through `AF-06`, read `contracts/system-v1.md`, then follow the exact Issue to its nearest executable contract/test and stop document traversal.
+## Authority classes
 
-Comments, prose, Skills, reviews, and model consensus may guide routing and implementation, but they never replace executable tests, type/static restrictions, CI, or provider readback.
+The exact authority vocabulary below is stable because repository verification treats these tokens as invariants:
 
-## Guarantee classes
+- **P — probabilistic guidance:** model reasoning, rules, Skills, routing, and plans; proposes/navigates only.
+- **L — local deterministic gate:** executable local gate with exact subject, controls, readback, and residue; may reject/admit locally.
+- **R — provider-enforced readback:** GitHub/provider protected-state readback; may establish landed provider reality.
+- **N — non-claim:** docs, diagrams, metrics, inventories, or unverified proposals; describes only.
 
-| ID | Class | Meaning | Allowed authority |
-|---|---|---|---|
-| P-01 | P — probabilistic guidance | Rules, skills, prompts, routing, model reasoning. They can fail or be skipped. | May propose and navigate; never proves correctness. |
-| L-01 | L — local deterministic gate | Executable gate with exit code, positive control, planted negative control, direct readback, and residue check. | May reject a candidate locally. |
-| R-01 | R — provider-enforced readback | GitHub branch protection, exact-head check, merge API result, merge-parent/default-branch readback, and Issue closure readback. | May admit and land a candidate. |
-| N-01 | N — non-claim | Inventory, diagrams, metrics, prose, or “component exists.” | Describes; never proves. |
+## Canonical procedure owners
 
-Never upgrade P or N into L or R by repetition, consensus, a second Agent's review, or documentation.
+Do not duplicate mutable procedure steps here. Resolve them at the owning surface:
 
-## Domain knowledge placement
-
-Place domain knowledge at the nearest executable contract/test boundary:
-
-- domain invariant → immutable positive/negative test;
-- provider assumption → live provider readback;
-- parsing/adapter rule → adapter contract test;
-- workflow rule → trusted workflow plus exact event/readback test.
-
-A file near a test is still N until the test executes. Agent selection of the test is P. The test result is L. GitHub enforcement/readback is R.
-
-## Ownership
-
-```text
-Noodle          scheduling / orders / process isolation / worktrees
-pstack          engineering lifecycle routing
-Agent Skills    replaceable knowledge loading
-Git + GitHub    source and provider authority
-noodles         correctness extensions, evidence adapters, domain invariants, policy hooks
-```
-
-Do not implement a custom scheduler, generic worker manager, custom worktree lifecycle, generic retry engine, generic review framework, or generic release ledger here.
-
-## NO PROSE MIGRATION
-
-A capability enters `noodles` only when all are true:
-
-1. historical physical evidence exists or a fresh physical experiment passes;
-2. the exact claim and non-claims are recorded;
-3. Noodle, pstack, Agent Skills, Git, or GitHub does not already own the lifecycle;
-4. the implementation is the smallest independently useful atom;
-5. the capability passes the local gate and provider admission path.
-
-Migration dispositions are only `MIGRATE`, `REVALIDATE`, `ADAPT_EXTERNAL`, `DROP`, and `HOLD`.
-
-## Issue and PR contract
-
-Every schedulable Issue must contain exactly one of each:
-
-```text
-<!-- noodles-role: repository-mutating-atom -->
-<!-- noodles-target: owner/repo -->
-<!-- noodles-subject: owner/repo#123 -->
-<!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
-<!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
-```
-
-Every repository mutation runs `./noodles acceptance verify`, which binds the exact candidate head/tree to `tests/run.sh`, `./noodles verify`, and zero residue. Add one optional `<!-- noodles-feature: feature-id -->` only when the Issue needs a specialized physical oracle; run `./noodles acceptance verify --feature <feature-id>`. The specialized oracle is additive and cannot replace or weaken the baseline. Unknown feature ids fail at completion with a diagnostic instead of making the Issue disappear from scheduling.
-
-`noodles-depends-on` is parsed exactly: `none` or comma-separated same-repository subjects. A duplicate marker, duplicate entry, foreign repository, self-dependency, or dependency prose fails closed. A missing marker is undeclared, never "no dependencies": the Issue is reported non-schedulable with that exact reason instead of blocking an already-landed Issue's reconciliation.
-
-Dependency waiting is never stored. `./noodles issue contract owner/repo#N` reads each declared predecessor's own provider state and derives schedulability from it, so a landed predecessor releases its dependents without anyone patching a mirrored marker. A failed predecessor read is never satisfied. `blocked` therefore means a real blocker and requires one `<!-- noodles-blocker: owner: reason -->` that is not dependency waiting.
-
-One Issue equals one repository-mutating atom. A PR contains exactly one line:
-
-```text
-Refs owner/repo#123
-```
-
-Do not use `Closes`, `Fixes`, or `Resolves`. Only the provider lander closes the Issue after merge readback.
-
-## Call order
-
-```bash
-./noodles verify
-./noodles providers sync
-./noodles github protect audit
-./noodles start
-```
-
-`./noodles start` fails closed unless local fitness, pinned providers, and GitHub protection readback all pass.
-
-## Entropy and quality budget
-
-`policy/fitness.json` is the executable budget. `./noodles metrics --json` reports, but does not itself prove, tracked surfaces, line-distribution entropy, markdown share, test/code ratio, provider count, workflows, and claim counts.
-
-Adding a layer requires a physical failure that cannot be closed by strengthening the nearest existing contract/test. Delete a component when the same real task still passes without it.
-
-## Completion claim
-
-A task is complete only when:
-
-```text
-exact Issue
-→ isolated Noodle worktree
-→ exact candidate head
-→ L gates + controls + readback + zero residue
-→ trusted GitHub verify receipt
-→ exact-head merge
-→ merge-parent and default-branch readback
-→ exact Issue closure readback
-→ local Noodle reconciliation
-```
+| Procedure | Canonical owner |
+|---|---|
+| Issue parsing, dependency/provider-body readback, schedulability | `./noodles issue contract`, `noodles.py`, nearest Issue-contract tests |
+| Order construction and publication | `.agents/skills/schedule/SKILL.md` + `skill_contract.py publish` |
+| Implementation, pstack routing, exact PR creation, feature verification, handoff | `.agents/skills/execute/SKILL.md` + `./noodles issue handoff` |
+| Repository/runtime/provider/bootstrap/start commands | `README.md`, CLI `--help`, and lock files under `policy/` |
+| Stable system rationale and requirements | `contracts/system-v1.md` |
+| Migration disposition/evidence ceiling | `migrations/skills-shared/ledger.json` and exact migration Issues |
+| Trusted verification/landing | `.github/workflows/verify.yml`, `.github/workflows/land.yml`, provider readback |
 
 ## 工程法則的實證歸屬 (Rule → Evidence Routing)
+
+These rows are pointers, not copied procedures or proofs.
 
 全局 `~/.claude/CLAUDE.md` 的工程法則不直接指向迴圈目錄——法則層綁死在某個 repo 的
 目錄結構上，迴圈改名即斷。**本節是那一跳的落點**：法則指到這裡，這裡指到擁有實證的 Harness。
 
-| 法則主題 | 實證 Harness |
+| 法則主題 / Rule theme | 實證 Harness / Owning evidence surface |
 |---|---|
 | 驗收參數飄移／宣稱前數解壓層數（表徵-性質邊界） | ed3c/noodles#191（收據自述語意）＋ ed3c/skill-concerns#13（monitor 同源三紀律） |
+| Enforcement layering: repository shape → executable gate → diagnostic → soft guidance | `contracts/system-v1.md`, `./noodles verify`, nearest contract tests |
+| Three-tier Agent read-surface discipline | `policy/fitness.json` document-route declaration + document-route tests |
+| Isolation and one admitted writer per durable value | Noodle worktree/runtime readback + nearest ownership/containment tests |
+| Baseline acceptance plus additive specialized oracle | feature/acceptance contracts and `./noodles acceptance verify` / `./noodles feature verify` |
+| Exact-head provider landing | trusted GitHub workflows + merge/default-branch/Issue-closure readback |
 
-Anything earlier is progress, not completion.
+## Completion language
+
+An Agent may report **implementation complete, awaiting provider landing** after the canonical execute/handoff procedure succeeds. Do not report repository/task completion until the trusted provider has landed the exact head and the owning readback/reconciliation path confirms it.
