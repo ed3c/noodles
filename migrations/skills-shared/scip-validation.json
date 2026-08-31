@@ -1,0 +1,83 @@
+{
+  "capability": "scip-semantic-graph",
+  "controls": [
+    {
+      "control": "unsupported-coverage",
+      "description": "a tracked non-Python file (.agents/bin/codex) is outside the indexer's language coverage",
+      "diagnostic": "uncovered: .agents/bin/codex has no SCIP document; absence of occurrences is not absence of symbols",
+      "rejected": true
+    },
+    {
+      "control": "stale-index",
+      "description": "the definition is renamed in place, so line count and every byte offset still match the index",
+      "diagnostic": "stale index: stale-source.py[276, 4, 18] reads 'xxxxxxxxxxxxxx', recorded 'verify_feature'",
+      "rejected": true
+    }
+  ],
+  "index": {
+    "bytes": 2387041,
+    "project_root": "file:///private/tmp/claude-501/-Users-neon-noodles/d4332216-1347-4dc5-8057-7772de22e49c/scratchpad/scip-base",
+    "sha256": "3928f21a145773d2956382b893f851ac512fe25879da3a3e6aa71a0068fdb8ce",
+    "tool_info": {
+      "name": "scip-python",
+      "version": "0.6.6"
+    }
+  },
+  "indexer": {
+    "commit": "8b60bbce1f2a4c7a517776cb395bbafb2e731e4f",
+    "tool": "scip-python",
+    "version": "0.6.6"
+  },
+  "lookups": {
+    "cross_file_reference": {
+      "path": "noodles.py",
+      "range": [
+        1273,
+        40,
+        54
+      ],
+      "text": "verify_feature"
+    },
+    "definition": {
+      "path": "feature_contract.py",
+      "range": [
+        276,
+        4,
+        18
+      ],
+      "text": "verify_feature"
+    },
+    "reference_count": 13,
+    "source_readback": "verify_feature",
+    "symbol": "scip-python python noodles af95f1321a9b feature_contract/verify_feature()."
+  },
+  "metrics": {
+    "build_seconds": 10.24,
+    "index_bytes": 2387041,
+    "index_read_seconds": 0.14,
+    "indexed_documents": 27,
+    "python_coverage": 1.0,
+    "query_seconds": 0.004,
+    "residue": [],
+    "tracked_coverage": 0.490909,
+    "tracked_files": 55,
+    "tracked_python_files": 27
+  },
+  "non_claims": [
+    "The index digest is host-bound: metadata.project_root records an absolute path, so a different checkout path yields a different sha256.",
+    "Coverage is Python-only; every tracked non-Python file is uncovered, and an uncovered file yields refusal, not absence proof.",
+    "'local N' symbols are numbered per document and are refused; only global symbols are looked up.",
+    "This receipt proves one past physical run at the recorded commit; it is not a required dependency of the Golden Path or of code-intelligence v1."
+  ],
+  "reader": {
+    "commit": "e8ee0ae6038f8298e2195812eea9d7b1196748ae",
+    "tool": "scip",
+    "version": "v0.9.0"
+  },
+  "repository": {
+    "commit": "af95f1321a9baaf7fb5ae2f0fcfe74572d785da1",
+    "repo": "ed3c/noodles",
+    "tree": "3d29e425cb044326b8b01bb21537295dbe22aa42"
+  },
+  "schema_version": 1
+}
