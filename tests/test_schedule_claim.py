@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
+import issue_contract
 import noodles
 import schedule_domain
 import skill_contract
@@ -309,6 +310,26 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(rejected["status"], "boundary_conflict")
         self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#81")
         self.assertEqual(rejected["prefix"], "schedule_domain.py")
+
+    def test_active_lane_undeclared_boundary_blocks_disjoint_candidate(self) -> None:
+        # constraint: ed3c/noodles#98 - an active lane's own undeclared boundary
+        # constraint: could write anywhere, so it must block a candidate even when
+        # constraint: the candidate's declared prefix does not textually intersect
+        # constraint: anything the active lane declared (it declared nothing).
+        active = issue(81, state="in_progress")
+        active["body"] = active["body"].replace("<!-- noodles-write-boundary: none -->\n", "")
+        candidate_issue = issue(82, write_boundary="daemon_lease.py")
+        provider = FakeProvider([active, candidate_issue])
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(self.published_orders(), [])
+        rejected = brief["claims"][0]
+        self.assertEqual(rejected["status"], "boundary_conflict")
+        self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#81")
+        self.assertEqual(rejected["prefix"], issue_contract.NO_WRITE_BOUNDARY)
 
     def test_unlanded_dependency_fails_closed_before_provider_ref_creation(self) -> None:
         predecessor = issue(81, state="ready")
