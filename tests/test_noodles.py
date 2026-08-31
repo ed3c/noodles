@@ -800,12 +800,14 @@ class StartUnattendedTests(unittest.TestCase):
              mock.patch.object(noodles.daemon_lease, "admit_started_daemon", return_value={"admitted": True}), \
              mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
              mock.patch.object(noodles, "repair_pending_reviews") as repair, \
+             mock.patch.object(noodles, "sweep_dead_claims", return_value=[]) as sweep, \
              mock.patch.object(noodles, "reconcile_once") as reconcile, \
              mock.patch.object(time, "sleep") as sleep:
             result = noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
 
         self.assertEqual(result, 0)
         repair.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
+        sweep.assert_called_once_with(CANDIDATE_ROOT)
         reconcile.assert_called_once_with(CANDIDATE_ROOT, "http://noodle.test")
         sleep.assert_called_once_with(0.25)
         process.terminate.assert_not_called()
