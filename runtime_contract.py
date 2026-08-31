@@ -37,7 +37,12 @@ PROJECT_SKILLS_ROOT = ".agents/skills"
 PROJECT_REQUIRED_SKILLS = ("execute", "schedule")
 CURSOR_PSTACK_PROVIDER = "cursor-pstack"
 CURSOR_PSTACK_DESTINATION = ".noodle/providers/cursor-pstack"
-CURSOR_PSTACK_NATIVE_ROOT = ".noodle/providers/cursor-pstack/pstack/skills"
+# constraint: ed3c/noodles#174 monitor finding 13 - CURSOR_PSTACK_NATIVE_ROOT and the route-traversal
+# constraint: paths below must agree on where the native pstack skill tree lives; NATIVE_SUBPATH is the
+# constraint: single source (provider-checkout-relative) and NATIVE_ROOT derives from it, so a moved
+# constraint: pinned layout only needs one edit instead of two hand-kept-in-sync literals.
+CURSOR_PSTACK_NATIVE_SUBPATH = "pstack/skills"
+CURSOR_PSTACK_NATIVE_ROOT = f"{CURSOR_PSTACK_DESTINATION}/{CURSOR_PSTACK_NATIVE_SUBPATH}"
 CURSOR_PSTACK_COMPAT_SOURCE_ROOT = "cursor-team-kit/skills"
 CURSOR_PSTACK_COMPAT_SKILLS = ("control-cli", "deslop")
 CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS = (
@@ -54,7 +59,6 @@ CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS = (
     "create-verification-skill",
     "maintain-verification-skill",
 )
-CURSOR_PSTACK_NATIVE_SUBPATH = "pstack/skills"
 _ROUTE_ENTRYPOINT = f"{CURSOR_PSTACK_NATIVE_SUBPATH}/poteto-mode/SKILL.md"
 # constraint: ed3c/noodles#174 - the deterministic prefix of each immutable execute route fixture, in
 # constraint: traversal order, addressed relative to the pinned cursor-pstack checkout. Every route
@@ -234,11 +238,17 @@ def validate_control_noodle_root(root: Path, providers: list[dict[str, Any]], *,
 
 
 def _route_bundle_skills() -> set[str]:
+    # constraint: ed3c/noodles#174 monitor finding 11 - only native-rooted SKILL.md leaves count as
+    # constraint: "bundled" here; CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS is a native-namespace set, so a
+    # constraint: compat skill (cursor-team-kit/skills/<name>) that ever shared a basename with a
+    # constraint: required native skill must never subtract that native skill from the live-only
+    # constraint: complement below - the two namespaces are distinct skills at distinct paths.
+    native_prefix = f"{CURSOR_PSTACK_NATIVE_SUBPATH}/"
     return {
         Path(path).parent.name
         for paths in EXECUTE_ROUTE_TRAVERSALS.values()
         for path in paths
-        if path.endswith("/SKILL.md")
+        if path.endswith("/SKILL.md") and path.startswith(native_prefix)
     }
 
 

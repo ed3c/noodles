@@ -142,8 +142,10 @@ class RouteBundleAssemblyTests(unittest.TestCase):
         )
         for skill in live_only:
             with self.subTest(skill=skill):
-                # constraint: planted route request for an out-of-bundle skill - no bundle names it,
-                # constraint: so its only path is the untouched live read against the pinned checkout.
+                # constraint: monitor finding 5 - this is not a simulated route request (no routing
+                # constraint: decision is made or replayed here); it proves the weaker, sufficient fact
+                # constraint: that no bundle contains this out-of-bundle skill's bytes, so the only path
+                # constraint: to it is the untouched live read against the pinned checkout.
                 self.assertNotIn(f"/{skill}/SKILL.md".encode(), bundled)
                 pinned = source_root / runtime_contract.CURSOR_PSTACK_NATIVE_SUBPATH / skill / "SKILL.md"
                 self.assertTrue(pinned.is_file())
@@ -233,6 +235,69 @@ class ExecuteRoutingPointerTests(unittest.TestCase):
         self.assertNotEqual(stripped, routing)
         with self.assertRaisesRegex(noodles.GateError, f"does not name route bundle {dropped}"):
             self.route_files(stripped)
+
+
+class VerifyGateBundleBindingTests(unittest.TestCase):
+    """monitor findings 7 and 8: the guard above runs only through skill_discovery_check, which needs
+    a live noodle binary and is not reachable from `./noodles verify` - the gate that actually runs on
+    every PR head. These exercise the same two failure modes through skill_contract.validate_execute_task,
+    the function `verify_repository` calls directly."""
+
+    def task_config(self, root: Path, content: str) -> dict[str, Any]:
+        skill_dir = root / "skills" / "execute"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+        return {"skills": {"paths": ["skills"]}}
+
+    def test_verify_gate_passes_on_the_committed_skill(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+            root = Path(name)
+            config = self.task_config(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
+            self.assertEqual(skill_contract.validate_execute_task(root, config), [])
+
+    def test_verify_gate_catches_a_deleted_bundle_pointer(self) -> None:
+        content = EXECUTE_SKILL.read_text(encoding="utf-8")
+        stripped = content.replace(runtime_contract.EXECUTE_ROUTE_BUNDLE_PHRASE, "Load whatever seems relevant.")
+        self.assertNotEqual(stripped, content)
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+            root = Path(name)
+            config = self.task_config(root, stripped)
+            errors = skill_contract.validate_execute_task(root, config)
+        self.assertIn("missing route bundle pointer contract", "; ".join(errors))
+
+    def test_verify_gate_catches_a_route_bundle_mislabeled_to_the_wrong_skill(self) -> None:
+        # constraint: monitor finding 7 - if cli-control's traversal were edited to point at deslop
+        # constraint: (pre-commit-cleanup's skill) instead of control-cli, the bundle would still byte-
+        # constraint: match its own pinned target and the bundle-path string would still appear in the
+        # constraint: doc; only a leaf-identity-vs-bullet cross-check catches the mislabeling.
+        swapped = dict(runtime_contract.EXECUTE_ROUTE_TRAVERSALS)
+        swapped["cli-control"] = (
+            runtime_contract.EXECUTE_ROUTE_TRAVERSALS["cli-control"][0],
+            runtime_contract.EXECUTE_ROUTE_TRAVERSALS["pre-commit-cleanup"][1],
+        )
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+            root = Path(name)
+            config = self.task_config(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
+            with mock.patch.dict(skill_contract.EXECUTE_ROUTE_TRAVERSALS, swapped):
+                errors = skill_contract.validate_execute_task(root, config)
+        self.assertTrue(
+            any("not named by its documented fixture bullet" in error for error in errors),
+            errors,
+        )
+
+
+class NativeCompatNamespaceTests(unittest.TestCase):
+    def test_a_compat_skill_sharing_a_native_basename_does_not_shrink_the_live_only_complement(self) -> None:
+        # constraint: monitor finding 11 - _route_bundle_skills() must key off the native-rooted prefix,
+        # constraint: not the bare leaf directory name, or a same-named compat skill would silently
+        # constraint: remove a required native skill from the live-only complement it never actually bundles.
+        colliding = dict(runtime_contract.EXECUTE_ROUTE_TRAVERSALS)
+        colliding["pre-commit-cleanup"] = (
+            runtime_contract.EXECUTE_ROUTE_TRAVERSALS["pre-commit-cleanup"][0],
+            f"{runtime_contract.CURSOR_PSTACK_COMPAT_SOURCE_ROOT}/arena/SKILL.md",
+        )
+        with mock.patch.dict(runtime_contract.EXECUTE_ROUTE_TRAVERSALS, colliding):
+            self.assertIn("arena", runtime_contract.live_only_native_skills())
 
 
 if __name__ == "__main__":
