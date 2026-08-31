@@ -49,6 +49,14 @@ resolved once, by hand, at import:
 - `E-SINGLE-PROFILE` is **wrong as written**: its `path` is `skill_contract.py`, but
   `validate_task_profile_single_source` is defined in `noodles.py`. It was wrong at the pinned
   revision too, so this is an authoring defect in the imported manifest, not drift.
+- `context-pack.json`'s own `evidence_manifest` field still reads `"fixtures/noodles/evidence-manifest.json"`
+  — its path inside the source PR before this retarget. The correct file is the sibling
+  `evidence-manifest.json` in this same directory; `fixtures/noodles/` does not exist in this
+  repository. This is the same class of import-time staleness as `E-SINGLE-PROFILE` above, not
+  a new one. No validator reads this field (grep confirms no `.py` file references
+  `evidence_manifest`), so nothing turns red on either the wrong pointer or its correction; the
+  bytes stay frozen per this directory's own identity claim and the correction lives here
+  instead.
 
 Nothing recomputes this audit. It is a snapshot taken at import, and it decays: an evidence
 entry that resolves today can point at a moved or deleted locator tomorrow with nothing
@@ -63,3 +71,8 @@ turning red. Re-resolve before relying on any binding.
   this Context Pack exists.
 - The pinned revision is historical. No current workflow run, merge, or provider readback is
   claimed by anything in this directory.
+- The landing Issue for this material declares `noodles-feature: verification-skill-oracle` by
+  precedent (matching issue #198), not because that oracle's code surface
+  (`.agents/skills/execute/SKILL.md`) has any relationship to these files. A green
+  `--feature verification-skill-oracle` run proves that unrelated invariant still holds; it is
+  not a content-specific check of anything in this directory and should not be read as one.
