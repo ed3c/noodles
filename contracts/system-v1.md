@@ -185,6 +185,25 @@ Human review MUST NOT be required as the routine correctness oracle. Human invol
 
 Autonomous retry/search MUST terminate on L+R success or fail closed on exhausted budget, invariant violation, unavailable required oracle/provider, unsupported capability, or a true product decision. Retry is not evidence.
 
+### AUTONOMY.SUPERVISED_RUNNER.001
+
+Unattended operation MUST NOT depend on an operator-session artifact. The repository owns the supervised runner (`./noodles supervise`): it restarts the daemon generation after generation, bounds each generation by a rotation deadline matched to the installation-token lifetime, terminates a generation whose output has gone silent past the wedge deadline, and cools down on a provider rate limit by reading the live bucket — a full primary bucket classifies the failure as secondary limiting and takes the short window, an exhausted bucket waits past `reset`. Machine-local credential material stays untracked: the runner refreshes a generation's token only by executing the operator-configured `NOODLES_TOKEN_COMMAND` and never persists its output.
+
+Before every generation the runner heals exactly the death classes that physically stopped the fleet, and no more. A control checkout ahead of or diverged from the provider is reset only when the reset is content-aware lossless: every non-merge commit in `provider..local` is contained in some remote ref, because a daemon-made merge commit carries no unique content. When real content commits are not contained, the lineage is first salvage-pushed to a dated remote ref and the reset proceeds only after that push reads back at the local tip; a failed salvage push refuses the reset. A lease naming a provably dead pid is cleared, and clearing it cures the matching status ghost (`loop_state` live with no lease held), which is stale by construction and which `daemon_lease.reject_existing_lease` otherwise refuses to start over. A lease held by a live pid, an unreadable lease, and a dirty or non-default-branch control checkout all fail closed.
+
+Admission boundary: `heal_control_checkout`, `rate_limit_cooldown`, `rotation_env`, `run_supervised_generation`, and `supervise` in `noodles.py`, with planted per-class controls in `tests/test_supervised_ceremony.py` — an unsaved-content lineage whose salvage push is planted to fail, a merge-only divergence, a live-pid lease, a planted status ghost, a wedged generation that never exits on its own, a rotation deadline, and burst/exhausted rate-limit buckets.
+
+### AUTONOMY.CEREMONY_ENTRYPOINT.001
+
+A convention that every agent must remember at every call site is a defect of shape, not of discipline. Repeated cross-agent ceremonies MUST exist as executable entrypoints under `./noodles ceremony <verb>`, so the shortest orchestration path is the correct one and the prompt layer keeps only pointers:
+
+- `commit` and `rebase` apply the repository commit identity from `policy/github.json` inline with `git -c`, never by writing git config into a checkout other sessions share, and read back the resulting author/committer identity; a rejected commit unstages exactly the paths it staged, so the next session's commit cannot carry them under its own message.
+- `run` selects a workflow run by name against the provider-read branch tip.
+- `rerun` fails closed unless the selected run's `head_sha` equals that same provider-read branch tip, because rerunning a stale head cancels the live head's run under the per-PR concurrency group; `--dry-run` proves the guard without spending the rerun.
+- `gh` routes through the tracked `.agents/bin/gh` carrier of `PROVIDER.CALL_PACING.001` with argv, stdout, stderr, and exit code unchanged.
+
+Admission boundary: the `ceremony_*` entrypoints in `noodles.py` with planted controls in `tests/test_supervised_ceremony.py` — a planted foreign git config that must not reach the commit, a rejected commit whose staged paths must be gone afterwards, a conflicting rebase that must abort and leave no in-progress state, a stale-head run id that must be refused, and a carrier-routed `gh` invocation.
+
 ## 8. Organizational learning
 
 ### LEARNING.EXECUTABLE.001
@@ -299,5 +318,5 @@ Pacing reduces but cannot eliminate secondary limiting, because other consumers 
 - Derived schedulability is scheduler admission input, not merge/closure authority.
 - Tool-specific historical claims and migration-specific evidence belong to their Issue, migration ledger, or nearest executable boundary, not this system specification.
 - External Skills may describe what to verify but cannot verify themselves or mutate provider authority.
-- A daemon health receipt proves the observation instant, not future liveness; noodles implements no supervisor, generic lease service, retry framework, or replacement Noodle lock, and a process name or stale status file alone is not health evidence.
+- A daemon health receipt proves the observation instant, not future liveness; the `AUTONOMY.SUPERVISED_RUNNER.001` runner restarts and heals only this repository's own daemon and claims nothing about it between generations, and noodles still implements no generic process supervisor, generic lease service, retry framework, or replacement Noodle lock. A process name or stale status file alone is not health evidence.
 - This specification does not implement typed Issue completeness, Feature Map runtime, organizational-learning runtime, concurrency machinery, cross-repository execution, or a requirement registry.
