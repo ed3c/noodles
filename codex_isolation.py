@@ -16,11 +16,12 @@ ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
 PROJECT_SKILLS_ROOT = ".agents/skills"
 FORBIDDEN_FORWARD_ARG = "--dangerously-bypass-approvals-and-sandbox"
 TRUNCATION_RE = re.compile(r"truncat|skill-context-budget", re.I)
+WORKSPACE_ROOTS_KEY = "permissions.noodles-cook.workspace_roots"
 PERMISSION_PROFILE_OVERRIDES = (
     'approval_policy="never"',
     'default_permissions="noodles-cook"',
     'permissions.noodles-cook.extends=":workspace"',
-    'permissions.noodles-cook.workspace_roots={"/Users/neon/noodles/.git"=true}',
+    'permissions.noodles-cook.workspace_roots={"/Users/neon/noodles/.git"=true,"/Users/neon/noodles/.noodle/sessions"=true}',
     'permissions.noodles-cook.filesystem={":workspace_roots"={".agents/skills"="write"}}',
     "permissions.noodles-cook.network.enabled=true",
 )
@@ -31,6 +32,7 @@ PERMISSION_PROFILE_ARGS = (
 LEGACY_SANDBOX_ERROR = ".noodle.toml agents.codex.args must not combine the permission profile with legacy sandbox settings"
 SKILL_PERMISSION_ERROR = ".noodle.toml agents.codex.args must grant write only to '.agents/skills' inside workspace roots"
 EXACT_PROFILE_ERROR = ".noodle.toml agents.codex.args must define the exact 'noodles-cook' permission profile"
+WORKSPACE_ROOTS_ERROR = ".noodle.toml agents.codex.args must grant the cook only the project '.git' and '.noodle/sessions' roots"
 
 
 def validate_codex_agent_config(root: Path, noodle_config: Mapping[str, Any]) -> list[str]:
@@ -63,12 +65,29 @@ def validate_codex_agent_config(root: Path, noodle_config: Mapping[str, Any]) ->
     expected_filesystem = {":workspace_roots": {".agents/skills": "write"}}
     if filesystem_values != [expected_filesystem]:
         errors.append(SKILL_PERMISSION_ERROR)
+    # constraint: the cook writes its own session events into the shared project (ed3c/noodles#170);
+    # constraint: '.noodle/sessions' is the narrowest static root that covers them, so every other
+    # constraint: '.noodle' path - provider checkouts, runtime status, the isolation homes - stays walled.
+    roots_values = [value for key, value in parsed_overrides if key == WORKSPACE_ROOTS_KEY]
+    expected_roots = {"/Users/neon/noodles/.git": True, "/Users/neon/noodles/.noodle/sessions": True}
+    if roots_values != [expected_roots]:
+        errors.append(WORKSPACE_ROOTS_ERROR)
     if tuple(str(arg) for arg in args) != PERMISSION_PROFILE_ARGS:
         errors.append(EXACT_PROFILE_ERROR)
     wrapper = root / CODEX_WRAPPER
     if not wrapper.is_file():
         errors.append(f"tracked Codex wrapper missing: {CODEX_WRAPPER}")
     return errors
+
+
+def profile_write_allowed(argv: list[Any], path: Path) -> bool:
+    """Whether the forwarded noodles-cook profile grants a cook write access to path outside its own worktree."""
+    granted: dict[str, Any] = {}
+    for key, value in (_parse_config_override(raw) for raw in _config_overrides(argv)):
+        if key == WORKSPACE_ROOTS_KEY and isinstance(value, Mapping):
+            granted.update(value)
+    target = Path(path).resolve()
+    return any(target.is_relative_to(Path(root).resolve()) for root, writable in granted.items() if writable is True)
 
 
 def codex_surface_canary(root: Path, *, error_cls: type[Exception]) -> dict[str, Any]:
