@@ -1443,6 +1443,7 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
                 p0=False,
                 schedulable=False,
                 claimed=True,
+                malformed=True,
             )
         )
     return tuple(snapshot)

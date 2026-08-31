@@ -175,6 +175,10 @@ Correctness MUST NOT depend on a fixed numeric `max_concurrency`. It depends on 
 
 Start-readiness and completion-readiness are distinct. A task may start independently while still requiring provider-landed predecessor facts before it may complete or land.
 
+### CONCURRENCY.CLAIM_SCOPE.001
+
+A claimed subject MUST exclude only its dependency-connected component from admission, never its whole repository: components are the connected components of the typed-dependency graph among open issues within one repository, and `max_useful_workers` equals the number of unclaimed components with schedulable members. A live claim whose contract cannot be parsed has unknown edges and fails its repository closed. Admission boundary: `schedule_domain.schedule_decision` with its dependency-component, claimed-exclusion, and malformed-claim controls in `tests/test_schedule_claim.py`.
+
 ### CONCURRENCY.RUNTIME_LEASE.001
 
 `./noodles start` MUST admit at most one truthful upstream Noodle daemon per repository; a ghost `status.json`, stale lease, foreign lease owner, listener-less child, or unrelated `127.0.0.1:3210` occupant fails closed with a distinct diagnostic. Admission boundary: upstream `.noodle/noodle.lock` readback, exact spawned-child pid identity, `lsof` listener ownership, live `/api/snapshot` response, `.noodle/status.json` loop state, planted fake-alive controls, and own-child-only termination with orphan/listener residue readback.
