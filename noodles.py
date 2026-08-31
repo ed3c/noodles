@@ -18,6 +18,7 @@ import runtime_contract
 import signal
 import skill_contract
 import stat
+import structural_contract
 import subprocess
 import sys
 import tempfile
@@ -445,6 +446,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         errors.append(f"invalid .noodle.toml: {exc}")
     errors.extend(validate_runtime_lock(root))
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
+    errors.extend(structural_contract.validate_parser_lock(root))
     errors.extend(validate_migration_ledger(root))
     for executable in policy["required_executables"]:
         full = root / executable
@@ -1373,6 +1375,9 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--trusted-ref", default="origin/main", help="ref the trusted preview treats as the default-branch tip")
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--json", action="store_true")
+    structural = sub.add_parser("structural")
+    structural.add_argument("action", choices=["verify"])
+    structural.add_argument("--json", action="store_true")
     runtime = sub.add_parser("runtime")
     runtime.add_argument("action", choices=["check", "discover"])
     providers = sub.add_parser("providers")
@@ -1439,6 +1444,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result["errors"] = [*result["errors"], *(f"trusted verify would red: {name}" for name in preview["would_red"]), preview["diagnostic"]]
                 if not args.json:
                     print(f"trusted-preview {preview['trusted_ref']}@{preview['trusted_sha'][:12]} ({preview['fetch']}): {'PASS' if preview['ok'] else 'FAIL'}")
+            print(json.dumps(result, indent=2, sort_keys=True) if args.json else ("PASS" if result["ok"] else "FAIL"))
+            if not result["ok"]:
+                for error in result["errors"]:
+                    print(f"- {error}", file=sys.stderr)
+                return 1
+            return 0
+        if args.command == "structural":
+            result = structural_contract.structural_readback(root, error_cls=GateError)
             print(json.dumps(result, indent=2, sort_keys=True) if args.json else ("PASS" if result["ok"] else "FAIL"))
             if not result["ok"]:
                 for error in result["errors"]:
