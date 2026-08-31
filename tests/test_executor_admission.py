@@ -180,8 +180,9 @@ class FakeProvider:
         if endpoint.startswith(issue_prefix):
             page = int(endpoint.removeprefix(issue_prefix))
             return self.issues[(page - 1) * 100:page * 100]
-        if endpoint.endswith("/comments"):
-            number = int(endpoint.rsplit("/", 2)[1])
+        comments_route = endpoint.split("?", 1)[0]
+        if comments_route.endswith("/comments"):
+            number = int(comments_route.rsplit("/", 2)[1])
             if method == "POST":
                 assert isinstance(payload, dict)
                 self.comment_posts += 1
@@ -213,7 +214,7 @@ def provider_issue(number: int, **overrides: object) -> dict:
     return {
         "number": number,
         "state": "open",
-        "body": body(number, **overrides),  # type: ignore[arg-type]
+        "body": body(number, **overrides),
         "title": f"[ROUTING-P0] issue {number}",
         "html_url": f"https://github.test/{REPOSITORY}/issues/{number}",
     }

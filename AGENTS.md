@@ -90,7 +90,7 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
 <!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
 <!-- noodles-executor: gha-agentic|gha-runtime|local-noodle -->
-<!-- noodles-runtime: bun-ts|python|shell|none -->
+<!-- noodles-runtime: bun-ts|gui-simulator|host-toolchain|none|persistent-daemon|private-network|python|shell|unbounded-duration|usb-device -->
 <!-- noodles-write-boundary: path[, path]|none -->
 <!-- noodles-evidence: drive-full-v1|github-only-v1 -->
 ```

@@ -2426,7 +2426,7 @@ def emit_local_handoff(subject_value: str, contract: dict[str, Any], boundary: t
     body = local_handoff_body(subject_value, contract, boundary)
 
     def matching() -> list[dict[str, Any]]:
-        observed = gh_api(endpoint)
+        observed = gh_api(f"{endpoint}?per_page=100")
         if not isinstance(observed, list):
             raise GateError(f"provider handoff task readback for {subject_value} is not a list")
         return [item for item in observed if isinstance(item, dict) and marker in str(item.get("body") or "")]
@@ -2532,6 +2532,12 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
             raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
         claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
+        if claim["status"] != "claimed":
+            # constraint: ed3c/noodles#187 - a lost claim binds nothing: another
+            # constraint: executor holds the ref, so this run's lane/checkout/base_sha
+            # constraint: would misreport a binding it never actually won.
+            outcomes.append(schedule_claim_outcome(subject_value, **claim))
+            continue
         # constraint: ed3c/noodles#187 - an admitted lane is bound to one exact Issue,
         # constraint: target, base SHA, runtime, and evidence policy; the hosted lanes
         # constraint: get only this ephemeral branch for the run and never a managed
@@ -2545,12 +2551,11 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
             "evidence": contract["evidence"],
             "write_boundary": list(candidate_boundary),
         }
-        if claim["status"] == "claimed" and admission["lane"] == issue_contract.LOCAL_LANE:
+        if admission["lane"] == issue_contract.LOCAL_LANE:
             binding["handoff"] = emit_local_handoff(subject_value, contract, candidate_boundary)
         outcomes.append(schedule_claim_outcome(subject_value, **claim, **binding))
-        if claim["status"] == "claimed":
-            claimed_orders.append(order_by_subject[subject_value])
-            reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))
+        claimed_orders.append(order_by_subject[subject_value])
+        reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))
 
     filtered = {key: value for key, value in proposed.items() if key != "orders"}
     filtered["orders"] = claimed_orders
