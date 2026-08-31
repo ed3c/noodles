@@ -59,3 +59,18 @@ jobs:
           python3 noodles.py github land
           --event "$GITHUB_EVENT_PATH"
           --receipt "$GITHUB_WORKSPACE/receipt/noodles-receipt.json"
+
+      - name: Mint landing-train push GitHub App token
+        id: train-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.NOODLES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.NOODLES_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Landing train mechanical rebase
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOODLES_TRAIN_PUSH_TOKEN: ${{ steps.train-token.outputs.token }}
+        run: python3 noodles.py github train
