@@ -114,6 +114,23 @@ the local lane additionally emits one idempotent provider-backed handoff task ke
 body digest and bound to target, required local capability, and write boundary, while Noodle remains the
 sole owner of the persistent worktree lifecycle.
 
+Every trusted verify run packages its own evidence before it emits a landing receipt.
+`noodles.evidence_publication` reads the candidate as untrusted bytes — verification receipt,
+runner/tool metadata, pinned dependency locks, pinned workflow definitions — scrubs a bounded set of
+credential value shapes, and binds them to one canonical manifest under the deterministic custody key
+`GitHub-Actions-Evidence/v1/<owner>/<repo>/issue-<N>/pr-<N>/<head>/run-<id>-attempt-<n>`, with
+content-addressed blobs at `.../blobs/sha256/<digest>`. That folder is the idempotency key: a retry
+recomputes the same path instead of growing a second tree. A wrong-head or wrong-attempt folder, a
+missing or extra member, a short read, a tampered digest, an empty denominator, and a credential that
+reached the archive each fail closed, and a scrub diagnostic carries the member and pattern id but
+never the value. Durable Drive transport is not admitted — no Google credential path exists inside
+Actions — so the publication reports `custody_unadmitted`: today only the manifest itself — folder,
+digests, byte counts, blob paths, never raw content — reaches the GitHub artifact spool inside
+`noodles-receipt.json`; the member bytes it describes are read, hashed, and discarded when the job
+ends, so no `blobs/sha256/*` object exists anywhere yet. That spool is a bounded retry surface, not
+the durable store. Custody is evidence: never correctness, never merge authority, and no admission
+path reads it.
+
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 
 ```text
