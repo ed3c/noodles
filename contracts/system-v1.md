@@ -187,6 +187,18 @@ Repeated Agent failure may become durable organizational knowledge only through 
 
 New executable knowledge belongs at the nearest failure boundary, not by default in `AGENTS.md`, a global registry, or a generic policy file.
 
+### LEARNING.CLOSURE_DISPOSITION.001
+
+Retiring a marker-bearing Issue as `not_planned` is a contract event, not knowledge loss. A bare retirement deletes the reasoning chain, so the same proposal returns weeks later and is re-litigated at full cost; a landed closure is exempt because the merge is already its strongest receipt.
+
+The disposition receipt is a comment on the closing thread carrying three elements in a machine-parseable shape: **payload custody**, one line routing every absorbed half to the Issue that now owns it (`PAYLOAD CUSTODY ...: <half> -> owner/repo#N; ...`); a **falsifiable reopen condition**, one line naming the physical evidence that would revive the retired path (`FALSIFIABLE REOPEN CONDITION: ...`); and a **trade-off record**, one line stating what that path would buy and what it costs (`TRADE-OFF RECORD:`).
+
+Admission boundary: the deterministic sweep in `disposition_contract.py` (`sweep_closure_dispositions`), executed by `./noodles reconcile`. It reads back every closed-as-not-planned Issue of each admitted repository by exact paged provider readback — a page walk that overruns its bound fails closed rather than letting a partial page read as complete — filters to those bearing their own exact `noodles-subject` marker, and validates the closing thread. A retirement missing any element is flagged with a diagnostic naming the missing elements and the supported path, then reopened into `blocked` with an owned blocker so a retired atom never re-enters scheduling as work; every flag, body patch, and reopen is confirmed by direct provider readback. Marker-bearing is deliberately weaker than a full contract parse: a retired Issue may carry a body its own parser now rejects, and that is not its closure's defect.
+
+Planted controls in `tests/test_disposition_contract.py` hold the boundary: `ed3c/noodles#151`'s verbatim closing receipt in `tests/fixtures/closure-disposition-receipt.json` is the positive fixture and must sweep clean, a planted bare closure must be flagged and reopened as blocked naming every missing element, and each element planted absent alone must be the only defect reported.
+
+The check reads receipt shape, never whether the trade-off is wise. Legibility becomes mechanical; the judgment stays with the closer, and this gate grants no L or R authority over that judgment.
+
 ## 9. Concurrency model
 
 ### CONCURRENCY.INDEPENDENCE.001
