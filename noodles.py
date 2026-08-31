@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from claim_contract import sweep_dead_claims
+from disposition_contract import sweep_closure_dispositions
 from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
 from runtime_contract import (
     blocking_handoff_readback,
@@ -1710,7 +1711,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         print(json.dumps({"reconciled": completed}))
                     time.sleep(args.interval)
             else:
-                print(json.dumps({"reconciled": reconcile_once(root, args.control_url), "claims": sweep_dead_claims(root)}))
+                print(json.dumps({
+                    "reconciled": reconcile_once(root, args.control_url),
+                    "claims": sweep_dead_claims(root),
+                    "closures": sweep_closure_dispositions(root),
+                }))
             return 0
         if args.command == "repair":
             print(json.dumps({"repairable": repair_pending_reviews(root, args.control_url)}, indent=2, sort_keys=True))
