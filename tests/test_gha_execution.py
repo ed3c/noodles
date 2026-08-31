@@ -375,43 +375,6 @@ class ApplyAdmissionTests(unittest.TestCase):
                 self.assertEqual(result["status"], "gha_evidence_absent")
 
 
-class FailureDispositionTests(unittest.TestCase):
-    def test_a_capability_refusal_routes_to_the_local_handoff_and_creates_no_hosted_branch(self) -> None:
-        body = issue_body(executor="local-noodle", runtime="usb-device")
-        refused = noodles.gha_execution_task(body, declaration(body, runtime="usb-device"), base_head=BASE_SHA)
-        disposition = noodles.gha_failure_disposition(refused, 0, 0)
-        self.assertEqual(disposition["lane"], issue_contract.LOCAL_LANE)
-        self.assertIsNone(disposition["hosted_branch"])
-        self.assertTrue(disposition["handoff_required"])
-
-    def test_planted_negative_a_non_capability_refusal_gets_no_lane_and_no_handoff(self) -> None:
-        refused = noodles.gha_execution_task(issue_body(), declaration(target="ed3c/other"), base_head=BASE_SHA)
-        disposition = noodles.gha_failure_disposition(refused, 0, 0)
-        self.assertIsNone(disposition["lane"])
-        self.assertIsNone(disposition["hosted_branch"])
-        self.assertFalse(disposition["handoff_required"])
-        self.assertIn("gha_target_mismatch", disposition["reason"])
-
-    def test_a_passing_deterministic_runtime_needs_no_lane(self) -> None:
-        disposition = noodles.gha_failure_disposition(admitted_task(), 0, 0)
-        self.assertIsNone(disposition["lane"])
-        self.assertEqual(disposition["hosted_branch"], BRANCH)
-
-    def test_a_portable_runtime_failure_returns_the_task_to_the_bounded_repair_lane(self) -> None:
-        task = admitted_task()
-        self.assertEqual(noodles.gha_failure_disposition(task, 1, 0)["lane"], "repair")
-        self.assertEqual(noodles.gha_failure_disposition(task, 1, 0)["attempts_remaining"], noodles.REPAIR_MAX_ATTEMPTS)
-        self.assertEqual(noodles.gha_failure_disposition(task, 1, noodles.REPAIR_MAX_ATTEMPTS - 1)["attempts_remaining"], 1)
-
-    def test_planted_negative_the_repair_lane_stops_at_the_landed_ceiling(self) -> None:
-        task = admitted_task()
-        for attempts in (noodles.REPAIR_MAX_ATTEMPTS, noodles.REPAIR_MAX_ATTEMPTS + 5):
-            with self.subTest(attempts=attempts):
-                disposition = noodles.gha_failure_disposition(task, 1, attempts)
-                self.assertEqual(disposition["lane"], "blocked")
-                self.assertEqual(disposition["attempts_remaining"], 0)
-
-
 class VerifyPullRequestGhaGateTests(unittest.TestCase):
     """The gate's production emitter: the trusted verify path, over provider-read changed files."""
 

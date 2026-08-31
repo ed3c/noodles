@@ -1303,8 +1303,10 @@ def gha_task_identity(declaration: Mapping[str, Any]) -> str:
     canonical = json.dumps({name: declaration[name] for name in GHA_TASK_FIELDS}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 def gha_within_boundary(path: str, prefixes: Sequence[str]) -> bool:
-    segments = tuple(path.split("/"))
-    return any(segments[: len(parts)] == parts for parts in (tuple(prefix.split("/")) for prefix in prefixes))
+    # constraint: ed3c/noodles#98 - delegates to the one segment-wise containment rule
+    # constraint: instead of restating it, so a tightening at its declared home
+    # constraint: (issue_contract.boundary_conflict) is inherited here automatically.
+    return issue_contract.boundary_conflict((path,), tuple(prefixes)) is not None
 def gha_execution_task(
     issue_body: str,
     dispatch: Mapping[str, Any],
@@ -1426,26 +1428,6 @@ def gha_apply_admission(
         return gha_outcome("gha_evidence_absent", reasons=[f"no complete evidence publication is bound to this candidate: {published.get('status')!r}"])
     return gha_outcome("apply_admitted", task=task["task"], branch=task["branch"], subject=task["subject"],
                        changed_paths=sorted(paths), evidence_folder=published["folder"])
-def gha_failure_disposition(task: Mapping[str, Any], runtime_exit: int, attempts: int) -> dict[str, Any]:
-    """Route one hosted attempt deterministically, outside model judgment.
-
-    A lane the capability table refuses never had a hosted branch to repair, so it routes to #187's
-    idempotent local-noodle handoff and creates nothing here. Any other refusal is not a capability
-    statement and gets no lane at all. An admitted task whose deterministic runtime step exits
-    non-zero returns to the bounded repair lane and stops at the landed repair ceiling instead of
-    retrying forever."""
-    if task.get("status") == "gha_lane_refused" and issue_contract.LOCAL_LANE in (task.get("admitted_lanes") or ()):
-        return {"lane": issue_contract.LOCAL_LANE, "hosted_branch": None, "handoff_required": True,
-                "reason": "the capability table admits only the local lane for this issue"}
-    if not task.get("admitted"):
-        return {"lane": None, "hosted_branch": None, "handoff_required": False,
-                "reason": f"refused before any task existed: {task.get('status')!r}"}
-    if runtime_exit == 0:
-        return {"lane": None, "hosted_branch": task["branch"], "handoff_required": False,
-                "reason": "the deterministic runtime step passed"}
-    remaining = max(REPAIR_MAX_ATTEMPTS - attempts, 0)
-    return {"lane": "repair" if remaining else "blocked", "hosted_branch": task["branch"], "handoff_required": False,
-            "attempts_remaining": remaining, "reason": f"deterministic runtime step exited {runtime_exit}"}
 def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, receipt_path: Path) -> dict[str, Any]:
     event = load_json(event_path)
     pr = event.get("pull_request")

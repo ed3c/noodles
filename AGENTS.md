@@ -96,7 +96,7 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-evidence: drive-full-v1|github-only-v1 -->
 ```
 
-`noodles-component` names one lowercase token from `policy/components.json`. `parse_issue_contract` accepts a missing value at scheduling time, but `component_surface_errors` at the land-time `github verify-pr` gate rejects a candidate whose Issue omits it or whose changed files fall outside that component's declared path globs.
+`noodles-component` names one lowercase token from `policy/components.json`. `parse_issue_contract` accepts a missing value at scheduling time, but `component_surface_errors` at the land-time `github verify-pr` gate rejects a candidate whose Issue omits it or whose changed files fall outside that component's declared path globs. That check is file-level only: `noodles.py` is listed under `schedule`, `verify`, and `carrier` at once, so an atom's declared component never bounds *which lines inside* `noodles.py` it may touch — filed at `ed3c/noodles#268`, distinct from the import-edge gap already filed at `ed3c/noodles#257`.
 
 Every repository mutation runs `./noodles acceptance verify`, which binds the exact candidate head/tree to `tests/run.sh`, `./noodles verify`, and zero residue. Add one optional `<!-- noodles-feature: feature-id -->` only when the Issue needs a specialized physical oracle; run `./noodles acceptance verify --feature <feature-id>`. The specialized oracle is additive and cannot replace or weaken the baseline. Unknown feature ids fail at completion with a diagnostic instead of making the Issue disappear from scheduling.
 
@@ -137,18 +137,30 @@ path reads it.
 The hosted agentic lane's mutation boundary is judged as data at the trusted boundary, never by the
 job that proposes it. One target-local execution task is identified by the sha256 of its exact typed
 declaration — target, subject, provider body digest, base head, runtime, evidence policy, write
-boundary — so the idempotency nonce is derived and never supplied, and a duplicate dispatch converges
-on the same task instead of creating a second one. Issue prose is never an input: an injected
-paragraph changes the body digest, which makes an in-flight dispatch stale, but it can never widen
-the target, the lane, or the boundary. `gha_apply_admission` then judges one Agent proposal — one
-branch, one PR body, one changed-path set — inside `verify_pull_request`, which runs from the trusted
-checkout of the default branch. Trusted workflow bytes are refused first and unconditionally, so a
-task whose declared boundary contains `.github` still cannot rewrite the gate that judges it; a
-default-branch push, a foreign branch, a path outside the declared boundary, a `Closes` or multi-line
-PR body, and a candidate carrying no bound evidence publication each fail closed with their own
-diagnostic. Failure routing is deterministic and outside model judgment: a capability refusal
-produces the idempotent `local-noodle` handoff and no hosted branch at all, while a portable runtime
-failure returns the task to the bounded repair lane and stops at `REPAIR_MAX_ATTEMPTS`.
+boundary — so the idempotency nonce is derived and never supplied: two dispatches carrying the exact
+same declaration converge on the same task by construction. That convergence is proven only at the
+function level today: `gha_execution_task`'s sole production caller (`gha_pull_request_admission`,
+reached from the trusted checkout) always passes an empty `active_tasks`, so `task_reused`,
+`gha_duplicate_claim`, and `gha_boundary_conflict` are reachable only from
+`tests/test_gha_execution.py`, not from a real concurrent dispatch — filed at `ed3c/noodles#266`
+alongside the seven declaration-mismatch statuses that are self-consistent for the same reason.
+`schedule_publish` derives and stores the same identity in the schedule cycle receipt's
+`binding["task"]` before it claims a branch, but nothing reads that value back — the verify-time gate
+recomputes its own task fresh from provider truth (`pr.base.sha`, not the stored value), so a stale
+schedule-time identity cannot admit a wrong candidate, but the receipt field itself rides through
+`skill_contract.validate_cycle_receipt` unvalidated, same as #266's filing above. Issue prose is never
+an input: an injected paragraph changes the body digest, which makes an in-flight dispatch stale, but
+it can never widen the target, the lane, or the boundary. `gha_apply_admission` then judges one Agent
+proposal — one branch, one PR body, one changed-path set — inside `verify_pull_request`, which runs
+from the trusted checkout of the default branch. Trusted workflow bytes are refused first and
+unconditionally, so a task whose declared boundary contains `.github` still cannot rewrite the gate
+that judges it; a default-branch push, a foreign branch, a path outside the declared boundary, a
+`Closes` or multi-line PR body, and a candidate carrying no bound evidence publication each fail
+closed with their own diagnostic. Failure routing on a non-zero deterministic-runtime exit is not
+implemented here: an earlier draft of this atom shipped a `gha_failure_disposition` router with zero
+production callers (only `tests/test_gha_execution.py` called it), and it was removed rather than
+landed as dead code. The runtime step's first real caller — `ed3c/noodles#267`'s live canary — owns
+routing a real non-zero exit into the bounded repair lane when it exists.
 
 Three halves of that lane are named absent, not implied present. The gh-aw workflow source, its
 compiled lock workflow, and the pinned compiler/action commits are not here: `policy/fitness.json`
