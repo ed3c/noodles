@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Serialize every gh invocation on one repository-owned state file, hold a minimum inter-call gap, and honor Retry-After once for read-only secondary-limit 403s."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+PACE_STATE = ".noodle/gh-pace.state"
+DEFAULT_MIN_INTERVAL = 1.0
+MAX_RETRY_AFTER_SECONDS = 120.0
+READ_ONLY_VERBS = frozenset({"checks", "diff", "list", "status", "view"})
+API_WRITE_PREFIXES = ("-f", "-F", "--field", "--raw-field", "--input")
+API_WRITE_TARGET = "graphql"
+READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
+HTTP_403 = re.compile(r"\b403\b")
+RETRY_AFTER = re.compile(r"retry-after\s*[:=]?\s*(\d+)", re.IGNORECASE)
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"NOODLES_GH_WRAPPER_FAIL: {message}")
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def real_gh(self_path: Path) -> str:
+    override = os.environ.get("NOODLES_GH_REAL_BIN", "").strip()
+    if override:
+        return override
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(entry or ".") / "gh"
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved == self_path:
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    fail("cannot resolve real gh binary")
+
+
+def option_values(argv: list[str], short: str, long: str) -> list[str]:
+    values: list[str] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            break
+        if argument in {short, long}:
+            if index + 1 < len(argv):
+                values.append(argv[index + 1])
+            index += 2
+            continue
+        if argument.startswith(f"{long}="):
+            values.append(argument.split("=", 1)[1])
+        elif argument.startswith(short) and len(argument) > len(short):
+            values.append(argument[len(short):].removeprefix("="))
+        index += 1
+    return values
+
+
+def is_read_only(argv: list[str]) -> bool:
+    # constraint: unknown shapes classify as mutations, so an auto-retry can never duplicate a write.
+    if not argv:
+        return False
+    if argv[0] == "api":
+        rest = argv[1:]
+        if API_WRITE_TARGET in rest or any(argument.startswith(API_WRITE_PREFIXES) for argument in rest):
+            return False
+        return all(method.upper() in READ_ONLY_METHODS for method in option_values(rest, "-X", "--method"))
+    return len(argv) > 1 and argv[1] in READ_ONLY_VERBS
+
+
+def retry_after_delay(argv: list[str], result: subprocess.CompletedProcess[bytes]) -> float:
+    if result.returncode == 0 or not is_read_only(argv):
+        return 0.0
+    text = (result.stdout + result.stderr).decode("utf-8", "replace")
+    if not HTTP_403.search(text):
+        return 0.0
+    match = RETRY_AFTER.search(text)
+    if not match:
+        return 0.0
+    return min(float(match.group(1)), MAX_RETRY_AFTER_SECONDS)
+
+
+def pace(root: Path) -> None:
+    try:
+        interval = float(os.environ.get("NOODLES_GH_MIN_INTERVAL") or DEFAULT_MIN_INTERVAL)
+    except ValueError:
+        fail("NOODLES_GH_MIN_INTERVAL must be a number of seconds")
+    state = Path(os.environ.get("NOODLES_GH_PACE_STATE") or (root / PACE_STATE))
+    state.parent.mkdir(parents=True, exist_ok=True)
+    # ponytail: one process-wide gap for every gh caller; per-endpoint budgets only if one chatty caller starves another.
+    with state.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        handle.seek(0)
+        try:
+            previous = float(handle.read().strip() or 0.0)
+        except ValueError:
+            previous = 0.0
+        wait = previous + interval - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{time.time():.6f}\n")
+        handle.flush()
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    root = repo_root()
+    binary = real_gh(Path(__file__).resolve())
+    retried = False
+    while True:
+        pace(root)
+        # ponytail: output is buffered so a retried attempt cannot emit twice; interactive gh loses its TTY output shape - call the real binary for that.
+        result = subprocess.run([binary, *argv], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if retried:
+            break
+        delay = retry_after_delay(argv, result)
+        if delay <= 0:
+            break
+        retried = True
+        time.sleep(delay)
+    sys.stdout.buffer.write(result.stdout)
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(result.stderr)
+    sys.stderr.buffer.flush()
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
