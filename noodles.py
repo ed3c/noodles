@@ -23,6 +23,7 @@ import tempfile
 import time
 import tokenize
 import tomllib
+import trusted_preview
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -1305,6 +1306,8 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify")
     verify.add_argument("--policy-root")
     verify.add_argument("--json", action="store_true")
+    verify.add_argument("--trusted-preview", action="store_true", help="also run the default-branch test modules against this working tree, as the trusted CI job would")
+    verify.add_argument("--trusted-ref", default="origin/main", help="ref the trusted preview treats as the default-branch tip")
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--json", action="store_true")
     runtime = sub.add_parser("runtime")
@@ -1365,6 +1368,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "verify":
             result = verify_repository(root, repo_root(args.policy_root) if args.policy_root else None)
+            if args.trusted_preview:
+                preview = trusted_preview.preview_trusted_verify(root, trusted_ref=args.trusted_ref, error_cls=GateError)
+                result["trusted_preview"] = preview
+                if not preview["ok"]:
+                    result["ok"] = False
+                    result["errors"] = [*result["errors"], *(f"trusted verify would red: {name}" for name in preview["would_red"]), preview["diagnostic"]]
+                if not args.json:
+                    print(f"trusted-preview {preview['trusted_ref']}@{preview['trusted_sha'][:12]} ({preview['fetch']}): {'PASS' if preview['ok'] else 'FAIL'}")
             print(json.dumps(result, indent=2, sort_keys=True) if args.json else ("PASS" if result["ok"] else "FAIL"))
             if not result["ok"]:
                 for error in result["errors"]:
