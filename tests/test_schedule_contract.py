@@ -80,7 +80,9 @@ class ScheduleContractTests(unittest.TestCase):
                 "published_exists": (runtime / "orders-next.json").exists(),
             }
 
-    def runtime_promote(self, payload: dict[str, object]) -> dict[str, object]:
+    def runtime_promote(
+        self, payload: dict[str, object], current: dict[str, object] | None = None
+    ) -> dict[str, object]:
         binary = runtime_contract.resolve_locked_runtime_binary(CANDIDATE_ROOT, error_cls=AssertionError)
         with tempfile.TemporaryDirectory(prefix="noodles-runtime-promote-") as temp_name:
             root = Path(temp_name)
@@ -96,6 +98,10 @@ class ScheduleContractTests(unittest.TestCase):
             execute_skill = root / ".agents/skills/execute"
             execute_skill.mkdir(parents=True)
             shutil.copy2(CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md", execute_skill / "SKILL.md")
+            if current is not None:
+                # constraint: plant a pre-existing active orders.json in the runtime's promoted shape
+                # constraint: so the direct-write re-emission control observes real promotion overwrite.
+                (runtime / "orders.json").write_text(json.dumps(current), encoding="utf-8")
             (runtime / "orders-next.json").write_text(json.dumps(payload), encoding="utf-8")
             result = subprocess.run(
                 [str(binary), "--project-dir", str(root), "start", "--once"],
@@ -378,6 +384,72 @@ class ScheduleContractTests(unittest.TestCase):
                     self.assertTrue(runtime["bad_exists"])
                     self.assertIn(fragment, str(local["error"]))
                     self.assertIn(fragment, str(runtime["output"]))
+
+    @unittest.skipIf(
+        os.getenv("NOODLES_OFFLINE_TESTS") == "1" or os.getenv("GITHUB_ACTIONS") == "true",
+        "pinned Noodle runtime is intentionally unavailable in hosted/offline CI; live control runs before handoff",
+    )
+    def test_pinned_runtime_promotion_seam_covers_schema_not_semantic_authority(self) -> None:
+        # constraint: ed3c/noodles#65 - physically admit the smallest upstream-owned promotion seam.
+        # constraint: a direct write to orders-next.json bypasses `skill_contract.py publish`; the pinned
+        # constraint: runtime's build.promote_orders_next only re-validates the compact-orders SCHEMA, so
+        # constraint: the semantic-authority rules the local gate owns are NOT upstream-enforced.
+        def order(oid: str) -> dict[str, object]:
+            return {"orders": [{"id": oid, "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}]}]}
+
+        # constraint: positive control - the seam exists and promotes a schema-valid direct write.
+        self.assertTrue(self.runtime_promote(order("ed3c/noodles#44"))["accepted"])
+
+        # constraint: positive control - the seam fails closed on schema drift only (quarantine to .bad).
+        drift = self.runtime_promote({**order("ed3c/noodles#44"), "bogus": 1})
+        self.assertFalse(drift["accepted"])
+        self.assertTrue(drift["bad_exists"])
+        self.assertIn("unknown field", str(drift["output"]))
+
+        # constraint: planted-negative controls - the semantic-authority subjects that the local publish
+        # constraint: gate rejects promote THROUGH a direct write; the upstream seam owns no semantic authority.
+        active_current = {
+            "orders": [{
+                "id": "ed3c/noodles#70",
+                "status": "active",
+                "stages": [{
+                    "task_key": "execute", "skill": "execute", "provider": "claude",
+                    "model": EXECUTE_MODEL, "prompt": "active", "status": "active",
+                }],
+            }]
+        }
+        negatives = (
+            ("self_schedule", order("schedule"), None, "schedule", True),
+            ("foreign_repo", order("someone-else/other#5"), None, "someone-else/other#5", False),
+            ("duplicate_subject", {"orders": order("ed3c/noodles#44")["orders"] * 2}, None, "ed3c/noodles#44", False),
+            ("active_reemission", order("ed3c/noodles#70"), active_current, "ed3c/noodles#70", True),
+        )
+        for label, payload, current, promoted_id, local_rejects in negatives:
+            with self.subTest(case=label):
+                result = self.runtime_promote(payload, current=current)
+                self.assertTrue(result["accepted"], f"{label}: upstream unexpectedly quarantined a bypass")
+                self.assertFalse(result["bad_exists"])
+                orders = (result["orders"] or {}).get("orders", [])
+                ids = [str(o.get("id")) for o in orders]
+                self.assertIn(promoted_id, ids)
+                # constraint: id membership alone does not discriminate a real bypass promotion from
+                # constraint: an id that would show up in orders.json anyway -- #70 already exists in
+                # constraint: the planted current file before promotion runs, and Noodle auto-injects
+                # constraint: its own "schedule" bookkeeping order whenever no order already claims that
+                # constraint: id, so both would satisfy assertIn even if the upstream had refused the
+                # constraint: bypass. Assert the promoted stage actually carries THIS payload's own
+                # constraint: content (execute/EXECUTE_MODEL/"next"), not the pre-existing or
+                # constraint: Noodle-owned stage shape, so a refused bypass turns this control red.
+                match = next((order for order in orders if str(order.get("id")) == promoted_id), None)
+                self.assertIsNotNone(match, f"{label}: promoted order for {promoted_id!r} not found")
+                stage = match["stages"][0]
+                self.assertEqual(stage.get("task_key"), "execute", f"{label}: {stage}")
+                self.assertEqual(stage.get("model"), EXECUTE_MODEL, f"{label}: {stage}")
+                self.assertEqual(stage.get("prompt"), "next", f"{label}: {stage}")
+                if local_rejects:
+                    # constraint: the offline candidate gate (publish_schedule_output) refuses the same subject.
+                    local = self.local_publish(payload, current=current)
+                    self.assertFalse(local["accepted"], f"{label}: local gate unexpectedly accepted a bypass")
 
 
 if __name__ == "__main__":
