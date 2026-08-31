@@ -92,18 +92,28 @@ class FakeProvider:
 
 
 class ScheduleDomainTests(unittest.TestCase):
-    def item(self, repository: str, number: int, *, schedulable: bool = True, claimed: bool = False) -> schedule_domain.ScheduleIssue:
+    def item(
+        self,
+        repository: str,
+        number: int,
+        *,
+        schedulable: bool = True,
+        claimed: bool = False,
+        dependencies: tuple[str, ...] = (),
+        malformed: bool = False,
+    ) -> schedule_domain.ScheduleIssue:
         return schedule_domain.ScheduleIssue(
             subject=f"{repository}#{number}",
             repository=repository,
             number=number,
-            dependencies=(),
+            dependencies=dependencies,
             p0=True,
             schedulable=schedulable,
             claimed=claimed,
+            malformed=malformed,
         )
 
-    def test_frontier_partitions_whole_repository_overlap_and_selects_oldest(self) -> None:
+    def test_dependency_components_partition_and_select_oldest(self) -> None:
         decision = schedule_domain.schedule_decision((
             self.item("ed3c/noodles", 90),
             self.item("ed3c/noodles", 82),
@@ -111,17 +121,48 @@ class ScheduleDomainTests(unittest.TestCase):
             self.item("ed3c/other", 3, schedulable=False),
         ))
         self.assertEqual(decision.frontier, ("ed3c/noodles#82", "ed3c/noodles#90", "ed3c/other#4"))
-        self.assertEqual(decision.components, (("ed3c/noodles#82", "ed3c/noodles#90"), ("ed3c/other#4",)))
-        self.assertEqual(decision.winners, ("ed3c/noodles#82", "ed3c/other#4"))
+        self.assertEqual(decision.components, (("ed3c/noodles#82",), ("ed3c/noodles#90",), ("ed3c/other#4",)))
+        self.assertEqual(decision.winners, ("ed3c/noodles#82", "ed3c/noodles#90", "ed3c/other#4"))
+        self.assertEqual(decision.max_useful_workers, 3)
+
+    def test_dependency_edges_join_issues_into_one_component(self) -> None:
+        decision = schedule_domain.schedule_decision((
+            self.item(REPOSITORY, 81),
+            self.item(REPOSITORY, 82, dependencies=(f"{REPOSITORY}#81",)),
+            self.item(REPOSITORY, 90),
+        ))
+        self.assertEqual(decision.components, ((f"{REPOSITORY}#81", f"{REPOSITORY}#82"), (f"{REPOSITORY}#90",)))
+        self.assertEqual(decision.winners, (f"{REPOSITORY}#81", f"{REPOSITORY}#90"))
         self.assertEqual(decision.max_useful_workers, 2)
 
-    def test_active_sibling_blocks_the_whole_repository_component(self) -> None:
+    def test_claimed_issue_excludes_only_its_dependency_component(self) -> None:
         decision = schedule_domain.schedule_decision((
             self.item(REPOSITORY, 81, schedulable=False, claimed=True),
             self.item(REPOSITORY, 82),
+            self.item(REPOSITORY, 90),
         ))
-        self.assertEqual(decision.frontier, ())
-        self.assertEqual(decision.max_useful_workers, 0)
+        self.assertEqual(decision.frontier, (f"{REPOSITORY}#82", f"{REPOSITORY}#90"))
+        self.assertEqual(decision.winners, (f"{REPOSITORY}#82", f"{REPOSITORY}#90"))
+        self.assertEqual(decision.max_useful_workers, 2)
+
+    def test_dependent_of_a_claimed_issue_stays_excluded(self) -> None:
+        decision = schedule_domain.schedule_decision((
+            self.item(REPOSITORY, 81, schedulable=False, claimed=True),
+            self.item(REPOSITORY, 82, dependencies=(f"{REPOSITORY}#81",)),
+            self.item(REPOSITORY, 90),
+        ))
+        self.assertEqual(decision.frontier, (f"{REPOSITORY}#90",))
+        self.assertEqual(decision.winners, (f"{REPOSITORY}#90",))
+        self.assertEqual(decision.max_useful_workers, 1)
+
+    def test_malformed_live_claim_fails_the_repository_closed(self) -> None:
+        decision = schedule_domain.schedule_decision((
+            self.item(REPOSITORY, 81, schedulable=False, claimed=True, malformed=True),
+            self.item(REPOSITORY, 82),
+            self.item("ed3c/other", 4),
+        ))
+        self.assertEqual(decision.frontier, ("ed3c/other#4",))
+        self.assertEqual(decision.max_useful_workers, 1)
 
 
 class ProviderClaimTests(unittest.TestCase):
@@ -171,18 +212,21 @@ class SchedulePublishTests(unittest.TestCase):
     def published_orders(self) -> list[dict]:
         return json.loads((self.root / ".noodle/orders-next.json").read_text())["orders"]
 
-    def test_oldest_frontier_issue_claims_and_newer_overlap_has_no_local_order(self) -> None:
+    def test_independent_frontier_issues_both_claim_and_publish(self) -> None:
         provider = FakeProvider([issue(90), issue(82)])
         candidate = self.write_candidate([f"{REPOSITORY}#90", f"{REPOSITORY}#82"])
         with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
             brief = noodles.schedule_publish(self.root, candidate)
-        self.assertEqual(provider.posts, 1)
-        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
-        self.assertEqual(brief["max_useful_workers"], 1)
+        self.assertEqual(provider.posts, 2)
+        self.assertEqual(
+            sorted(item["id"] for item in self.published_orders()),
+            [f"{REPOSITORY}#82", f"{REPOSITORY}#90"],
+        )
+        self.assertEqual(brief["max_useful_workers"], 2)
         self.assertEqual(json.loads((self.root / ".noodle/schedule-cycle.json").read_text()), brief)
         self.assertEqual(
             {item["subject"]: item["status"] for item in brief["claims"]},
-            {f"{REPOSITORY}#82": "claimed", f"{REPOSITORY}#90": "not_frontier"},
+            {f"{REPOSITORY}#82": "claimed", f"{REPOSITORY}#90": "claimed"},
         )
 
     def test_unlanded_dependency_fails_closed_before_provider_ref_creation(self) -> None:
@@ -231,9 +275,25 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertIn("max_useful_workers=1", stdout.getvalue())
         self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
 
-    def test_active_overlapping_sibling_fails_closed_before_provider_ref_creation(self) -> None:
+    def test_active_unrelated_sibling_no_longer_blocks_admission(self) -> None:
         active = issue(81, state="in_progress")
         provider = FakeProvider([active, issue(82)])
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 1)
+        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
+        self.assertEqual(brief["max_useful_workers"], 1)
+        self.assertEqual(
+            {item["subject"]: item["status"] for item in brief["claims"]},
+            {f"{REPOSITORY}#82": "claimed"},
+        )
+
+    def test_active_dependency_predecessor_still_blocks_its_dependent(self) -> None:
+        active = issue(81, state="in_progress")
+        dependent = issue(82, depends_on=f"{REPOSITORY}#81")
+        provider = FakeProvider([active, dependent], {81: active, 82: dependent})
         provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
         candidate = self.write_candidate([f"{REPOSITORY}#82"])
         with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
@@ -241,7 +301,6 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(provider.posts, 0)
         self.assertEqual(self.published_orders(), [])
         self.assertEqual(brief["max_useful_workers"], 0)
-        self.assertEqual(brief["claims"], [{"subject": f"{REPOSITORY}#82", "status": "not_frontier"}])
 
     def test_exact_active_ref_blocks_when_claimed_open_issue_is_malformed(self) -> None:
         malformed = issue(81)
