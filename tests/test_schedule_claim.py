@@ -20,14 +20,15 @@ HEAD = "a" * 40
 EXECUTE_MODEL = skill_contract.task_profiles(CANDIDATE_ROOT)["execute"]["model"]
 
 
-def issue_body(number: int, *, state: str = "ready", depends_on: str = "none") -> str:
+def issue_body(number: int, *, state: str = "ready", depends_on: str = "none", write_boundary: str = "none") -> str:
     subject = f"{REPOSITORY}#{number}"
     return (
         "<!-- noodles-role: repository-mutating-atom -->\n"
         f"<!-- noodles-target: {REPOSITORY} -->\n"
         f"<!-- noodles-subject: {subject} -->\n"
         f"<!-- noodles-state: {state} -->\n"
-        f"<!-- noodles-depends-on: {depends_on} -->\n\n"
+        f"<!-- noodles-depends-on: {depends_on} -->\n"
+        f"<!-- noodles-write-boundary: {write_boundary} -->\n\n"
         "## Goal\n\nSchedule one exact atom.\n\n"
         "## Physical acceptance\n\n- Provider controls pass.\n\n"
         "## Non-claims\n\n- No scheduler is implemented.\n"
@@ -41,11 +42,12 @@ def issue(
     depends_on: str = "none",
     provider_state: str = "open",
     p0: bool = True,
+    write_boundary: str = "none",
 ) -> dict:
     return {
         "number": number,
         "state": provider_state,
-        "body": issue_body(number, state=state, depends_on=depends_on),
+        "body": issue_body(number, state=state, depends_on=depends_on, write_boundary=write_boundary),
         "title": f"[PARALLEL-P0] issue {number}" if p0 else f"issue {number}",
         "html_url": f"https://github.test/{REPOSITORY}/issues/{number}",
     }
@@ -229,6 +231,84 @@ class SchedulePublishTests(unittest.TestCase):
             {item["subject"]: item["status"] for item in brief["claims"]},
             {f"{REPOSITORY}#82": "claimed", f"{REPOSITORY}#90": "claimed"},
         )
+
+    def test_overlapping_write_boundaries_admit_only_the_first(self) -> None:
+        provider = FakeProvider([
+            issue(82, write_boundary="schedule_domain.py"),
+            issue(90, write_boundary="schedule_domain.py"),
+        ])
+        candidate = self.write_candidate([f"{REPOSITORY}#82", f"{REPOSITORY}#90"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 1)
+        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
+        claims = {item["subject"]: item for item in brief["claims"]}
+        self.assertEqual(claims[f"{REPOSITORY}#82"]["status"], "claimed")
+        rejected = claims[f"{REPOSITORY}#90"]
+        self.assertEqual(rejected["status"], "boundary_conflict")
+        self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#82")
+        self.assertEqual(rejected["prefix"], "schedule_domain.py")
+        self.assertEqual(rejected["meaning"], skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["boundary_conflict"])
+
+    def test_disjoint_write_boundaries_both_admit(self) -> None:
+        provider = FakeProvider([
+            issue(82, write_boundary="schedule_domain.py"),
+            issue(90, write_boundary="daemon_lease.py"),
+        ])
+        candidate = self.write_candidate([f"{REPOSITORY}#82", f"{REPOSITORY}#90"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 2)
+        self.assertEqual(
+            sorted(item["id"] for item in self.published_orders()),
+            [f"{REPOSITORY}#82", f"{REPOSITORY}#90"],
+        )
+        self.assertEqual(
+            {item["subject"]: item["status"] for item in brief["claims"]},
+            {f"{REPOSITORY}#82": "claimed", f"{REPOSITORY}#90": "claimed"},
+        )
+
+    def test_nested_prefix_boundaries_intersect_and_reject(self) -> None:
+        provider = FakeProvider([
+            issue(82, write_boundary="docs"),
+            issue(90, write_boundary="docs/design/plan.md"),
+        ])
+        candidate = self.write_candidate([f"{REPOSITORY}#82", f"{REPOSITORY}#90"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 1)
+        rejected = {item["subject"]: item for item in brief["claims"]}[f"{REPOSITORY}#90"]
+        self.assertEqual(rejected["status"], "boundary_conflict")
+        self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#82")
+        self.assertEqual(rejected["prefix"], "docs/design/plan.md")
+
+    def test_missing_write_boundary_fails_closed_before_provider_ref(self) -> None:
+        undeclared = issue(82)
+        undeclared["body"] = undeclared["body"].replace("<!-- noodles-write-boundary: none -->\n", "")
+        provider = FakeProvider([undeclared])
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(self.published_orders(), [])
+        claim = brief["claims"][0]
+        self.assertEqual(claim["status"], "boundary_undeclared")
+        self.assertEqual(claim["meaning"], skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["boundary_undeclared"])
+
+    def test_active_lane_boundary_blocks_overlapping_candidate(self) -> None:
+        active = issue(81, state="in_progress", write_boundary="schedule_domain.py")
+        candidate_issue = issue(82, write_boundary="schedule_domain.py")
+        provider = FakeProvider([active, candidate_issue])
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#81')}"] = HEAD
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(self.published_orders(), [])
+        rejected = brief["claims"][0]
+        self.assertEqual(rejected["status"], "boundary_conflict")
+        self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#81")
+        self.assertEqual(rejected["prefix"], "schedule_domain.py")
 
     def test_unlanded_dependency_fails_closed_before_provider_ref_creation(self) -> None:
         predecessor = issue(81, state="ready")

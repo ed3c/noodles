@@ -13,6 +13,10 @@ class ScheduleIssue:
     schedulable: bool
     claimed: bool
     malformed: bool = False
+    # constraint: ed3c/noodles#98 - the lane's declared write surface, carried so
+    # constraint: admission can prove disjointness; None is an undeclared/ambiguous
+    # constraint: boundary that fails closed, () reserves nothing.
+    write_boundary: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,62 @@ ISSUE_REFERENCE_RE = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?
 NO_DEPENDENCY_WORDS = {"", "-", "n/a", "none", "nothing"}
 NO_DEPENDENCIES = "none"
 REQUIRED_SECTIONS = ("goal", "physical_acceptance", "non_claims")
+NO_WRITE_BOUNDARY = "none"
+WRITE_BOUNDARY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _boundary_segments(prefix: str) -> tuple[str, ...] | None:
+    # constraint: ed3c/noodles#98 - a write boundary entry is one exact relative
+    # constraint: path prefix; an absolute path, a parent escape, or any prose
+    # constraint: token is not a prefix and makes the whole declaration ambiguous.
+    raw = prefix.strip()
+    if not raw or raw.startswith("/"):
+        return None
+    trimmed = raw.rstrip("/")
+    if not trimmed:
+        return None
+    segments = trimmed.split("/")
+    for segment in segments:
+        if segment in {".", ".."} or not WRITE_BOUNDARY_SEGMENT_RE.match(segment):
+            return None
+    return tuple(segments)
+
+
+def parse_write_boundary(raw: str | None) -> tuple[str, ...] | None:
+    # constraint: ed3c/noodles#98 - one typed write-boundary field of exact path
+    # constraint: prefixes with an explicit NO_WRITE_BOUNDARY for a lane that
+    # constraint: reserves nothing; a missing, prose, or otherwise ambiguous
+    # constraint: boundary returns None so admission fails it closed rather than
+    # constraint: parsing a partial or invented surface.
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if value.lower() == NO_WRITE_BOUNDARY:
+        return ()
+    prefixes: list[str] = []
+    for token in (item.strip() for item in value.split(",")):
+        segments = _boundary_segments(token)
+        if segments is None:
+            return None
+        normalized = "/".join(segments)
+        if normalized not in prefixes:
+            prefixes.append(normalized)
+    return tuple(prefixes) if prefixes else None
+
+
+def boundary_conflict(candidate: tuple[str, ...], active: tuple[str, ...]) -> str | None:
+    # constraint: ed3c/noodles#98 - two declared surfaces intersect when either
+    # constraint: prefix path-contains the other (segment-wise, so tests never
+    # constraint: collides with tests2); the more specific prefix names the
+    # constraint: intersecting surface for the rejection diagnostic.
+    for candidate_prefix in candidate:
+        candidate_segments = tuple(candidate_prefix.split("/"))
+        for active_prefix in active:
+            active_segments = tuple(active_prefix.split("/"))
+            shorter, longer = sorted((candidate_segments, active_segments), key=len)
+            if longer[: len(shorter)] == shorter:
+                return "/".join(longer)
+    return None
 
 
 def derive_dependencies(body: str, subject: str) -> str | None:

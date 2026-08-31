@@ -174,6 +174,47 @@ class DependencyMarkerTests(unittest.TestCase):
                 noodles.parse_issue_contract(issue_body(depends_on=raw), SUBJECT)
 
 
+class WriteBoundaryMarkerTests(unittest.TestCase):
+    """One typed write-boundary of exact path prefixes; prose and absolutes fail closed to None."""
+
+    def test_explicit_none_reserves_nothing(self) -> None:
+        self.assertEqual(issue_contract.parse_write_boundary("none"), ())
+        self.assertEqual(issue_contract.parse_write_boundary("None"), ())
+
+    def test_missing_marker_is_none(self) -> None:
+        self.assertIsNone(issue_contract.parse_write_boundary(None))
+        self.assertIsNone(issue_contract.parse_write_boundary("   "))
+
+    def test_exact_prefixes_parse_and_deduplicate(self) -> None:
+        self.assertEqual(issue_contract.parse_write_boundary("schedule_domain.py"), ("schedule_domain.py",))
+        self.assertEqual(
+            issue_contract.parse_write_boundary("noodles.py, tests/, tests"),
+            ("noodles.py", "tests"),
+        )
+
+    def test_prose_and_absolute_and_escape_fail_closed_to_none(self) -> None:
+        for raw in ("see the goal section", "/etc/passwd", "../outside", "docs/../secret", "a b/c"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(issue_contract.parse_write_boundary(raw))
+
+    def test_conflict_is_segment_wise_not_string_prefix(self) -> None:
+        # constraint: ed3c/noodles#98 - tests and tests2 share a string prefix but
+        # constraint: are disjoint path surfaces, so they must never intersect.
+        self.assertIsNone(issue_contract.boundary_conflict(("tests",), ("tests2",)))
+        self.assertEqual(issue_contract.boundary_conflict(("tests",), ("tests",)), "tests")
+        self.assertEqual(issue_contract.boundary_conflict(("docs",), ("docs/design/x.md",)), "docs/design/x.md")
+        self.assertIsNone(issue_contract.boundary_conflict(("docs",), ("policy",)))
+        self.assertIsNone(issue_contract.boundary_conflict((), ("docs",)))
+
+    def test_contract_carries_the_parsed_boundary(self) -> None:
+        body = issue_body().replace(
+            "<!-- noodles-depends-on: none -->\n",
+            "<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: schedule_domain.py -->\n",
+        )
+        self.assertEqual(noodles.parse_issue_contract(body, SUBJECT)["write_boundary"], ("schedule_domain.py",))
+        self.assertIsNone(noodles.parse_issue_contract(issue_body(), SUBJECT)["write_boundary"])
+
+
 class BlockerMarkerTests(unittest.TestCase):
     """`blocked` carries a real blocker owner/reason; dependency waiting is never stored as state."""
 
