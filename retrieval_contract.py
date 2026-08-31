@@ -44,7 +44,8 @@ NON_CLAIMS = (
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 FLOATING_REFS = frozenset({"latest", "main", "master", "head", "stable", "*", "@latest", "next"})
-RESIDUE_SKIP_DIRS = frozenset({".git", ".noodle", INDEX_DIRNAME})
+# constraint: .grepai stays out of this skip set because an index planted in the candidate tree is the exact residue the digest exists to catch.
+RESIDUE_SKIP_DIRS = frozenset({".git", ".noodle"})
 
 
 def validate_retrieval_lock(root: Path) -> list[str]:
