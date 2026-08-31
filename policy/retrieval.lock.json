@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "retrieval": {
+    "command": "grepai",
+    "version": "0.30.0",
+    "binary_sha256": "e2d5ad30710eba500cb5d783a914ea16ba4e5c66ac23abe8691165b4aa5732bc",
+    "argv": ["grepai", "search", "{query}", "--json", "--compact", "--limit", "5"],
+    "version_argv": ["grepai", "version"],
+    "authority": "P",
+    "embedder": {
+      "provider": "ollama",
+      "model": "nomic-embed-text",
+      "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+      "dimensions": 768
+    },
+    "control": {
+      "positive_query": "validate that every external provider is pinned to an exact commit",
+      "nonsense_query": "zzqqxwv plerbnok quantum wombat sandwich 9182734"
+    },
+    "purpose": "Candidate-only intent retrieval. Never source truth, absence proof, or edit authority."
+  }
+}
