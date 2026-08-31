@@ -394,7 +394,11 @@ def validate_schedule_output(
 def tracked_test_exists(root: Path, identifier: str) -> bool:
     # constraint: ed3c/noodles#100 - resolve `tests.module.Class.test_name` against the tracked
     # constraint: source with ast, not by importing it: verify must stay side-effect free, and the
-    # constraint: question is only whether the named control exists in the suite.
+    # constraint: question is only whether the named control exists in the suite. Resolution walks
+    # constraint: same-file base classes, not only the named class's own body: this repo already
+    # constraint: shares fixtures by inheritance (tests/test_supervised_ceremony.py's
+    # constraint: ControlCheckoutFixture), and a planted-negative moved into a shared base must not
+    # constraint: read as absent just because it is not redeclared on the named subclass.
     parts = identifier.split(".")
     if len(parts) != 4 or parts[0] != "tests" or not parts[3].startswith("test_"):
         return False
@@ -405,13 +409,24 @@ def tracked_test_exists(root: Path, identifier: str) -> bool:
         module = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return False
-    for node in module.body:
-        if isinstance(node, ast.ClassDef) and node.name == parts[2]:
-            return any(
-                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == parts[3]
-                for item in node.body
-            )
-    return False
+    classes = {node.name: node for node in module.body if isinstance(node, ast.ClassDef)}
+
+    def has_method(class_node: ast.ClassDef, method_name: str, seen: set[str]) -> bool:
+        if class_node.name in seen:
+            return False
+        seen.add(class_node.name)
+        if any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == method_name
+            for item in class_node.body
+        ):
+            return True
+        return any(
+            isinstance(base, ast.Name) and base.id in classes and has_method(classes[base.id], method_name, seen)
+            for base in class_node.bases
+        )
+
+    target = classes.get(parts[2])
+    return target is not None and has_method(target, parts[3], set())
 
 
 def validate_concurrency_proof(root: Path, config: dict[str, Any]) -> list[str]:

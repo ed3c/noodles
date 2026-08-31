@@ -77,6 +77,7 @@
     "Software outside the admitted entrypoints can still edit the shared checkout; ed3c/noodles#46 declares this a non-claim, so I2 proves provenance only for work that entered through execute admission.",
     "The I4 receipt is the pre-land candidate head, not a merge commit: ed3c/noodles#100 was authored stacked on ed3c/noodles#99 rather than after its land, so no merge SHA existed at write time. A landing-train rebase of that branch changes the head and no gate re-reads this field; the digest is N-class in both directions.",
     "Every planted-negative name here is checked for existence, never for what it asserts. A test that was gutted but kept its name still satisfies this lock.",
-    "N-dependent behaviour - per-lane wall time, repair rate, provider throttling - is report-only in ./noodles metrics and is deliberately not a gate here; a lock that gated on it would be the numeric stop-loss this atom exists to refuse."
+    "N-dependent behaviour - per-lane wall time, repair rate, provider throttling - is report-only in ./noodles metrics and is deliberately not a gate here; a lock that gated on it would be the numeric stop-loss this atom exists to refuse.",
+    "max_concurrency itself binds nothing operationally: it is read in exactly one place in the tracked tree (this gate, to decide whether the lock is required at all), and the number actually admitted per schedule cycle is max_useful_workers = len(components) in schedule_domain.schedule_decision, computed independently of .noodle.toml. Raising or lowering max_concurrency changes only whether this gate fires, never how many lanes noodles.py admits."
   ]
 }

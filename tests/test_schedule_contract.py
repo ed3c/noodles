@@ -502,6 +502,34 @@ class ConcurrencyProofLockTests(unittest.TestCase):
         for identifier in named:
             self.assertTrue(skill_contract.tracked_test_exists(CANDIDATE_ROOT, identifier), identifier)
 
+    def test_a_control_inherited_from_a_same_file_fixture_base_still_resolves(self) -> None:
+        # constraint: ed3c/noodles#100 - this repo already shares fixtures by inheritance
+        # constraint: (tests/test_supervised_ceremony.py's ControlCheckoutFixture); resolution must
+        # constraint: not read a control as absent just because it lives on a base class rather than
+        # constraint: being redeclared on the named subclass.
+        temp, root = self.mutated_copy()
+        with temp:
+            fixture = root / "tests" / "test_inherited_control_fixture.py"
+            fixture.write_text(
+                "import unittest\n\n"
+                "class BaseFixture(unittest.TestCase):\n"
+                "    def test_defined_only_on_the_base(self) -> None:\n"
+                "        pass\n\n"
+                "class SubclassTests(BaseFixture):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                skill_contract.tracked_test_exists(
+                    root, "tests.test_inherited_control_fixture.SubclassTests.test_defined_only_on_the_base"
+                )
+            )
+            self.assertFalse(
+                skill_contract.tracked_test_exists(
+                    root, "tests.test_inherited_control_fixture.SubclassTests.test_never_declared_anywhere"
+                )
+            )
+
     def test_planted_negative_missing_lock_with_declared_concurrency_fails_verify(self) -> None:
         temp, root = self.mutated_copy()
         with temp:
