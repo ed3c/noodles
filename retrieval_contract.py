@@ -12,6 +12,11 @@ observations on grepai 0.30.0 force this shape:
    range are usable; the bytes must be read back from the candidate tree.
 
 `--compact` is pinned into the argv so the tool cannot even hand back content to be trusted.
+
+The code-intelligence canary at the end of this module is that same admitted contract carried one
+step further, because the step is the same step: the candidate paths a query proposes are handed to
+the pinned structural parser and then reduced to one exact-subject evidence row. Nothing new is
+trusted along the way - every leg still ends in a direct re-read of the current source bytes.
 """
 from __future__ import annotations
 
@@ -20,9 +25,13 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+import evidence_ledger
+import structural_contract
 
 LOCK_PATH = "policy/retrieval.lock.json"
 EVIDENCE_PATH = ".noodle/retrieval-evidence.json"
@@ -40,6 +49,23 @@ NON_CLAIMS = (
     "no absence proof",
     "no edit authority",
     "no full causal pipeline",
+)
+CANARY_SUBJECT = "ed3c/noodles#9"
+CANARY_ADAPTER = "code-intel-canary"
+CANARY_EVIDENCE_PATH = ".noodle/code-intel-canary.json"
+CANARY_SCHEMA_VERSION = 1
+CANARY_CAPABILITY = "code-intel-canary"
+# constraint: planted negative controls - a foreign subject, a foreign adapter identity, and a
+# constraint: foreign path that the chosen candidate can never be, since the grammar covers only .py.
+CONTROL_FOREIGN_SUBJECT = "ed3c/noodles#999999"
+CONTROL_FOREIGN_ADAPTER = "not-the-canary"
+CONTROL_FOREIGN_PATH = "policy/fitness.json"
+DEFINITION_HEADERS = (b"def ", b"async def ", b"class ")
+CANARY_NON_CLAIMS = (
+    "no production-proven universal pipeline",
+    "no SCIP, LanceDB, Serena edit, or scheduler participation",
+    "no absence proof: an empty candidate set stays indistinguishable from a real miss",
+    "one repository task at one commit; not a general code-intelligence guarantee",
 )
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -299,23 +325,312 @@ def require_index(index_root: Path, *, error_cls: type[Exception]) -> dict[str, 
     return {"index_root": str(index_root), "index_bytes": index.stat().st_size}
 
 
-def retrieval_probe(root: Path, index_root: Path, *, error_cls: type[Exception]) -> dict[str, Any]:
+def pinned_search(pin: dict[str, Any], index_root: str, *, error_cls: type[Exception]) -> Callable[[str], str]:
+    """The one door to running the tool: the pinned argv, against the index root, never the candidate."""
+
+    def search(query: str) -> str:
+        result = subprocess.run(
+            pinned_argv(pin, query), cwd=index_root, text=True, capture_output=True, check=False
+        )
+        if result.returncode != 0:
+            raise error_cls(f"pinned retrieval argv failed: {result.stderr.strip() or result.stdout.strip()}")
+        return result.stdout
+
+    return search
+
+
+def _live_retrieval(root: Path, index_root: Path, *, error_cls: type[Exception]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Callable[[str], str]]:
     root = Path(root).resolve()
     if Path(index_root).resolve() == root:
         raise error_cls("retrieval index root must stay outside the candidate tree to keep the candidate residue-free")
     pin = load_retrieval_pin(root, error_cls=error_cls)
     executable = verify_pinned_executable(pin, error_cls=error_cls)
     index = require_index(index_root, error_cls=error_cls)
+    return pin, executable, index, pinned_search(pin, index["index_root"], error_cls=error_cls)
 
-    def search(query: str) -> str:
-        result = subprocess.run(
-            pinned_argv(pin, query), cwd=index["index_root"], text=True, capture_output=True, check=False
+
+def retrieval_probe(root: Path, index_root: Path, *, error_cls: type[Exception]) -> dict[str, Any]:
+    _pin, executable, index, search = _live_retrieval(root, index_root, error_cls=error_cls)
+    receipt = probe_retrieval(Path(root).resolve(), search, error_cls=error_cls)
+    receipt["executable"] = executable
+    receipt["index"] = index
+    return receipt
+
+
+def admit_canary_row(
+    connection: Any, subject: str, source: bytes, *, adapter: str, path: str, error_cls: type[Exception]
+) -> dict[str, Any]:
+    """The consuming end of the chain.
+
+    A stored row is served only when the exact subject, the adapter identity, the source digest, the
+    recorded path, and the recorded byte range all survive a direct re-read of the current source
+    bytes. Each of the five is refusable on its own, so a fault planted at any single boundary is a
+    refusal rather than a plausible-looking answer.
+    """
+    row = evidence_ledger.read_back(connection, subject, source, error_cls=error_cls)
+    if row.adapter != adapter:
+        raise error_cls(
+            f"evidence for {subject} was produced by adapter {row.adapter!r}, not the expected {adapter!r}"
         )
-        if result.returncode != 0:
-            raise error_cls(f"pinned retrieval argv failed: {result.stderr.strip() or result.stdout.strip()}")
-        return result.stdout
+    try:
+        claim = json.loads(row.observation)
+        recorded_path = str(claim["path"])
+        definition = str(claim["definition"])
+        start, end = (int(value) for value in claim["range"])
+        name_start, name_end = (int(value) for value in claim["name_range"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise error_cls(f"evidence observation for {subject} is not one structural claim: {exc}") from exc
+    if recorded_path != path:
+        raise error_cls(f"evidence for {subject} names path {recorded_path!r}, not the requested {path!r}")
+    if not 0 <= start < end <= len(source) or not start <= name_start < name_end <= end:
+        raise error_cls(
+            f"evidence for {subject} records range {start}..{end} that is not inside the {len(source)} source bytes"
+        )
+    if source[name_start:name_end] != definition.encode("utf-8"):
+        raise error_cls(
+            f"evidence for {subject} records {definition!r} at bytes {name_start}..{name_end}, "
+            f"which read back {source[name_start:name_end]!r}"
+        )
+    if not source[start:end].startswith(DEFINITION_HEADERS):
+        raise error_cls(
+            f"evidence for {subject} records a definition at bytes {start}..{end}, "
+            f"which read back {source[start : start + 16]!r}"
+        )
+    return {"subject": subject, "adapter": adapter, "source_sha256": row.source_sha256, **claim}
 
-    receipt = probe_retrieval(root, search, error_cls=error_cls)
+
+def _line_starts(source: bytes) -> list[int]:
+    return [0, *(index + 1 for index, byte in enumerate(source) if byte == 0x0A)]
+
+
+def _structural_candidate(
+    root: Path,
+    readbacks: list[dict[str, Any]],
+    module: Any,
+    language: Any,
+    suffixes: tuple[str, ...],
+    *,
+    error_cls: type[Exception],
+) -> tuple[dict[str, Any], bytes, tuple[int, int, int, int]]:
+    """Retrieval only proposes. The pinned parser decides which candidate carries a definition, and
+    CPython's own parser has to agree with every reported range before one is chosen."""
+    for candidate in readbacks:
+        if not candidate["path"].endswith(suffixes):
+            continue
+        source, observed, parse_error = structural_contract.definitions_for_path(
+            root, candidate["path"], module, language, suffixes, error_cls=error_cls
+        )
+        if parse_error is not None or observed is None:
+            raise error_cls(f"candidate {candidate['path']} did not parse: bounded error {parse_error}")
+        disagreements = structural_contract.readback_errors(
+            candidate["path"], source, observed, structural_contract.expected_definitions(source)
+        )
+        if disagreements:
+            raise error_cls(f"structural readback disagreed with CPython: {disagreements[0]}")
+        starts = _line_starts(source)
+        span_start = starts[candidate["start_line"] - 1]
+        span_end = starts[candidate["end_line"]] if candidate["end_line"] < len(starts) else len(source)
+        enclosing = [item for item in observed if item[0] < span_end and span_start < item[1]]
+        if enclosing:
+            return candidate, source, max(enclosing, key=lambda item: item[1] - item[0])
+    raise error_cls(
+        "no retrieval candidate resolved to a pinned-grammar definition; a candidate miss is never absence proof"
+    )
+
+
+def _canary_control(name: str, description: str, probe: Callable[[], Any], *, error_cls: type[Exception]) -> dict[str, Any]:
+    """A planted fault the consumer must refuse; a control that passes means the chain is blind."""
+    try:
+        probe()
+    except error_cls as failure:
+        return {"control": name, "description": description, "rejected": True, "diagnostic": str(failure)}
+    raise error_cls(f"planted control {name} did not fail; the evidence consumer cannot detect it")
+
+
+def _planted_ledger(
+    directory: Path, name: str, subject: str, source: bytes, observation: str, *, error_cls: type[Exception]
+) -> Any:
+    connection = evidence_ledger.open_ledger(directory / f"{name}.sqlite3")
+    evidence_ledger.record(
+        connection,
+        evidence_ledger.SourceObservation(
+            subject=subject, observation=observation, source=source, adapter=CANARY_ADAPTER
+        ),
+        error_cls=error_cls,
+    )
+    return connection
+
+
+def canary_controls(
+    directory: Path,
+    connection: Any,
+    subject: str,
+    source: bytes,
+    path: str,
+    claim: dict[str, Any],
+    *,
+    error_cls: type[Exception],
+) -> list[dict[str, Any]]:
+    """One planted fault per boundary the chain crosses: subject, source digest, adapter, path, range."""
+    start, end = claim["range"]
+    name_start, name_end = claim["name_range"]
+    renamed = source[:name_start] + b"x" * (name_end - name_start) + source[name_end:]
+    wrong_path = _planted_ledger(
+        directory, "wrong-path", subject, source, json.dumps({**claim, "path": CONTROL_FOREIGN_PATH}, sort_keys=True), error_cls=error_cls
+    )
+    wrong_range = _planted_ledger(
+        directory,
+        "wrong-range",
+        subject,
+        source,
+        json.dumps({**claim, "range": [start + 1, end], "name_range": [name_start + 1, name_end + 1]}, sort_keys=True),
+        error_cls=error_cls,
+    )
+    controls = [
+        _canary_control(
+            "wrong_subject",
+            "a different exact subject must find no row at all, never the neighbouring one",
+            lambda: admit_canary_row(
+                connection, CONTROL_FOREIGN_SUBJECT, source, adapter=CANARY_ADAPTER, path=path, error_cls=error_cls
+            ),
+            error_cls=error_cls,
+        ),
+        _canary_control(
+            "stale_source",
+            "the recorded definition is renamed in place, so every byte offset still fits and only the digest moves",
+            lambda: admit_canary_row(
+                connection, subject, renamed, adapter=CANARY_ADAPTER, path=path, error_cls=error_cls
+            ),
+            error_cls=error_cls,
+        ),
+        _canary_control(
+            "wrong_adapter",
+            "a row produced by one adapter must not be served to a consumer expecting another",
+            lambda: admit_canary_row(
+                connection, subject, source, adapter=CONTROL_FOREIGN_ADAPTER, path=path, error_cls=error_cls
+            ),
+            error_cls=error_cls,
+        ),
+        _canary_control(
+            "wrong_path",
+            "the row names a path the consumer did not ask about",
+            lambda: admit_canary_row(
+                wrong_path, subject, source, adapter=CANARY_ADAPTER, path=path, error_cls=error_cls
+            ),
+            error_cls=error_cls,
+        ),
+        _canary_control(
+            "wrong_range",
+            "the recorded byte range is shifted by one, so it no longer spells the recorded definition",
+            lambda: admit_canary_row(
+                wrong_range, subject, source, adapter=CANARY_ADAPTER, path=path, error_cls=error_cls
+            ),
+            error_cls=error_cls,
+        ),
+    ]
+    wrong_path.close()
+    wrong_range.close()
+    return controls
+
+
+def code_intel_journey(
+    root: Path, search: Callable[[str], str], subject: str, *, error_cls: type[Exception]
+) -> dict[str, Any]:
+    """One exact repository task across the landed band: intent query -> candidate paths ->
+    structural/source readback -> one exact-subject evidence row, with a planted fault at every
+    boundary proving the consumer refuses instead of serving something plausible."""
+    root = Path(root).resolve()
+    lock = structural_contract.load_parser_lock(root, error_cls=error_cls)
+    module, language, parser_pins = structural_contract.load_language(lock, error_cls=error_cls)
+    suffixes = tuple(lock["grammar"]["suffixes"])
+    query = load_retrieval_pin(root, error_cls=error_cls)["control"]["positive_query"]
+    before_digest, _ = _tree_digest(root)
+
+    started = time.perf_counter()
+    candidates = parse_candidates(search(query), error_cls=error_cls)
+    retrieval_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    readbacks = [readback_candidate(root, candidate, error_cls=error_cls) for candidate in candidates]
+
+    started = time.perf_counter()
+    candidate, source, span = _structural_candidate(root, readbacks, module, language, suffixes, error_cls=error_cls)
+    structural_ms = round((time.perf_counter() - started) * 1000.0, 3)
+    start, end, name_start, name_end = span
+    claim = {
+        "path": candidate["path"],
+        "definition": source[name_start:name_end].decode("utf-8"),
+        "range": [start, end],
+        "name_range": [name_start, name_end],
+    }
+
+    with tempfile.TemporaryDirectory(prefix="noodles-code-intel-canary-") as workspace:
+        directory = Path(workspace).resolve()
+        if str(directory).startswith(str(root)):
+            raise error_cls("the canary ledger must live outside the candidate tree to keep the candidate residue-free")
+        started = time.perf_counter()
+        connection = evidence_ledger.open_ledger(directory / "canary.sqlite3")
+        row = evidence_ledger.record(
+            connection,
+            evidence_ledger.SourceObservation(
+                subject=subject,
+                observation=json.dumps(claim, sort_keys=True),
+                source=source,
+                adapter=CANARY_ADAPTER,
+            ),
+            error_cls=error_cls,
+        )
+        admitted = admit_canary_row(
+            connection, subject, source, adapter=CANARY_ADAPTER, path=candidate["path"], error_cls=error_cls
+        )
+        ledger_ms = round((time.perf_counter() - started) * 1000.0, 3)
+        export = evidence_ledger.canonical_export(connection).encode("utf-8")
+        controls = canary_controls(directory, connection, subject, source, candidate["path"], claim, error_cls=error_cls)
+        connection.close()
+
+    after_digest, after_paths = _tree_digest(root)
+    if after_digest != before_digest:
+        raise error_cls(f"the code-intelligence canary mutated the candidate tree; {len(after_paths)} paths observed")
+    return {
+        "schema_version": CANARY_SCHEMA_VERSION,
+        "capability": CANARY_CAPABILITY,
+        "subject": subject,
+        "authority": AUTHORITY,
+        "laws": list(LAWS),
+        "chain": {
+            "intent_query": {"query": query, "candidate_count": len(readbacks), "authority": AUTHORITY},
+            "candidate": candidate,
+            "structural": {
+                "parser": parser_pins,
+                "query": structural_contract.DEFINITION_QUERY,
+                "cross_parser": "cpython-ast",
+                "claim": claim,
+            },
+            "evidence_row": {
+                "subject": row.subject,
+                "adapter": row.adapter,
+                "source_sha256": row.source_sha256,
+                "observation": row.observation,
+            },
+            "admitted": admitted,
+        },
+        "controls": controls,
+        "metrics": {
+            "retrieval_ms": retrieval_ms,
+            "structural_ms": structural_ms,
+            "ledger_ms": ledger_ms,
+            "candidate_context_bytes": candidate["source_bytes"],
+            "definition_bytes": end - start,
+            "context_bytes": candidate["source_bytes"] + (end - start),
+            "evidence_sha256": hashlib.sha256(export).hexdigest(),
+            "evidence_bytes": len(export),
+        },
+        "residue": {"tree_sha256": after_digest, "ledger_outside_candidate_tree": True},
+        "non_claims": list(CANARY_NON_CLAIMS),
+    }
+
+
+def code_intel_canary(root: Path, index_root: Path, subject: str, *, error_cls: type[Exception]) -> dict[str, Any]:
+    _pin, executable, index, search = _live_retrieval(root, index_root, error_cls=error_cls)
+    receipt = code_intel_journey(Path(root).resolve(), search, subject, error_cls=error_cls)
     receipt["executable"] = executable
     receipt["index"] = index
     return receipt
