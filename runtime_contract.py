@@ -22,6 +22,10 @@ from provider_contract import (
     RETIRED_PROVIDER,
     RETIRED_PROVIDER_DESTINATION,
     RETIRED_PROVIDER_DISCOVERY_ROOT,
+    ROUTE_BUNDLE_ROOT,
+    assemble_route_bundle,
+    check_route_bundle,
+    route_bundle_path,
     validate_admission_policy,
     validate_enabled_provider_names as validate_provider_names,
     validate_skill_config_paths,
@@ -49,6 +53,46 @@ CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS = (
     "show-me-your-work",
     "create-verification-skill",
     "maintain-verification-skill",
+)
+CURSOR_PSTACK_NATIVE_SUBPATH = "pstack/skills"
+_ROUTE_ENTRYPOINT = f"{CURSOR_PSTACK_NATIVE_SUBPATH}/poteto-mode/SKILL.md"
+# constraint: ed3c/noodles#174 - the deterministic prefix of each immutable execute route fixture, in
+# constraint: traversal order, addressed relative to the pinned cursor-pstack checkout. Every route
+# constraint: starts at the poteto-mode entrypoint because no execute task may enter a leaf directly.
+EXECUTE_ROUTE_TRAVERSALS: dict[str, tuple[str, ...]] = {
+    "investigation": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/poteto-mode/playbooks/investigation.md",
+    ),
+    "function-boundary-feature-work": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/architect/SKILL.md",
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/poteto-mode/playbooks/feature.md",
+    ),
+    "long-multi-phase-work": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/show-me-your-work/SKILL.md",
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/poteto-mode/playbooks/multi-phase-plan.md",
+    ),
+    "verification-skill-work": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/create-verification-skill/SKILL.md",
+        f"{CURSOR_PSTACK_NATIVE_SUBPATH}/maintain-verification-skill/SKILL.md",
+    ),
+    "cli-control": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_COMPAT_SOURCE_ROOT}/control-cli/SKILL.md",
+    ),
+    "pre-commit-cleanup": (
+        _ROUTE_ENTRYPOINT,
+        f"{CURSOR_PSTACK_COMPAT_SOURCE_ROOT}/deslop/SKILL.md",
+    ),
+}
+EXECUTE_ROUTE_BUNDLE_PHRASE = (
+    "Read the pinned route bundle for the selected route before the live files. A bundle is a "
+    "byte-preserving cache of the same pinned bytes in the same traversal order, never a substitute "
+    "for the routing decision and never a summary. If a bundle is absent, stale, or fails its digest "
+    "chain, load the pinned files live; every other pinned skill stays reachable only that way."
 )
 
 
@@ -189,6 +233,94 @@ def validate_control_noodle_root(root: Path, providers: list[dict[str, Any]], *,
     return _validate_exact_skill_root(source_root, _compat_skill_root(root, CONTROL_NOODLE_SKILL), label=CONTROL_NOODLE_SKILL, error_cls=error_cls)
 
 
+def _route_bundle_skills() -> set[str]:
+    return {
+        Path(path).parent.name
+        for paths in EXECUTE_ROUTE_TRAVERSALS.values()
+        for path in paths
+        if path.endswith("/SKILL.md")
+    }
+
+
+def live_only_native_skills() -> tuple[str, ...]:
+    """Pinned native skills no bundle covers: the cache-not-cage complement that stays reachable
+    only by normal live loading."""
+    return tuple(sorted(set(CURSOR_PSTACK_REQUIRED_NATIVE_SKILLS) - _route_bundle_skills()))
+
+
+def materialize_route_bundles(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> dict[str, Any] | None:
+    destination = _cursor_provider_destination(root, providers)
+    if destination is None:
+        return None
+    commit = git(destination, "rev-parse", "HEAD", error_cls=error_cls)
+    (root / ROUTE_BUNDLE_ROOT).mkdir(parents=True, exist_ok=True)
+    bundles: dict[str, Any] = {}
+    for route, paths in EXECUTE_ROUTE_TRAVERSALS.items():
+        try:
+            payload = assemble_route_bundle(
+                destination, route=route, provider=CURSOR_PSTACK_PROVIDER, commit=commit, paths=paths
+            )
+        except OSError as exc:
+            raise error_cls(f"route bundle {route} missing pinned traversal bytes: {exc}") from exc
+        target = root / route_bundle_path(route)
+        current = target.read_bytes() if target.is_file() else None
+        # constraint: the payload embeds the pin commit and every section digest, so byte-equality is
+        # constraint: exactly "the pin did not change"; an unchanged pin never rewrites the bundle.
+        if current != payload:
+            target.write_bytes(payload)
+        bundles[route] = {
+            "path": route_bundle_path(route),
+            "sections": len(paths),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "status": "unchanged" if current == payload else "written",
+        }
+    return {
+        "route_bundle_commit": commit,
+        "route_bundles": bundles,
+        "live_only_skills": list(live_only_native_skills()),
+    }
+
+
+def validate_route_bundles(root: Path, providers: list[dict[str, Any]], *, error_cls: type[Exception]) -> dict[str, Any] | None:
+    destination = _cursor_provider_destination(root, providers)
+    if destination is None:
+        return None
+    commit = git(destination, "rev-parse", "HEAD", error_cls=error_cls)
+    bundles: dict[str, Any] = {}
+    for route, paths in EXECUTE_ROUTE_TRAVERSALS.items():
+        target = root / route_bundle_path(route)
+        if not target.is_file():
+            raise error_cls(f"route bundle missing: {route_bundle_path(route)}")
+        payload = target.read_bytes()
+        result = check_route_bundle(
+            payload,
+            destination,
+            route=route,
+            provider=CURSOR_PSTACK_PROVIDER,
+            commit=commit,
+            expected_paths=paths,
+        )
+        if result["errors"]:
+            raise error_cls("; ".join(result["errors"]))
+        if result["bundle_fed_sha256"] != result["live_loaded_sha256"]:
+            raise error_cls(
+                f"route bundle {route} bundle-fed stream {result['bundle_fed_sha256']} "
+                f"!= live-loaded stream {result['live_loaded_sha256']}"
+            )
+        bundles[route] = {
+            "path": route_bundle_path(route),
+            "sections": len(paths),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bundle_fed_sha256": result["bundle_fed_sha256"],
+            "live_loaded_sha256": result["live_loaded_sha256"],
+        }
+    live_only = live_only_native_skills()
+    for skill in live_only:
+        if not (destination / CURSOR_PSTACK_NATIVE_SUBPATH / skill / "SKILL.md").is_file():
+            raise error_cls(f"out-of-bundle skill {skill!r} is not live-loadable from the pinned checkout")
+    return {"route_bundle_commit": commit, "route_bundles": bundles, "live_only_skills": list(live_only)}
+
+
 def _validate_execute_route_files(root: Path, required_skill_paths: dict[str, dict[str, str]], *, error_cls: type[Exception]) -> None:
     entrypoint = required_skill_paths.get("poteto-mode")
     if entrypoint is None:
@@ -199,6 +331,15 @@ def _validate_execute_route_files(root: Path, required_skill_paths: dict[str, di
         path = playbook_dir / name
         if not path.is_file():
             raise error_cls(f"execute route reference missing pinned playbook bytes: {path}")
+    execute = required_skill_paths.get("execute")
+    if execute is None:
+        raise error_cls("missing required skill readback for execute")
+    routing = Path(execute["resolved_path"]).read_text(encoding="utf-8")
+    if EXECUTE_ROUTE_BUNDLE_PHRASE not in routing:
+        raise error_cls("execute routing contract does not point cooks at the pinned route bundles")
+    for route in EXECUTE_ROUTE_TRAVERSALS:
+        if route_bundle_path(route) not in routing:
+            raise error_cls(f"execute routing contract does not name route bundle {route_bundle_path(route)}")
 
 
 def run(
@@ -1006,6 +1147,12 @@ def provider_check(root: Path, *, error_cls: type[Exception]) -> list[dict[str, 
             if receipt["name"] == CONTROL_NOODLE_PROVIDER:
                 receipt["mapped_skill"] = mapped_control_noodle
                 break
+    bundle_receipt = validate_route_bundles(root, providers, error_cls=error_cls)
+    if bundle_receipt is not None:
+        for receipt in receipts:
+            if receipt["name"] == CURSOR_PSTACK_PROVIDER:
+                receipt.update(bundle_receipt)
+                break
     return receipts
 
 
@@ -1036,7 +1183,14 @@ def provider_sync(root: Path, *, error_cls: type[Exception]) -> list[dict[str, A
         shutil.rmtree(retired_destination)
     materialize_cursor_compat_root(root, providers, error_cls=error_cls)
     materialize_control_noodle_root(root, providers, error_cls=error_cls)
+    bundle_materialization = materialize_route_bundles(root, providers, error_cls=error_cls)
     receipts = provider_check(root, error_cls=error_cls)
+    if bundle_materialization is not None:
+        statuses = {route: item["status"] for route, item in bundle_materialization["route_bundles"].items()}
+        for receipt in receipts:
+            if receipt["name"] == CURSOR_PSTACK_PROVIDER:
+                receipt["route_bundle_status"] = statuses
+                break
     receipt_dir = root / ".noodle/receipts/providers"
     receipt_dir.mkdir(parents=True, exist_ok=True)
     for receipt in receipts:
