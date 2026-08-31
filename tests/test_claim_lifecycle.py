@@ -87,7 +87,7 @@ class ClaimProvider:
         }
 
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
-        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100":
+        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page=1":
             return [self.pr()] if self.pr_open else []
         if endpoint == f"repos/{REPOSITORY}/issues/33":
             if method == "PATCH":

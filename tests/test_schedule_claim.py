@@ -12,6 +12,7 @@ from unittest import mock
 
 import issue_contract
 import noodles
+import repair_contract
 import schedule_domain
 import skill_contract
 from tests.support import CANDIDATE_ROOT, copy_tracked
@@ -74,11 +75,16 @@ class FakeProvider:
         self.refs: dict[str, str] = {}
         self.posts = 0
         self.issue_pages: list[int] = []
+        self.pull_pages: list[int] = []
         self.lock = threading.Lock()
 
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
-        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100":
-            return list(self.pulls)
+        pull_prefix = f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page="
+        if endpoint.startswith(pull_prefix):
+            page = int(endpoint.removeprefix(pull_prefix))
+            self.pull_pages.append(page)
+            start = (page - 1) * 100
+            return self.pulls[start:start + 100]
         issue_prefix = f"repos/{REPOSITORY}/issues?state=open&sort=created&direction=asc&per_page=100&page="
         if endpoint.startswith(issue_prefix):
             page = int(endpoint.removeprefix(issue_prefix))
@@ -378,6 +384,34 @@ class SchedulePublishTests(unittest.TestCase):
             brief = noodles.schedule_publish(self.root, candidate)
         self.assertEqual(provider.posts, 0)
         self.assertEqual(self.published_orders(), [])
+        self.assertEqual(brief["claims"][0]["status"], "open_pr_exists")
+        self.assertEqual(brief["claims"][0]["pull_requests"], [f"{REPOSITORY}#9"])
+
+    def test_repair_owner_finds_the_pr_schedule_refused_on_when_the_body_drifted(self) -> None:
+        # constraint: ed3c/noodles#99 - schedule_publish's refusal names OPEN_PR_REPAIR_OWNER as the
+        # constraint: remedy for "open_pr_exists". If repair_contract.find_open_pr_for_subject used a
+        # constraint: different correlation than the refusal did, the exact PR schedule just refused
+        # constraint: admission on - branch-matched, body-drifted - would be unreachable from repair.
+        provider = FakeProvider(
+            [issue(82)],
+            pulls=[pull(9, body="WIP: no exact reference line", head_ref=noodles.execute_branch(f"{REPOSITORY}#82"))],
+        )
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            pr = repair_contract.find_open_pr_for_subject(REPOSITORY, f"{REPOSITORY}#82")
+        self.assertEqual(pr["number"], 9)
+
+    def test_open_pr_beyond_the_first_page_of_pull_requests_still_refuses_admission(self) -> None:
+        # constraint: ed3c/noodles#99 - correlation must paginate the provider's open pull request
+        # constraint: list the way open_issues already paginates issues; an unpaginated read would
+        # constraint: silently stop matching past the first 100 open pull requests and admit a
+        # constraint: duplicate lane whose real open PR sits on a later page.
+        filler = [pull(100 + number, body=f"Refs {REPOSITORY}#{900 + number}", head_ref=f"filler-{number}") for number in range(100)]
+        target = pull(9, body=f"Refs {REPOSITORY}#82", head_ref="fix-82-second-attempt")
+        provider = FakeProvider([issue(82)], pulls=filler + [target])
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertIn(2, provider.pull_pages)
         self.assertEqual(brief["claims"][0]["status"], "open_pr_exists")
         self.assertEqual(brief["claims"][0]["pull_requests"], [f"{REPOSITORY}#9"])
 

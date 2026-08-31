@@ -55,7 +55,7 @@ class RepairTests(unittest.TestCase):
     def gh_payloads(self, *, pr: dict | None = None, issue_state: str = "open", contract_state: str = "awaiting_land") -> dict[str, object]:
         pr_payload = pr or self.pr()
         return {
-            "repos/ed3c/noodles/pulls?state=open&per_page=100": [pr_payload],
+            "repos/ed3c/noodles/pulls?state=open&per_page=100&page=1": [pr_payload],
             "repos/ed3c/noodles/issues/33": {"number": 33, "state": issue_state, "body": self.issue_body(contract_state)},
             f"repos/ed3c/noodles/actions/runs?head_sha={self.head}&per_page=100": {
                 "workflow_runs": [{

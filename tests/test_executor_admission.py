@@ -179,8 +179,10 @@ class FakeProvider:
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
         # constraint: ed3c/noodles#99 - admission reads the open pull request list for every candidate;
         # constraint: an empty list is the no-open-PR world these lane-routing controls are about.
-        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100":
-            return list(self.pulls)
+        pull_prefix = f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page="
+        if endpoint.startswith(pull_prefix):
+            page = int(endpoint.removeprefix(pull_prefix))
+            return self.pulls[(page - 1) * 100:page * 100]
         issue_prefix = f"repos/{REPOSITORY}/issues?state=open&sort=created&direction=asc&per_page=100&page="
         if endpoint.startswith(issue_prefix):
             page = int(endpoint.removeprefix(issue_prefix))
