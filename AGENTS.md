@@ -9,7 +9,7 @@
 3. Load external engineering knowledge through pinned provider paths.
 4. Route the task with pstack; read only the nearest relevant contract and test.
 5. Implement the smallest independently useful atom in the Noodle worktree.
-6. Run `./noodles verify`, commit, push, set the Issue to `awaiting_land`, then open one PR with exactly one `Refs owner/repo#N` line.
+6. Follow the canonical execute sequence in `.agents/skills/execute/SKILL.md`; this file never restates its step order. `./noodles issue handoff` is the sole writer of `awaiting_land` and it validates an already-open PR head/body, so the PR necessarily precedes that state.
 7. Let trusted GitHub workflows verify the exact head, merge with that head SHA, read back the merge event, then close the exact Issue.
 8. Let `./noodles reconcile` fast-forward local `main` and release Noodle's supervised containment point after provider readback.
 
@@ -141,15 +141,7 @@ Do not use `Closes`, `Fixes`, or `Resolves`. Only the provider lander closes the
 
 ## Call order
 
-```bash
-./noodles verify
-./noodles providers sync
-./noodles github protect audit
-./noodles start      # one daemon generation
-./noodles supervise  # unattended: heal, restart, rotate, cool down
-```
-
-`./noodles start` fails closed unless local fitness, pinned providers, and GitHub protection readback all pass. `./noodles supervise` owns unattended operation per `AUTONOMY.SUPERVISED_RUNNER.001`; `./noodles supervise --heal-only` prints the heal receipt without spawning a daemon.
+`README.md` owns the bootstrap call order and `./noodles --help` owns the live verb list; this file restates neither. A second command sequence here would be a second writer that drifts silently — the copy that lived here had already lost `./noodles runtime check` and named `github protect audit` where the bootstrap needs `github protect apply`. `AUTONOMY.SUPERVISED_RUNNER.001` in `contracts/system-v1.md` owns the unattended-operation requirement.
 
 ## Ceremony entrypoints
 

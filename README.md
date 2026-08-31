@@ -29,10 +29,13 @@ Noodle machine reconciliation
 ./noodles runtime check
 ./noodles providers sync
 ./noodles github protect apply   # one-time, requires an admin-capable gh token
-./noodles start
+./noodles start                  # one daemon generation
+./noodles supervise              # unattended: heal, restart, rotate, cool down
 ```
 
-After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree to emit deterministic repair receipts, and reconciles completed provider landings without a Human Verifier.
+This is the only call order in the repository; `AGENTS.md` points here instead of keeping a second copy.
+
+After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree to emit deterministic repair receipts, and reconciles completed provider landings without a Human Verifier. It fails closed unless local fitness, pinned providers, and GitHub protection readback all pass. `./noodles supervise` owns unattended operation per `AUTONOMY.SUPERVISED_RUNNER.001`; `./noodles supervise --heal-only` prints the heal receipt without spawning a daemon.
 
 ## Why Noodle stays `supervised`
 
@@ -51,12 +54,9 @@ Noodle `auto` merges a completed worktree into local `main`. That is useful orch
 
 The admitted upstream Noodle runtime is pinned in `policy/runtime.lock.json` to an exact release tag, tag commit, platform asset digest, and installed binary digest. `./noodles runtime check` reads those values back from the live `poteto/noodle` release plus the local binary that `./noodles start` will execute.
 
-Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits:
+Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits. `policy/providers.lock.json` is the sole owner of every source, commit, subpath, and admission digest, and `./noodles providers check` reads them back from the live remotes. This file copies none of those values: the copy that lived here had drifted to the wrong source repository while still showing a matching commit, which is exactly the failure a second writer produces.
 
-- Cursor pstack: `cursor/plugins@68836ddaf5697224520f1847d90cdb90ca8babaa`, `pstack/skills`;
-- skill-concerns control-noodle: `ed3c/skill-concerns@c91dbd04d1997b2e0f77907c9c2a40f55b787107`, `skills/control-noodle`, admission tree digest `969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581`.
-
-`ed3c/skills-shared` remains unchanged and is a disabled compatibility source, not a Golden Path dependency.
+`ed3c/skills-shared` appears in that lock as a disabled compatibility source, not a Golden Path dependency.
 
 ## Candidate-only retrieval
 
@@ -73,16 +73,9 @@ never as absence.
 
 ## Issue contract
 
-```text
-<!-- noodles-role: repository-mutating-atom -->
-<!-- noodles-target: ed3c/noodles -->
-<!-- noodles-subject: ed3c/noodles#123 -->
-<!-- noodles-state: ready -->
-<!-- noodles-feature: verification-skill-oracle -->
-<!-- noodles-depends-on: none -->
-```
+`AGENTS.md` owns the marker list, `noodles.parse_issue_contract` is the parser of record, and `.github/ISSUE_TEMPLATE/repository-mutating-atom.md` is the authorable starting body. This file carries no marker example: a stale example reads as authoritative and produces a non-schedulable Issue.
 
-`./noodles issue contract ed3c/noodles#123` returns that contract read-only, with the provider body digest and schedulability derived from each declared predecessor's own landed/closed readback.
+`./noodles issue validate ed3c/noodles#123` rejects a drifted body against the parser, and `./noodles issue contract ed3c/noodles#123` returns the parsed contract read-only, with the provider body digest and schedulability derived from each declared predecessor's own landed/closed readback.
 
 The implementation PR contains exactly:
 
