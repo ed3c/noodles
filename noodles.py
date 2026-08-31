@@ -1416,7 +1416,7 @@ def build_parser() -> argparse.ArgumentParser:
     providers = sub.add_parser("providers")
     providers.add_argument("action", choices=["check", "sync"])
     retrieval = sub.add_parser("retrieval")
-    retrieval.add_argument("action", choices=["probe"])
+    retrieval.add_argument("action", choices=["probe", "canary"])
     retrieval.add_argument("--index-root", required=True)
     issue = sub.add_parser("issue")
     issue_sub = issue.add_subparsers(dest="issue_action", required=True)
@@ -1507,8 +1507,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(receipts, indent=2, sort_keys=True))
             return 0
         if args.command == "retrieval":
-            receipt = retrieval_contract.retrieval_probe(root, Path(args.index_root), error_cls=GateError)
-            write_json(root / retrieval_contract.EVIDENCE_PATH, receipt)
+            if args.action == "canary":
+                receipt = retrieval_contract.code_intel_canary(
+                    root, Path(args.index_root), retrieval_contract.CANARY_SUBJECT, error_cls=GateError
+                )
+                write_json(root / retrieval_contract.CANARY_EVIDENCE_PATH, receipt)
+            else:
+                receipt = retrieval_contract.retrieval_probe(root, Path(args.index_root), error_cls=GateError)
+                write_json(root / retrieval_contract.EVIDENCE_PATH, receipt)
             print(json.dumps(receipt, indent=2, sort_keys=True))
             return 0
         if args.command == "issue":
