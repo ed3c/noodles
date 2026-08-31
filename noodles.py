@@ -1059,6 +1059,30 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     return receipt
 
 
+RECEIPT_ANCHOR_PREFIX = "physical-receipt-anchor:"
+
+
+def post_receipt_anchor(repository: str, pr_number: int, merge_sha: str, merged_at: str) -> str:
+    """One idempotent N-class receipt comment carrying the provider's own merge truth.
+
+    Emitted per land, after the merge and Issue closure already succeeded, so it can never gate a
+    landing: no admission path reads it back. One comment per land is naturally paced, which is what
+    the replaced manual bulk backfill was not - that batch tripped GitHub's secondary content-creation
+    limit. The Drive-index URL stays out of scope; host evidence is unreachable from the Action.
+
+    Ceiling: existence is checked over the first 100 issue comments, matching the landing train's own
+    comment scan. A PR carrying more than 100 comments before its land could take a second anchor."""
+    existing = gh_api(f"repos/{repository}/issues/{pr_number}/comments?per_page=100")
+    if any(RECEIPT_ANCHOR_PREFIX in str(comment.get("body") or "") for comment in existing or []):
+        return "existing"
+    gh_api(
+        f"repos/{repository}/issues/{pr_number}/comments",
+        method="POST",
+        payload={"body": f"{RECEIPT_ANCHOR_PREFIX} pr={pr_number} merge-commit={merge_sha} merged-at={merged_at}"},
+    )
+    return "posted"
+
+
 def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[str, Any]:
     event = load_json(event_path)
     workflow = event.get("workflow_run")
@@ -1129,6 +1153,9 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     pr_readback = gh_api(f"repos/{repository}/pulls/{pr_number}")
     if not pr_readback.get("merged") or pr_readback.get("merge_commit_sha") != merge_sha:
         raise GateError("merged PR readback failed")
+    merged_at = str(pr_readback.get("merged_at") or "")
+    if not merged_at:
+        raise GateError("merged PR readback carries no merged_at timestamp")
     merge_commit = gh_api(f"repos/{repository}/git/commits/{merge_sha}")
     parents = {parent["sha"] for parent in merge_commit.get("parents", [])}
     if head_sha not in parents:
@@ -1152,6 +1179,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     closed_contract = parse_issue_contract(closed.get("body") or "", expected_subject=subject_value)
     if closed.get("state") != "closed" or closed_contract["state"] != "landed":
         raise GateError("issue closure readback failed")
+    anchor = post_receipt_anchor(repository, pr_number, merge_sha, merged_at)
     return {
         "repository": repository,
         "pr_number": pr_number,
@@ -1159,6 +1187,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         "head_sha": head_sha,
         "merge_sha": merge_sha,
         "issue_closed": True,
+        "receipt_anchor": anchor,
         "protection_readback": protection_receipt,
         "trusted_workflows": {
             "verify_run": verify_source["run"],

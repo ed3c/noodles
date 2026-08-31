@@ -172,8 +172,8 @@ LANDING_TRAIN_SELECTION_FEATURE = FeatureContract(
     code_surface="noodles.py",
     operation=("./noodles", "verify", "--json"),
     oracle_phrases=(
-        "def train_verify_failed_head(repository: str, head_sha: str) -> bool:",
-        "if train_verify_failed_head(repository, head_sha):",
+        "def train_verify_failed_head(repository: str, head_sha: str, required_check: str) -> bool:",
+        "skip = train_verify_failed_head(repository, head_sha, required_check)",
     ),
     oracle=(
         "code-surface digest and the required routing bytes that bind the completed-verify-failure predicate "
@@ -182,11 +182,28 @@ LANDING_TRAIN_SELECTION_FEATURE = FeatureContract(
     transitions=("landing-train-skips-verify-failed-head",),
     journeys=("landing-train-selection-yields-to-newer-behind-candidate",),
 )
+LAND_RECEIPT_ANCHOR_FEATURE = FeatureContract(
+    feature_id="land-time-receipt-anchor",
+    code_surface="noodles.py",
+    operation=("./noodles", "verify", "--json"),
+    oracle_phrases=(
+        "def post_receipt_anchor(repository: str, pr_number: int, merge_sha: str, merged_at: str) -> str:",
+        "anchor = post_receipt_anchor(repository, pr_number, merge_sha, merged_at)",
+    ),
+    oracle=(
+        "code-surface digest and the required routing bytes that bind the idempotent receipt-anchor emitter "
+        "into the land path after the merge and Issue-closure readback, plus the exit-zero declared operation "
+        "reporting ok with zero errors"
+    ),
+    transitions=("land-emits-one-idempotent-receipt-anchor",),
+    journeys=("land-merge-readback-to-receipt-anchor",),
+)
 ADMITTED_FEATURES = {
     VERIFICATION_SKILL_FEATURE.feature_id: VERIFICATION_SKILL_FEATURE,
     METRICS_CLI_FEATURE.feature_id: METRICS_CLI_FEATURE,
     REPO_INFRA_VERIFY_FEATURE.feature_id: REPO_INFRA_VERIFY_FEATURE,
     LANDING_TRAIN_SELECTION_FEATURE.feature_id: LANDING_TRAIN_SELECTION_FEATURE,
+    LAND_RECEIPT_ANCHOR_FEATURE.feature_id: LAND_RECEIPT_ANCHOR_FEATURE,
 }
 
 
