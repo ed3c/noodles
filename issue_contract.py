@@ -19,6 +19,110 @@ NO_DEPENDENCIES = "none"
 REQUIRED_SECTIONS = ("goal", "physical_acceptance", "non_claims")
 NO_WRITE_BOUNDARY = "none"
 WRITE_BOUNDARY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+LOCAL_LANE = "local-noodle"
+HOSTED_LANES = ("gha-agentic", "gha-runtime")
+EXECUTOR_LANES = ("gha-agentic", "gha-runtime", LOCAL_LANE)
+EPHEMERAL_CHECKOUT = "ephemeral-branch"
+MANAGED_WORKTREE = "managed-worktree"
+# constraint: ed3c/noodles#187 - one bounded capability table, data and not a policy
+# constraint: DSL: each declared token names the exact lanes that can physically
+# constraint: supply it, and admission is the intersection over the declared tokens.
+# constraint: GitHub-hosted lanes supply only portable, non-interactive, bounded
+# constraint: jobs with no private device or network dependency; hardware/USB,
+# constraint: GUI or simulator interaction, private LAN/VPN, host-only credentials,
+# constraint: persistent cross-run state, an unsupported host toolchain, and work
+# constraint: outside the hosted time/resource envelope are local-only. `none` is
+# constraint: contradictory on gha-runtime because that lane exists to execute one.
+CAPABILITY_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
+    "runtime": {
+        "bun-ts": EXECUTOR_LANES,
+        "python": EXECUTOR_LANES,
+        "shell": EXECUTOR_LANES,
+        "none": ("gha-agentic", LOCAL_LANE),
+        "usb-device": (LOCAL_LANE,),
+        "gui-simulator": (LOCAL_LANE,),
+        "private-network": (LOCAL_LANE,),
+        "persistent-daemon": (LOCAL_LANE,),
+        "host-toolchain": (LOCAL_LANE,),
+        "unbounded-duration": (LOCAL_LANE,),
+    },
+    "evidence": {
+        "github-only-v1": EXECUTOR_LANES,
+        "drive-full-v1": (LOCAL_LANE,),
+    },
+}
+CAPABILITY_MARKERS = ("executor", *sorted(CAPABILITY_TABLE))
+
+
+def _one_token(marker: str, raw: str, admitted: tuple[str, ...], *, error_cls: type[Exception]) -> str:
+    # constraint: ed3c/noodles#187 - malformed (not one bare token) and unknown (a
+    # constraint: bare token outside the table) are separate deterministic
+    # constraint: diagnostics, so a typo never reads as an unsupported capability.
+    value = raw.strip()
+    admitted_text = ", ".join(admitted)
+    if not value or "," in value or any(character.isspace() for character in value):
+        raise error_cls(
+            f"malformed noodles-{marker} {raw!r}: expected exactly one token from {admitted_text}"
+        )
+    if value not in admitted:
+        raise error_cls(f"unknown noodles-{marker} {value!r}; admitted tokens: {admitted_text}")
+    return value
+
+
+def parse_executor(raw: str | None, *, error_cls: type[Exception]) -> str | None:
+    return None if raw is None else _one_token("executor", raw, EXECUTOR_LANES, error_cls=error_cls)
+
+
+def parse_capability(marker: str, raw: str | None, *, error_cls: type[Exception]) -> str | None:
+    admitted = tuple(sorted(CAPABILITY_TABLE[marker]))
+    return None if raw is None else _one_token(marker, raw, admitted, error_cls=error_cls)
+
+
+def executor_admission(executor: str | None, runtime: str | None, evidence: str | None) -> dict[str, Any]:
+    """Classify one exact Issue's execution lane from its declared tokens alone.
+
+    Decided before any claim, branch, checkout, or worktree exists. A missing marker is undeclared,
+    never a default lane, so an Issue authored before this contract fails closed with its own status
+    instead of silently landing on the hosted lane."""
+    declared = {"executor": executor, "runtime": runtime, "evidence": evidence}
+    undeclared = [marker for marker in CAPABILITY_MARKERS if declared[marker] is None]
+    if undeclared:
+        return {
+            "admitted": False,
+            "status": "executor_undeclared",
+            "lane": None,
+            "checkout": None,
+            "admitted_lanes": (),
+            "reasons": tuple(f"issue declares no noodles-{marker} marker" for marker in undeclared),
+        }
+    admitted_lanes = tuple(
+        lane
+        for lane in EXECUTOR_LANES
+        if lane in CAPABILITY_TABLE["runtime"][str(runtime)] and lane in CAPABILITY_TABLE["evidence"][str(evidence)]
+    )
+    if executor in admitted_lanes:
+        return {
+            "admitted": True,
+            "status": "admitted",
+            "lane": executor,
+            "checkout": EPHEMERAL_CHECKOUT if executor in HOSTED_LANES else MANAGED_WORKTREE,
+            "admitted_lanes": admitted_lanes,
+            "reasons": (),
+        }
+    reasons = tuple(
+        f"noodles-{marker} {declared[marker]!r} is supplied only by "
+        f"{', '.join(CAPABILITY_TABLE[marker][str(declared[marker])])}"
+        for marker in sorted(CAPABILITY_TABLE)
+        if executor not in CAPABILITY_TABLE[marker][str(declared[marker])]
+    )
+    return {
+        "admitted": False,
+        "status": "executor_refused",
+        "lane": None,
+        "checkout": None,
+        "admitted_lanes": admitted_lanes,
+        "reasons": reasons + (f"admitted route: {', '.join(admitted_lanes)}",),
+    }
 
 
 def _boundary_segments(prefix: str) -> tuple[str, ...] | None:
