@@ -84,6 +84,7 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ```bash
 ./noodles verify                    # deterministic repository gate
 ./noodles metrics --json            # entropy and quality disclosure
+./noodles structural verify         # pinned tree-sitter ranges read back from the real source bytes
 ./noodles runtime check             # exact release/commit/asset/binary readback
 ./noodles runtime discover          # prove Noodle sees every configured skill path
 ./noodles providers sync            # exact detached provider checkouts
