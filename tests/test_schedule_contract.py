@@ -14,7 +14,9 @@ import skill_contract
 import noodles
 from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, cmd, copy_tracked
 
-TASK_PROFILES = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())["required_codex_task_profiles"]
+TASK_PROFILES = skill_contract.task_profiles(ENGINE_ROOT)
+SCHEDULE_MODEL = TASK_PROFILES["schedule"]["model"]
+EXECUTE_MODEL = TASK_PROFILES["execute"]["model"]
 
 
 class ScheduleContractTests(unittest.TestCase):
@@ -24,7 +26,7 @@ class ScheduleContractTests(unittest.TestCase):
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
 
-    def run_carrier(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    def run_carrier(self, argv: list[str], root: Path = CANDIDATE_ROOT) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory(prefix="noodles-codex-carrier-") as temp_name:
             fake_codex = Path(temp_name) / "codex"
             fake_codex.write_text(
@@ -38,8 +40,8 @@ class ScheduleContractTests(unittest.TestCase):
             env = dict(os.environ)
             env["PATH"] = temp_name + os.pathsep + env.get("PATH", "")
             return subprocess.run(
-                [str(CANDIDATE_ROOT / ".agents/bin/codex"), *argv],
-                cwd=CANDIDATE_ROOT,
+                [str(root / ".agents/bin/codex"), *argv],
+                cwd=root,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
@@ -117,63 +119,75 @@ class ScheduleContractTests(unittest.TestCase):
         proposed = {"orders": [], "action_needed": ["needs-human", ""]}
         self.assertEqual(skill_contract.validate_schedule_output({"orders": []}, proposed, TASK_PROFILES), [])
 
-    def test_codex_task_model_map_is_exact_and_drift_is_rejected(self) -> None:
-        self.assertEqual(
-            TASK_PROFILES,
-            {
-                "schedule": {"model": "gpt-5.6-luna", "reasoning_effort": "high"},
-                "execute": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
-            },
-        )
+    def drifted_copy(self, mutate) -> Path:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
         path = root / "policy/fitness.json"
         policy = json.loads(path.read_text())
-        policy["required_codex_task_profiles"]["execute"]["model"] = "gpt-5.6-pro"
+        mutate(policy)
         path.write_text(json.dumps(policy))
         cmd(["git", "add", "policy/fitness.json"], root)
-        cmd(["git", "commit", "-q", "-m", "model drift"], root)
+        cmd(["git", "commit", "-q", "-m", "planted task profile drift"], root)
+        return root
+
+    def test_codex_task_model_map_is_exact_and_drift_is_rejected(self) -> None:
+        def plant(policy: dict) -> None:
+            policy["required_codex_task_profiles"]["execute"]["model"] = "gpt-5.6-pro"
+
+        root = self.drifted_copy(plant)
         result = noodles.verify_repository(root, root)
         self.assertFalse(result["ok"])
         self.assertTrue(any("required_codex_task_profiles must be exactly" in item for item in result["errors"]))
+        carrier = self.run_carrier(["exec", "--model", EXECUTE_MODEL], root=root)
+        self.assertEqual(carrier.returncode, 2, carrier.stdout)
+        self.assertIn("is not an exact admitted task model", carrier.stderr)
+
+    def test_carrier_fails_closed_when_the_single_task_profile_source_is_unusable(self) -> None:
+        for label, plant in (
+            ("missing", lambda policy: policy.pop("required_codex_task_profiles")),
+            ("wrong shape", lambda policy: policy.__setitem__("required_codex_task_profiles", {"execute": {"model": ""}})),
+        ):
+            with self.subTest(case=label):
+                root = self.drifted_copy(plant)
+                carrier = self.run_carrier(["exec", "--model", EXECUTE_MODEL], root=root)
+                self.assertEqual(carrier.returncode, 2, carrier.stdout)
+                self.assertIn("exact non-empty schedule/execute task profiles", carrier.stderr)
+                self.assertEqual(carrier.stdout, "")
 
     def test_codex_carrier_injects_exact_effort_for_each_task_model(self) -> None:
-        cases = (
-            ("gpt-5.6-luna", ("high",)),
-            ("gpt-5.6-sol", ("high",)),
-        )
-        for model, admitted_efforts in cases:
-            with self.subTest(model=model):
+        for task, profile in TASK_PROFILES.items():
+            with self.subTest(task=task):
                 result = self.run_carrier([
                     "exec",
                     "--model",
-                    model,
+                    profile["model"],
                     "-c",
                     'approval_policy="never"',
                 ])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 argv = json.loads(result.stdout)
-                self.assertIn(
+                self.assertEqual(
                     argv[:3],
-                    [["exec", "-c", f'model_reasoning_effort="{effort}"'] for effort in admitted_efforts],
+                    ["exec", "-c", f'model_reasoning_effort="{profile["reasoning_effort"]}"'],
                 )
                 self.assertEqual(
                     argv[3:],
-                    ["--model", model, "-c", 'approval_policy="never"'],
+                    ["--model", profile["model"], "-c", 'approval_policy="never"'],
                 )
 
     def test_codex_carrier_stops_option_parsing_at_delimiter(self) -> None:
-        argv = ["exec", "--model", "gpt-5.6-sol", "--", "-mgpt-5.6-pro", '-cmodel_reasoning_effort="max"']
+        argv = ["exec", "--model", EXECUTE_MODEL, "--", "-mgpt-5.6-pro", '-cmodel_reasoning_effort="max"']
         result = self.run_carrier(argv)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), ["exec", "-c", 'model_reasoning_effort="high"', *argv[1:]])
+        effort = TASK_PROFILES["execute"]["reasoning_effort"]
+        self.assertEqual(json.loads(result.stdout), ["exec", "-c", f'model_reasoning_effort="{effort}"', *argv[1:]])
 
     def test_codex_carrier_rejects_unadmitted_or_ambiguous_model_before_spawn(self) -> None:
         cases = (
             ("missing", ["exec"]),
             ("empty", ["exec", "--model="]),
-            ("duplicate", ["exec", "--model", "gpt-5.6-sol", "--model=gpt-5.6-luna"]),
-            ("mixed duplicate", ["exec", "--model", "gpt-5.6-sol", "-m", "gpt-5.6-pro"]),
+            ("duplicate", ["exec", "--model", EXECUTE_MODEL, f"--model={SCHEDULE_MODEL}"]),
+            ("mixed duplicate", ["exec", "--model", EXECUTE_MODEL, "-m", "gpt-5.6-pro"]),
             ("compact placeholder", ["exec", "-mgpt-5.6-pro"]),
             ("moving alias", ["exec", "--model", "gpt-5.6"]),
             ("placeholder", ["exec", "--model", "gpt-5.6-pro"]),
@@ -195,7 +209,7 @@ class ScheduleContractTests(unittest.TestCase):
             ['--config=model_reasoning_effort="max"'],
         ):
             with self.subTest(override=override):
-                result = self.run_carrier(["exec", "--model", "gpt-5.6-sol", *override])
+                result = self.run_carrier(["exec", "--model", EXECUTE_MODEL, *override])
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("must come only from the task profile", result.stderr)
                 self.assertEqual(result.stdout, "")
@@ -246,7 +260,7 @@ class ScheduleContractTests(unittest.TestCase):
         proposed = {
             "orders": [{
                 "id": "ed3c/noodles#43",
-                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}],
                 "bogus": 1,
             }]
         }
@@ -259,7 +273,7 @@ class ScheduleContractTests(unittest.TestCase):
         proposed = {
             "orders": [{
                 "id": "ed3c/noodles#43",
-                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next", "bogus": 1}],
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next", "bogus": 1}],
             }]
         }
         self.assertEqual(
@@ -272,11 +286,11 @@ class ScheduleContractTests(unittest.TestCase):
 
     def test_planted_negative_execute_models_fail_before_publish_and_preserve_candidate(self) -> None:
         cases = (
-            ("missing", None, "requires explicit model 'gpt-5.6-sol' for execute"),
+            ("missing", None, f"requires explicit model '{EXECUTE_MODEL}' for execute"),
             ("unsupported alias", "gpt-5.6", "found 'gpt-5.6'"),
             ("rejected placeholder", "gpt-5.6-pro", "found 'gpt-5.6-pro'"),
             ("unrelated model", "claude-opus-4-1", "found 'claude-opus-4-1'"),
-            ("schedule/execute mismatch", "gpt-5.6-luna", "found 'gpt-5.6-luna'"),
+            ("schedule/execute mismatch", SCHEDULE_MODEL, f"found '{SCHEDULE_MODEL}'"),
         )
         for label, model, fragment in cases:
             with self.subTest(case=label):
@@ -299,7 +313,7 @@ class ScheduleContractTests(unittest.TestCase):
         cases = (
             (
                 "positive compact order",
-                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}]}]},
+                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}]}]},
                 True,
                 None,
             ),
@@ -329,13 +343,13 @@ class ScheduleContractTests(unittest.TestCase):
             ),
             (
                 "unknown order field",
-                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}], "bogus": 1}]},
+                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}], "bogus": 1}]},
                 False,
                 "bogus",
             ),
             (
                 "unknown stage field",
-                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next", "bogus": 1}]}]},
+                {"orders": [{"id": "ed3c/noodles#44", "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next", "bogus": 1}]}]},
                 False,
                 "bogus",
             ),

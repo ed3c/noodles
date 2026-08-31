@@ -17,6 +17,7 @@ from tests.support import CANDIDATE_ROOT, copy_tracked
 
 REPOSITORY = "ed3c/noodles"
 HEAD = "a" * 40
+EXECUTE_MODEL = skill_contract.task_profiles(CANDIDATE_ROOT)["execute"]["model"]
 
 
 def issue_body(number: int, *, state: str = "ready", depends_on: str = "none") -> str:
@@ -202,7 +203,7 @@ class SchedulePublishTests(unittest.TestCase):
             "orders": [
                 {
                     "id": subject,
-                    "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
+                    "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}],
                 }
                 for subject in subjects
             ]
@@ -457,7 +458,7 @@ class SchedulePublishTests(unittest.TestCase):
         candidates[1].write_text(json.dumps({
             "orders": [{
                 "id": f"{REPOSITORY}#82",
-                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}],
             }]
         }))
         create_barrier = threading.Barrier(2)

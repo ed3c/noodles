@@ -19,6 +19,7 @@ BRANCH = "ed3c-noodles-33-0-execute"
 FIXED_NOW = datetime(2026, 8, 30, tzinfo=timezone.utc).timestamp()
 LIVE_TIMESTAMP = "2026-08-29T23:30:00Z"
 MAIN_HEAD = "b" * 40
+EXECUTE_MODEL = skill_contract.task_profiles(CANDIDATE_ROOT)["execute"]["model"]
 
 
 def issue_body(state: str) -> str:
@@ -278,7 +279,7 @@ class ClaimLifecycleTests(unittest.TestCase):
         candidate.write_text(json.dumps({
             "orders": [{
                 "id": SUBJECT,
-                "stages": [{"do": "execute", "model": "gpt-5.6-sol", "prompt": "next"}],
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "next"}],
             }]
         }))
         with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
