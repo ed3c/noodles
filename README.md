@@ -33,7 +33,7 @@ Noodle machine reconciliation
 ./noodles supervise              # unattended: heal, restart, rotate, cool down
 ```
 
-This is the only call order in the repository; `AGENTS.md` points here instead of keeping a second copy.
+This is the only bootstrap call order in the repository; `AGENTS.md` points here instead of keeping a second copy. The execute and schedule Skills own their own per-Issue step sequences, a different fact this file does not restate.
 
 After protection is installed, `./noodles start` is the normal unattended entrypoint. It verifies the repository, admits the exact Noodle runtime binary, synchronizes exact external skill commits, proves configured skill-path discovery, audits GitHub protection, starts Noodle, re-enters failed `awaiting_land` lanes through the exact parked worktree to emit deterministic repair receipts, and reconciles completed provider landings without a Human Verifier. It fails closed unless local fitness, pinned providers, and GitHub protection readback all pass. `./noodles supervise` owns unattended operation per `AUTONOMY.SUPERVISED_RUNNER.001`; `./noodles supervise --heal-only` prints the heal receipt without spawning a daemon.
 

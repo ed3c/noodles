@@ -88,12 +88,15 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-target: owner/repo -->
 <!-- noodles-subject: owner/repo#123 -->
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
+<!-- noodles-component: name -->
 <!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
 <!-- noodles-executor: gha-agentic|gha-runtime|local-noodle -->
 <!-- noodles-runtime: bun-ts|gui-simulator|host-toolchain|none|persistent-daemon|private-network|python|shell|unbounded-duration|usb-device -->
 <!-- noodles-write-boundary: path[, path]|none -->
 <!-- noodles-evidence: drive-full-v1|github-only-v1 -->
 ```
+
+`noodles-component` names one lowercase token from `policy/components.json`. `parse_issue_contract` accepts a missing value at scheduling time, but `component_surface_errors` at the land-time `github verify-pr` gate rejects a candidate whose Issue omits it or whose changed files fall outside that component's declared path globs.
 
 Every repository mutation runs `./noodles acceptance verify`, which binds the exact candidate head/tree to `tests/run.sh`, `./noodles verify`, and zero residue. Add one optional `<!-- noodles-feature: feature-id -->` only when the Issue needs a specialized physical oracle; run `./noodles acceptance verify --feature <feature-id>`. The specialized oracle is additive and cannot replace or weaken the baseline. Unknown feature ids fail at completion with a diagnostic instead of making the Issue disappear from scheduling.
 
