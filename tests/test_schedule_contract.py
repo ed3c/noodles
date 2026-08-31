@@ -211,6 +211,23 @@ class ScheduleContractTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("task-model routing" in item for item in result["errors"]))
 
+    def test_schedule_skill_without_receipt_verbatim_contracts_is_rejected(self) -> None:
+        for phrase, label in (
+            (skill_contract.SCHEDULE_RECEIPT_VERBATIM_PHRASE, "receipt-verbatim summary"),
+            (skill_contract.SCHEDULE_SUMMARY_COMMAND, "deterministic summary gate"),
+            (skill_contract.SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE, "starvation diagnostic routing"),
+        ):
+            with self.subTest(contract=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / ".agents/skills/schedule/SKILL.md"
+                content = path.read_text()
+                self.assertIn(phrase, content)
+                path.write_text(content.replace(phrase, "Summarize the cycle however reads best.", 1))
+                result = noodles.verify_repository(root, CANDIDATE_ROOT)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any(label in item for item in result["errors"]), result["errors"])
+
     def test_schedule_output_rejects_unknown_top_level_field(self) -> None:
         proposed = {"orders": [], "rationale": "top-level drift"}
         self.assertEqual(
