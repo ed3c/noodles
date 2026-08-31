@@ -65,6 +65,7 @@ SCHEDULE_CLAIM_STATUS_MEANINGS = {
     "boundary_undeclared": "the subject declares no machine-readable write boundary, so its mutation surface cannot be proven disjoint and it fails closed",
     "executor_undeclared": "the subject declares no complete executor/runtime/evidence triple, so its execution lane cannot be classified and it fails closed before any claim",
     "executor_refused": "the subject's declared executor cannot physically supply its declared runtime or evidence policy, so the capability table refuses that lane and names the admitted route instead",
+    "open_pr_exists": "the subject already has an open pull request, so a fresh attempt would be a duplicate lane the exact-execute-ref claim cannot see; the named PR routes to the repair owner instead",
 }
 COMPACT_ORDER_TOP_LEVEL_FIELDS = frozenset({"orders", "action_needed"})
 COMPACT_ORDER_FIELDS = frozenset({"id", "plan", "rationale", "stages", "title"})
