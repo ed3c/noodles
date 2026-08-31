@@ -168,14 +168,21 @@ class AdmissionControlTests(unittest.TestCase):
 class FakeProvider:
     """Provider double for the claim path, including the local lane's handoff comment surface."""
 
-    def __init__(self, issues: list[dict]) -> None:
+    def __init__(self, issues: list[dict], pulls: list[dict] | None = None) -> None:
         self.issues = issues
+        self.pulls = list(pulls or [])
         self.refs: dict[str, str] = {}
         self.comments: dict[int, list[dict]] = {}
         self.posts = 0
         self.comment_posts = 0
 
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
+        # constraint: ed3c/noodles#99 - admission reads the open pull request list for every candidate;
+        # constraint: an empty list is the no-open-PR world these lane-routing controls are about.
+        pull_prefix = f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page="
+        if endpoint.startswith(pull_prefix):
+            page = int(endpoint.removeprefix(pull_prefix))
+            return self.pulls[(page - 1) * 100:page * 100]
         issue_prefix = f"repos/{REPOSITORY}/issues?state=open&sort=created&direction=asc&per_page=100&page="
         if endpoint.startswith(issue_prefix):
             page = int(endpoint.removeprefix(issue_prefix))

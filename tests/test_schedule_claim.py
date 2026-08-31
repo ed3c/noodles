@@ -57,16 +57,33 @@ def issue(
     }
 
 
+def pull(number: int, *, body: str, head_ref: str) -> dict:
+    return {"number": number, "state": "open", "body": body, "head": {"ref": head_ref}}
+
+
 class FakeProvider:
-    def __init__(self, open_issues: list[dict], read_issues: dict[int, dict] | None = None) -> None:
+    def __init__(
+        self,
+        open_issues: list[dict],
+        read_issues: dict[int, dict] | None = None,
+        pulls: list[dict] | None = None,
+    ) -> None:
         self.open_issues = open_issues
         self.read_issues = read_issues or {int(item["number"]): item for item in open_issues}
+        self.pulls = list(pulls or [])
         self.refs: dict[str, str] = {}
         self.posts = 0
         self.issue_pages: list[int] = []
+        self.pull_pages: list[int] = []
         self.lock = threading.Lock()
 
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
+        pull_prefix = f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page="
+        if endpoint.startswith(pull_prefix):
+            page = int(endpoint.removeprefix(pull_prefix))
+            self.pull_pages.append(page)
+            start = (page - 1) * 100
+            return self.pulls[start:start + 100]
         issue_prefix = f"repos/{REPOSITORY}/issues?state=open&sort=created&direction=asc&per_page=100&page="
         if endpoint.startswith(issue_prefix):
             page = int(endpoint.removeprefix(issue_prefix))
@@ -333,6 +350,70 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(rejected["status"], "boundary_conflict")
         self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#81")
         self.assertEqual(rejected["prefix"], issue_contract.NO_WRITE_BOUNDARY)
+
+    def test_subject_with_an_open_pr_is_refused_and_routed_to_the_repair_owner(self) -> None:
+        # constraint: ed3c/noodles#99 - I4. The open PR sits on its own branch, so the subject's exact
+        # constraint: execute ref is free and #46's duplicate-active-branch control sees nothing; only
+        # constraint: the PR body's exact `Refs` correlation catches this second attempt.
+        provider = FakeProvider(
+            [issue(82)],
+            pulls=[pull(7, body=f"Refs {REPOSITORY}#82", head_ref="fix-82-second-attempt")],
+        )
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(provider.refs, {})
+        self.assertEqual(self.published_orders(), [])
+        rejected = brief["claims"][0]
+        self.assertEqual(rejected["status"], "open_pr_exists")
+        self.assertEqual(rejected["pull_requests"], [f"{REPOSITORY}#7"])
+        self.assertEqual(rejected["repair_owner"], noodles.OPEN_PR_REPAIR_OWNER)
+        self.assertEqual(rejected["meaning"], skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["open_pr_exists"])
+
+    def test_open_pr_on_the_exact_lane_branch_is_refused_even_when_its_body_drifted(self) -> None:
+        # constraint: ed3c/noodles#99 - the body correlation is unavailable when the PR body is not the
+        # constraint: exact one-line `Refs`; the lane branch is the second, independent correlation.
+        provider = FakeProvider(
+            [issue(82)],
+            pulls=[pull(9, body="WIP: no exact reference line", head_ref=noodles.execute_branch(f"{REPOSITORY}#82"))],
+        )
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual(self.published_orders(), [])
+        self.assertEqual(brief["claims"][0]["status"], "open_pr_exists")
+        self.assertEqual(brief["claims"][0]["pull_requests"], [f"{REPOSITORY}#9"])
+
+    def test_open_pr_beyond_the_first_page_of_pull_requests_still_refuses_admission(self) -> None:
+        # constraint: ed3c/noodles#99 - correlation must paginate the provider's open pull request
+        # constraint: list the way open_issues already paginates issues; an unpaginated read would
+        # constraint: silently stop matching past the first 100 open pull requests and admit a
+        # constraint: duplicate lane whose real open PR sits on a later page.
+        filler = [pull(100 + number, body=f"Refs {REPOSITORY}#{900 + number}", head_ref=f"filler-{number}") for number in range(100)]
+        target = pull(9, body=f"Refs {REPOSITORY}#82", head_ref="fix-82-second-attempt")
+        provider = FakeProvider([issue(82)], pulls=filler + [target])
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertIn(2, provider.pull_pages)
+        self.assertEqual(brief["claims"][0]["status"], "open_pr_exists")
+        self.assertEqual(brief["claims"][0]["pull_requests"], [f"{REPOSITORY}#9"])
+
+    def test_planted_negative_subject_with_no_open_pr_of_its_own_is_admitted(self) -> None:
+        # constraint: ed3c/noodles#99 - the refusal must key on the exact subject, not on "any open PR
+        # constraint: exists"; a sibling's in-flight PR must not starve an unrelated subject.
+        provider = FakeProvider(
+            [issue(82)],
+            pulls=[pull(7, body=f"Refs {REPOSITORY}#90", head_ref=noodles.execute_branch(f"{REPOSITORY}#90"))],
+        )
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 1)
+        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#82"])
+        self.assertEqual(brief["claims"][0]["status"], "claimed")
 
     def test_unlanded_dependency_fails_closed_before_provider_ref_creation(self) -> None:
         predecessor = issue(81, state="ready")

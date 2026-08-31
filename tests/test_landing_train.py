@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -231,6 +232,167 @@ class LandingTrainSelectionTests(unittest.TestCase):
         self.assertTrue(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_FAILURE_HEAD, "verify"))
         self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", LIVE_VERIFY_SUCCESS_HEAD, "verify"))
         self.assertFalse(noodles.train_verify_failed_head("ed3c/noodles", "0" * 40, "verify"))
+
+
+class RaceLandApi:
+    """The land-path provider surface with `main` as real mutable state.
+
+    A merge is admitted only when the PR's own base still is the current default-branch tip, which is
+    what GitHub's strict required-status-checks setting enforces on the real provider. The refusal is
+    therefore derived from the observed race, not hardcoded per pull request."""
+
+    def __init__(self, base_sha: str, pulls: dict[int, dict], issues: dict[int, dict]) -> None:
+        self.main = base_sha
+        self.pulls = pulls
+        self.issues = issues
+        self.merges: list[int] = []
+        self.comments: dict[int, list] = {}
+
+    def merge_sha(self, pr_number: int) -> str:
+        return f"{pr_number:040x}"
+
+    def __call__(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
+        repo = "repos/ed3c/noodles"
+        if endpoint.endswith("/merge") and method == "PUT":
+            number = int(endpoint.split("/")[-2])
+            pr = self.pulls[number]
+            if pr["base"]["sha"] != self.main:
+                return {"merged": False, "message": "Required status check is expecting head sha to be reported."}
+            merge_sha = self.merge_sha(number)
+            self.merges.append(number)
+            self.main = merge_sha
+            pr.update({"state": "closed", "merged": True, "merge_commit_sha": merge_sha, "merged_at": "2026-09-01T00:00:00Z"})
+            return {"merged": True, "sha": merge_sha}
+        if endpoint.startswith(f"{repo}/pulls/"):
+            return self.pulls[int(endpoint.rsplit("/", 1)[1])]
+        if endpoint.startswith(f"{repo}/git/commits/"):
+            sha = endpoint.rsplit("/", 1)[1]
+            merged = [number for number in self.merges if self.merge_sha(number) == sha]
+            if merged:
+                return {"parents": [{"sha": self.pulls[merged[0]]["head"]["sha"]}, {"sha": self.pulls[merged[0]]["base"]["sha"]}]}
+            return {"tree": {"sha": f"tree-{sha}"}}
+        if endpoint == f"{repo}/branches/main":
+            return {"commit": {"sha": self.main}}
+        if endpoint.startswith(f"{repo}/issues/") and endpoint.endswith("/comments?per_page=100"):
+            return self.comments.get(int(endpoint.split("/")[4]), [])
+        if method == "POST" and endpoint.endswith("/comments"):
+            self.comments.setdefault(int(endpoint.split("/")[4]), []).append({"body": (payload or {}).get("body", "")})
+            return {"id": 1}
+        if endpoint.startswith(f"{repo}/issues/"):
+            number = int(endpoint.rsplit("/", 1)[1])
+            if method == "PATCH":
+                self.issues[number].update(payload or {})
+            return dict(self.issues[number])
+        raise AssertionError(f"unexpected gh api call: {method} {endpoint}")
+
+
+class LandingRaceTests(unittest.TestCase):
+    """ed3c/noodles#99 regression control for the landing race, invariant I4's other half.
+
+    The invariant the land gate exists to enforce is: a merge lands the exact verified head onto the
+    exact base that head was verified against. Two green lanes cut from one base are both verified, so
+    after the first lands the second's verification no longer describes the current default branch; the
+    second must fail closed and route to the ff-only repair path, never merge its stale base."""
+
+    BASE = "0" * 40
+    HEAD_A = "a" * 40
+    HEAD_B = "b" * 40
+
+    def fixture(self) -> RaceLandApi:
+        pulls = {
+            11: dict(pr_fixture(11, 111, self.HEAD_A, "lane-a", "2026-09-01T00:00:00Z"), merged=False),
+            12: dict(pr_fixture(12, 222, self.HEAD_B, "lane-b", "2026-09-01T00:30:00Z"), merged=False),
+        }
+        for number in pulls:
+            pulls[number]["base"] = {"ref": "main", "sha": self.BASE}
+        issues = {111: {"state": "open", "body": issue_body(111)}, 222: {"state": "open", "body": issue_body(222)}}
+        return RaceLandApi(self.BASE, pulls, issues)
+
+    def land(self, api: RaceLandApi, pr_number: int, issue_number: int, head_sha: str) -> dict:
+        with tempfile.TemporaryDirectory(prefix="noodles-landing-race-") as name:
+            work = Path(name)
+            event_path = work / "event.json"
+            receipt_path = work / "receipt.json"
+            event_path.write_text(json.dumps({
+                "repository": {"full_name": "ed3c/noodles"},
+                "workflow_run": {
+                    "name": "verify",
+                    "conclusion": "success",
+                    "id": 700 + pr_number,
+                    "head_sha": head_sha,
+                    "pull_requests": [{"number": pr_number}],
+                },
+            }), encoding="utf-8")
+            receipt_path.write_text(json.dumps({
+                "repository": "ed3c/noodles",
+                "pr_number": pr_number,
+                "head_sha": head_sha,
+                "tree_sha": f"tree-{head_sha}",
+                "issue_subject": f"ed3c/noodles#{issue_number}",
+            }), encoding="utf-8")
+            trusted = {"run": {"id": 700 + pr_number}, "workflow": {"path": ".github/workflows/verify.yml"}, "provider_default_branch": "main"}
+            with (
+                mock.patch.object(noodles, "gh_api", side_effect=api),
+                mock.patch.object(noodles.github_protection, "trusted_workflow_run_readback", return_value=trusted),
+                mock.patch.object(noodles.github_protection, "protection_audit", return_value={"required_check": "verify"}),
+            ):
+                return noodles.land_pull_request(ENGINE_ROOT, event_path, receipt_path)
+
+    def test_second_green_lane_over_a_landed_base_fails_closed_to_the_ff_only_repair_path(self) -> None:
+        api = self.fixture()
+        first = self.land(api, 11, 111, self.HEAD_A)
+        self.assertEqual(first["merge_sha"], api.merge_sha(11))
+        self.assertEqual(api.main, api.merge_sha(11))
+        self.assertEqual(api.issues[111]["state"], "closed")
+
+        with self.assertRaisesRegex(noodles.GateError, "GitHub merge failed"):
+            self.land(api, 12, 222, self.HEAD_B)
+        self.assertEqual(api.merges, [11])
+        self.assertEqual(api.main, api.merge_sha(11))
+        self.assertEqual(api.issues[222]["state"], "open")
+        self.assertIn("<!-- noodles-state: awaiting_land -->", api.issues[222]["body"])
+
+        pulls = [api.pulls[12]]
+        issues = {222: api.issues[222]}
+        with mock.patch.object(noodles, "gh_api", side_effect=train_api(pulls, issues, {self.HEAD_B: 1}, {}, [])):
+            selected = noodles.train_select("ed3c/noodles", "main", pulls, "verify")
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["number"], 12)
+
+    def test_planted_negative_an_up_to_date_second_lane_still_lands(self) -> None:
+        # constraint: the refusal above must come from the stale base, not from "a second land in this
+        # constraint: process"; rebasing lane B onto the landed tip makes the same call succeed.
+        api = self.fixture()
+        self.land(api, 11, 111, self.HEAD_A)
+        api.pulls[12]["base"] = {"ref": "main", "sha": api.main}
+        second = self.land(api, 12, 222, self.HEAD_B)
+        self.assertEqual(second["merge_sha"], api.merge_sha(12))
+        self.assertEqual(api.merges, [11, 12])
+        self.assertEqual(api.issues[222]["state"], "closed")
+
+    def test_planted_negative_non_strict_branch_protection_fails_the_land_audit_closed(self) -> None:
+        # constraint: ed3c/noodles#99 - the fake above refuses a stale base because the real provider
+        # constraint: does, and it only does so while branch protection requires strict up-to-date
+        # constraint: checks. land_pull_request re-audits that on every land, so this control pins the
+        # constraint: audit as the carrier instead of leaving the race refusal an assumption.
+        from tests.test_github_protection import protection_fixture
+
+        stale_allowed = protection_fixture()
+        stale_allowed["required_status_checks"]["strict"] = False
+        environment = {
+            "NOODLES_REQUIRE_PROTECTION_READ_TOKEN": "1",
+            "NOODLES_GITHUB_PROTECTION_TOKEN": "app-token",
+            "GH_TOKEN": "default-token",
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            audit = github_protection.protection_audit(
+                lambda endpoint, **kwargs: ({}, protection_fixture()), noodles.GateError, "ed3c/noodles", "main", "verify"
+            )
+            self.assertEqual(audit["branch"], "main")
+            with self.assertRaisesRegex(noodles.GateError, "strict up-to-date status checks"):
+                github_protection.protection_audit(
+                    lambda endpoint, **kwargs: ({}, stale_allowed), noodles.GateError, "ed3c/noodles", "main", "verify"
+                )
 
 
 class LandingTrainRebaseTests(unittest.TestCase):

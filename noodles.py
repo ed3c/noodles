@@ -60,6 +60,9 @@ from skill_contract import (
     validate_noodle_worktree_ignore,
 )
 SCHEMA_VERSION = 1
+# constraint: ed3c/noodles#99 - the exact entrypoint an open-PR refusal routes to; repair owns an
+# constraint: existing PR (repair_contract.find_open_pr_for_subject), scheduling never re-attempts it.
+OPEN_PR_REPAIR_OWNER = "./noodles repair"
 ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
 ALLOWED_ISSUE_STATES = {"ready", "in_progress", "awaiting_land", "landed", "blocked"}
 SUBJECT_RE = issue_contract.SUBJECT_RE
@@ -2817,6 +2820,45 @@ def execute_branch(subject_value: str) -> str:
     return f"{subject.repo.replace('/', '-')}-{subject.number}-0-execute"
 
 
+def matching_open_pull_requests(repository: str, subject_value: str) -> list[dict[str, Any]]:
+    # constraint: ed3c/noodles#99 - I4 open-PR correlation. A subject with an open PR is a
+    # constraint: lane already in flight, but #46's duplicate-active-branch control cannot see
+    # constraint: it: a second attempt carries its own branch, so the exact execute ref is free
+    # constraint: and the subject reads back unclaimed. Correlate on the provider's own PR list
+    # constraint: instead - the exact lane branch, or the exact `Refs owner/repo#N` body every
+    # constraint: PR here must carry. Paginated like open_issues: an unpaginated read silently
+    # constraint: stops matching past the provider's first page of open pull requests.
+    # constraint: repair_contract.find_open_pr_for_subject does not route through this exit yet
+    # constraint: (ed3c/noodles#272): repair_contract.py is not in the "schedule" component and
+    # constraint: that map is read from the trusted default branch, not the candidate, so this
+    # constraint: PR cannot widen its own component boundary to use it.
+    lane = execute_branch(subject_value)
+    matched: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        payload = gh_api(f"repos/{repository}/pulls?state=open&per_page=100&page={page}")
+        if not isinstance(payload, list):
+            raise GateError(f"provider open pull request readback for {repository} was not an array")
+        for item in payload:
+            if not isinstance(item, dict) or not isinstance(item.get("number"), int):
+                raise GateError(f"provider open pull request readback for {repository} was malformed")
+            try:
+                referenced = parse_pr_reference(str(item.get("body") or ""))
+            except GateError:
+                referenced = None
+            if str((item.get("head") or {}).get("ref") or "") == lane or referenced == subject_value:
+                matched.append(item)
+        if len(payload) < 100:
+            break
+        page += 1
+    matched.sort(key=lambda item: item["number"])
+    return matched
+
+
+def subject_open_pull_requests(repository: str, subject_value: str) -> list[str]:
+    return [f"{repository}#{item['number']}" for item in matching_open_pull_requests(repository, subject_value)]
+
+
 def matching_branch_refs(repository: str, prefix: str) -> dict[str, str]:
     payload = gh_api(f"repos/{repository}/git/matching-refs/heads/{prefix}")
     if not isinstance(payload, list):
@@ -3095,6 +3137,22 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if conflict is not None:
             outcomes.append(schedule_claim_outcome(
                 subject_value, "boundary_conflict", conflict_with=conflict[0], prefix=conflict[1]
+            ))
+            continue
+        # constraint: ed3c/noodles#99 - I4: refuse a subject that already has an open PR
+        # constraint: before any provider ref is created, so the rejected candidate leaves no
+        # constraint: residue, and route the named PR to the repair owner rather than opening a
+        # constraint: second attempt against the same subject. This readback is keyed on
+        # constraint: subject_value, not hoisted per-repository the way reserved_boundaries is:
+        # constraint: two surviving candidates in one repository re-fetch the same open-PR list.
+        # constraint: Correctness does not depend on the hoist - each fetch still correlates
+        # constraint: correctly - only the provider call count per cycle does; not hoisted here
+        # constraint: because order batches are small in practice and a per-repo cache would be
+        # constraint: unexercised abstraction until a batch actually makes it matter.
+        open_prs = subject_open_pull_requests(subject.repo, subject_value)
+        if open_prs:
+            outcomes.append(schedule_claim_outcome(
+                subject_value, "open_pr_exists", pull_requests=open_prs, repair_owner=OPEN_PR_REPAIR_OWNER
             ))
             continue
         default_ref = gh_api(f"repos/{subject.repo}/git/ref/heads/{default_branch}")
