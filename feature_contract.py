@@ -167,10 +167,26 @@ REPO_INFRA_VERIFY_FEATURE = FeatureContract(
     journeys=("repository-verify-json-readback",),
     observed_check=_repo_infra_observed_check,
 )
+LANDING_TRAIN_SELECTION_FEATURE = FeatureContract(
+    feature_id="landing-train-verify-aware-selection",
+    code_surface="noodles.py",
+    operation=("./noodles", "verify", "--json"),
+    oracle_phrases=(
+        "def train_verify_failed_head(repository: str, head_sha: str) -> bool:",
+        "if train_verify_failed_head(repository, head_sha):",
+    ),
+    oracle=(
+        "code-surface digest and the required routing bytes that bind the completed-verify-failure predicate "
+        "into train_select's candidate loop, plus the exit-zero declared operation reporting ok with zero errors"
+    ),
+    transitions=("landing-train-skips-verify-failed-head",),
+    journeys=("landing-train-selection-yields-to-newer-behind-candidate",),
+)
 ADMITTED_FEATURES = {
     VERIFICATION_SKILL_FEATURE.feature_id: VERIFICATION_SKILL_FEATURE,
     METRICS_CLI_FEATURE.feature_id: METRICS_CLI_FEATURE,
     REPO_INFRA_VERIFY_FEATURE.feature_id: REPO_INFRA_VERIFY_FEATURE,
+    LANDING_TRAIN_SELECTION_FEATURE.feature_id: LANDING_TRAIN_SELECTION_FEATURE,
 }
 
 
