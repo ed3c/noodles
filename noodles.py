@@ -56,6 +56,7 @@ from runtime_contract import (
 from skill_contract import (
     validate_agent_document_route,
     validate_backlog_scheduler,
+    validate_concurrency_proof,
     validate_execute_task,
     validate_noodle_worktree_ignore,
 )
@@ -512,6 +513,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         for action in ("sync", "add", "edit", "done"):
             if not str(adapter_scripts.get(action, "")).startswith(expected_adapter + " "):
                 errors.append(f"backlog adapter action {action} must route through {expected_adapter}")
+        errors.extend(validate_concurrency_proof(root, noodle_config))
         errors.extend(validate_backlog_scheduler(root, noodle_config))
         errors.extend(validate_execute_task(root, noodle_config))
         errors.extend(runtime_contract.validate_execute_route_bundle_contract(root))

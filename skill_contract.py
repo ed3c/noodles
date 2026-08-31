@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+CONCURRENCY_PROOF_PATH = "policy/concurrency-proof.json"
+CONCURRENCY_PROOF_INVARIANTS = ("I1", "I2", "I3", "I4")
 
 
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
@@ -384,6 +388,85 @@ def validate_schedule_output(
                 f"scheduler output order {order_id!r} stage[0] model must be {required_model!r} "
                 f"for execute; found {raw_model!r}"
             )
+    return errors
+
+
+def tracked_test_exists(root: Path, identifier: str) -> bool:
+    # constraint: ed3c/noodles#100 - resolve `tests.module.Class.test_name` against the tracked
+    # constraint: source with ast, not by importing it: verify must stay side-effect free, and the
+    # constraint: question is only whether the named control exists in the suite.
+    parts = identifier.split(".")
+    if len(parts) != 4 or parts[0] != "tests" or not parts[3].startswith("test_"):
+        return False
+    path = root / "tests" / f"{parts[1]}.py"
+    if not path.is_file():
+        return False
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+    for node in module.body:
+        if isinstance(node, ast.ClassDef) and node.name == parts[2]:
+            return any(
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == parts[3]
+                for item in node.body
+            )
+    return False
+
+
+def validate_concurrency_proof(root: Path, config: dict[str, Any]) -> list[str]:
+    """ed3c/noodles#100 - bind declared concurrency capacity to evidence instead of to a number.
+
+    `max_concurrency` is never bounded above here: a declared value greater than one is a claim that
+    the four N-independent invariants hold, so the only thing this gate demands is that the lock
+    recording them exists, parses, and names planted-negative controls that are really in the suite.
+    N-dependent behaviour (per-lane wall time, repair rate, provider throttling) stays report-only in
+    `./noodles metrics`; gating on it would reintroduce the numeric stop-loss this atom refuses."""
+    declared = config.get("concurrency", {}).get("max_concurrency")
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared <= 1:
+        return []
+    path = root / CONCURRENCY_PROOF_PATH
+    if not path.is_file():
+        return [
+            f".noodle.toml declares max_concurrency={declared} but {CONCURRENCY_PROOF_PATH} is absent; "
+            "concurrency above one is admitted by the invariant proof lock, never by the number alone"
+        ]
+    try:
+        lock = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"{CONCURRENCY_PROOF_PATH} is unreadable: {exc}"]
+    if not isinstance(lock, dict) or lock.get("schema_version") != 1:
+        return [f"{CONCURRENCY_PROOF_PATH} must be an object with schema_version 1"]
+    residuals = lock.get("known_residuals")
+    if not isinstance(residuals, list) or not all(isinstance(item, str) and item.strip() for item in residuals):
+        return [f"{CONCURRENCY_PROOF_PATH} must carry a known_residuals list of non-empty strings"]
+    invariants = lock.get("invariants")
+    if not isinstance(invariants, list) or {
+        item.get("id") for item in invariants if isinstance(item, dict)
+    } != set(CONCURRENCY_PROOF_INVARIANTS):
+        return [
+            f"{CONCURRENCY_PROOF_PATH} must record exactly the invariants "
+            f"{', '.join(CONCURRENCY_PROOF_INVARIANTS)}"
+        ]
+    errors: list[str] = []
+    for entry in invariants:
+        invariant = entry.get("id")
+        subject = entry.get("subject")
+        receipt = entry.get("receipt")
+        if not isinstance(subject, str) or not subject.strip():
+            errors.append(f"{CONCURRENCY_PROOF_PATH} invariant {invariant} names no landed subject")
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("digest"), str) or len(receipt.get("digest") or "") != 40:
+            errors.append(f"{CONCURRENCY_PROOF_PATH} invariant {invariant} carries no exact receipt digest")
+        named = entry.get("planted_negatives")
+        if not isinstance(named, list) or not named:
+            errors.append(f"{CONCURRENCY_PROOF_PATH} invariant {invariant} names no planted-negative control")
+            continue
+        for identifier in named:
+            if not isinstance(identifier, str) or not tracked_test_exists(root, identifier):
+                errors.append(
+                    f"{CONCURRENCY_PROOF_PATH} invariant {invariant} names planted-negative "
+                    f"{identifier!r}, which is absent from the tracked suite"
+                )
     return errors
 
 

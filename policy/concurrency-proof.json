@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "claim": "Declared concurrency capacity is bound to admitted evidence, not to a number. max_concurrency is uncapped; correctness is owned by the four N-independent invariants recorded here. Chef decision 2026-08-29: no numeric stop-loss, evidence ceiling instead.",
+  "non_claims": [
+    "This records that each invariant was admitted, not that it will stay live, and not that resources suffice at any particular N.",
+    "This does not cap, recommend, or tune any concurrency value.",
+    "receipt.digest is a recorded provider fact, not a value any gate re-reads; the gate proves only that every named planted-negative test exists in the tracked suite."
+  ],
+  "invariants": [
+    {
+      "id": "I1",
+      "name": "truthful runtime lease",
+      "subject": "ed3c/noodles#45",
+      "landed_pr": "ed3c/noodles#122",
+      "receipt": {
+        "kind": "merge",
+        "digest": "b6f33d596e41f16446cf4ed45c5f6c24988b6d40"
+      },
+      "planted_negatives": [
+        "tests.test_noodles.DaemonLeaseTests.test_planted_stale_status_json_without_lease_fails_closed",
+        "tests.test_noodles.DaemonLeaseTests.test_planted_dead_pid_lease_fails_closed",
+        "tests.test_noodles.DaemonLeaseTests.test_planted_wrapper_only_lease_fails_closed"
+      ]
+    },
+    {
+      "id": "I2",
+      "name": "unique worktree provenance",
+      "subject": "ed3c/noodles#46",
+      "landed_pr": "ed3c/noodles#256",
+      "receipt": {
+        "kind": "merge",
+        "digest": "f6f17e4020e430b3877818f9585569c65628b69d"
+      },
+      "planted_negatives": [
+        "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_default_branch_checkout_is_refused",
+        "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_detached_head_is_refused",
+        "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_same_branch_in_a_second_registered_worktree_is_refused",
+        "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_worktree_path_reused_by_a_second_session_is_refused",
+        "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_stale_base_not_contained_by_the_candidate_branch_is_refused"
+      ]
+    },
+    {
+      "id": "I3",
+      "name": "disjoint admitted write boundaries",
+      "subject": "ed3c/noodles#98",
+      "landed_pr": "ed3c/noodles#243",
+      "receipt": {
+        "kind": "merge",
+        "digest": "5716c4bfce7484fdf2189045ff5432c46d2c9094"
+      },
+      "planted_negatives": [
+        "tests.test_schedule_claim.SchedulePublishTests.test_overlapping_write_boundaries_admit_only_the_first",
+        "tests.test_schedule_claim.SchedulePublishTests.test_missing_write_boundary_fails_closed_before_provider_ref",
+        "tests.test_schedule_claim.SchedulePublishTests.test_active_lane_undeclared_boundary_blocks_disjoint_candidate"
+      ]
+    },
+    {
+      "id": "I4",
+      "name": "open pull request correlation",
+      "subject": "ed3c/noodles#99",
+      "landed_pr": null,
+      "receipt": {
+        "kind": "head",
+        "digest": "f00d34e5f9a4ebfc2be76c8e66fcd0197caeab58"
+      },
+      "planted_negatives": [
+        "tests.test_schedule_claim.SchedulePublishTests.test_subject_with_an_open_pr_is_refused_and_routed_to_the_repair_owner",
+        "tests.test_schedule_claim.SchedulePublishTests.test_open_pr_on_the_exact_lane_branch_is_refused_even_when_its_body_drifted",
+        "tests.test_schedule_claim.SchedulePublishTests.test_planted_negative_subject_with_no_open_pr_of_its_own_is_admitted",
+        "tests.test_landing_train.LandingRaceTests.test_second_green_lane_over_a_landed_base_fails_closed_to_the_ff_only_repair_path",
+        "tests.test_landing_train.LandingRaceTests.test_planted_negative_non_strict_branch_protection_fails_the_land_audit_closed"
+      ]
+    }
+  ],
+  "known_residuals": [
+    "The scheduler itself executes in the primary checkout rather than an isolated worktree; that seam is upstream Noodle territory tracked at ed3c/noodles#85 and none of I1-I4 covers it.",
+    "Software outside the admitted entrypoints can still edit the shared checkout; ed3c/noodles#46 declares this a non-claim, so I2 proves provenance only for work that entered through execute admission.",
+    "The I4 receipt is the pre-land candidate head, not a merge commit: ed3c/noodles#100 was authored stacked on ed3c/noodles#99 rather than after its land, so no merge SHA existed at write time. A landing-train rebase of that branch changes the head and no gate re-reads this field; the digest is N-class in both directions.",
+    "Every planted-negative name here is checked for existence, never for what it asserts. A test that was gutted but kept its name still satisfies this lock.",
+    "N-dependent behaviour - per-lane wall time, repair rate, provider throttling - is report-only in ./noodles metrics and is deliberately not a gate here; a lock that gated on it would be the numeric stop-loss this atom exists to refuse."
+  ]
+}
