@@ -429,8 +429,23 @@ class ScheduleContractTests(unittest.TestCase):
                 result = self.runtime_promote(payload, current=current)
                 self.assertTrue(result["accepted"], f"{label}: upstream unexpectedly quarantined a bypass")
                 self.assertFalse(result["bad_exists"])
-                ids = [str(o.get("id")) for o in (result["orders"] or {}).get("orders", [])]
+                orders = (result["orders"] or {}).get("orders", [])
+                ids = [str(o.get("id")) for o in orders]
                 self.assertIn(promoted_id, ids)
+                # constraint: id membership alone does not discriminate a real bypass promotion from
+                # constraint: an id that would show up in orders.json anyway -- #70 already exists in
+                # constraint: the planted current file before promotion runs, and Noodle auto-injects
+                # constraint: its own "schedule" bookkeeping order whenever no order already claims that
+                # constraint: id, so both would satisfy assertIn even if the upstream had refused the
+                # constraint: bypass. Assert the promoted stage actually carries THIS payload's own
+                # constraint: content (execute/EXECUTE_MODEL/"next"), not the pre-existing or
+                # constraint: Noodle-owned stage shape, so a refused bypass turns this control red.
+                match = next((order for order in orders if str(order.get("id")) == promoted_id), None)
+                self.assertIsNotNone(match, f"{label}: promoted order for {promoted_id!r} not found")
+                stage = match["stages"][0]
+                self.assertEqual(stage.get("task_key"), "execute", f"{label}: {stage}")
+                self.assertEqual(stage.get("model"), EXECUTE_MODEL, f"{label}: {stage}")
+                self.assertEqual(stage.get("prompt"), "next", f"{label}: {stage}")
                 if local_rejects:
                     # constraint: the offline candidate gate (publish_schedule_output) refuses the same subject.
                     local = self.local_publish(payload, current=current)

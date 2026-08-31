@@ -383,6 +383,35 @@ class SchedulePublishTests(unittest.TestCase):
         with self.assertRaisesRegex(noodles.GateError, "undefined claim status: 'not_frontier'"):
             noodles.schedule_claim_outcome(f"{REPOSITORY}#82", "not_frontier")
 
+    def test_foreign_repository_order_is_rejected_before_provider_call(self) -> None:
+        # constraint: ed3c/noodles#65 - CONCURRENCY.PROMOTION_SEAM.001 attributes admitted-repository
+        # constraint: (foreign) exclusion to noodles.schedule_publish; local_publish() in
+        # constraint: test_schedule_contract.py only calls skill_contract.publish_schedule_output and
+        # constraint: never reaches this check, so this is the only planted-negative proving the local
+        # constraint: gate actually rejects a foreign-repo subject rather than the claim going unproven.
+        provider = FakeProvider([])
+        candidate = self.write_candidate(["someone-else/other#5"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            with self.assertRaisesRegex(
+                noodles.GateError, r"schedule target repository is not admitted: someone-else/other"
+            ):
+                noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertFalse((self.root / ".noodle/orders-next.json").exists())
+
+    def test_duplicate_subject_order_is_rejected_before_provider_call(self) -> None:
+        # constraint: ed3c/noodles#65 - same admission-boundary gap as above for duplicate-subject
+        # constraint: exclusion, which also lives only in noodles.schedule_publish.
+        provider = FakeProvider([])
+        candidate = self.write_candidate([f"{REPOSITORY}#82", f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            with self.assertRaisesRegex(
+                noodles.GateError, rf"schedule candidate contains duplicate order: {REPOSITORY}#82"
+            ):
+                noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(provider.posts, 0)
+        self.assertFalse((self.root / ".noodle/orders-next.json").exists())
+
     def test_planted_receipt_status_drift_fails_verify_closed(self) -> None:
         receipt_path = self.root / ".noodle/schedule-cycle.json"
         receipt_path.parent.mkdir(exist_ok=True)
