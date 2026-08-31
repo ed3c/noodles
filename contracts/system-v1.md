@@ -167,6 +167,12 @@ Authoritative evidence MUST bind the requirement/Issue subject, target repositor
 
 Every schedulable Issue MUST declare exactly one owned component through a `noodles-component:` marker naming a component in the repo-owned map `policy/components.json` (one file, component → path globs; no per-issue filename lists, no policy DSL). Trusted verification MUST compute the candidate's changed files against the merge base from provider compare readback and fail closed when any changed path escapes the declared component's admitted surface, naming the offending paths and the declared component. The admission boundary is the trusted `noodles.py github verify-pr` gate reading the component map from the trusted default-branch checkout, so candidate-modified map bytes never widen the candidate's own admitted surface. The gate bounds where a mutation lands, not intra-component quality; a legitimately cross-component atom declares a component whose admitted surface spans it (the contracts-owned `contract` component), never skips the marker.
 
+### VERIFICATION.COMPONENT_INTRODUCTION.001
+
+A candidate that introduces a new component - a new pinned entry in a `policy/*.lock.json` dependency lock, or a new top-level runtime module - MUST be driven by an Issue whose body answers both gate questions in a machine-detectable `## Component introduction` section: "which invalid state does this make impossible?" and "why can't strengthening the nearest existing contract close the same failure?". Detection is deterministic and diff-derived: `noodles.introduced_components` compares the candidate tree against the trusted default-branch tree, identifying a pinned unit by its container path rather than its pinned scalar, so a version bump of an existing entry is out of scope by construction and needs no section. The admission boundary is the trusted `noodles.py github verify-pr` gate, which fails closed naming every introduction and every unanswered question; the same detector runs inside `verify_repository`, so `./noodles verify --json` reports the identical classification locally.
+
+The gate demands that the answers exist and bind to the exact introducing diff. It does not score them, and it never substitutes for `COMPLEXITY.SUBTRACT.001`: a scored-good answer is still P-class. Mutation locality of already-admitted components remains owned by `VERIFICATION.COMPONENT_SURFACE.001`.
+
 ## 7. Autonomy architecture
 
 ### AUTONOMY.NO_HUMAN_VERIFIER.001
