@@ -1,0 +1,150 @@
+{
+  "capability_id": "serena-symbol-navigation",
+  "chain": {
+    "find_referencing_symbols": {
+      "query": {
+        "name_path": "validate_admission_policy",
+        "relative_path": "provider_contract.py"
+      },
+      "referencing_files": [
+        "noodles.py",
+        "runtime_contract.py"
+      ]
+    },
+    "find_symbol": {
+      "matches": [
+        {
+          "body_location": {
+            "end_line": 39,
+            "start_line": 16
+          },
+          "kind": "Function",
+          "name_path": "validate_admission_policy",
+          "relative_path": "provider_contract.py"
+        }
+      ],
+      "query": {
+        "name_path_pattern": "validate_admission_policy",
+        "relative_path": "provider_contract.py"
+      }
+    },
+    "source_readback": [
+      {
+        "line": 346,
+        "occurrences": 1,
+        "relative_path": "noodles.py",
+        "text": "errors.extend(runtime_contract.validate_admission_policy(name, admission))",
+        "text_sha256": "048e83b4abe07dbbd43d345a1489e8ef64ad7ee9780918b97f0b4b001e21bf33"
+      },
+      {
+        "line": 24,
+        "occurrences": 1,
+        "relative_path": "runtime_contract.py",
+        "text": "validate_admission_policy,",
+        "text_sha256": "74caaebfa1051a89ec006dfa81eb15bec182db3969d93bd7bfcee5b07fec95dd"
+      }
+    ]
+  },
+  "controls": {
+    "ambiguous_symbol": {
+      "candidates": [
+        {
+          "name_path": "sha256_file",
+          "relative_path": "tests/test_github_protection.py"
+        },
+        {
+          "name_path": "sha256_file",
+          "relative_path": "tests/test_landing_train.py"
+        },
+        {
+          "name_path": "sha256_file",
+          "relative_path": "noodles.py"
+        },
+        {
+          "name_path": "sha256_file",
+          "relative_path": "runtime_contract.py"
+        }
+      ],
+      "matches": 4,
+      "outcome": "reported",
+      "query": "sha256_file"
+    },
+    "stale_index": {
+      "isolated_root_outside_repository": true,
+      "matches_after_mutation": 0,
+      "matches_before_mutation": 1,
+      "mutation": "def validate_admission_policy( -> def validate_admission_policy_renamed_by_control(",
+      "mutation_applied": true,
+      "outcome_after_mutation": "reported",
+      "readback_confirms_definition_after_mutation": false
+    },
+    "unsupported_language": {
+      "error": "ValueError: Explicitly requested symbols in '.github/workflows/verify.yml' while the path is ignored",
+      "matches": 0,
+      "occurrences_in_queried_file": 2,
+      "outcome": "bounded_error",
+      "query": {
+        "name_path_pattern": "candidate-self-tests",
+        "relative_path": ".github/workflows/verify.yml"
+      }
+    },
+    "wrong_symbol": {
+      "definitions_in_tracked_source": 0,
+      "matches": 0,
+      "outcome": "reported",
+      "query": "validate_admission_policy_absent_control"
+    }
+  },
+  "pin": {
+    "commit": "949a27ef1e5fda1a6e7b561e777bcece345c6ffd",
+    "context": "agent",
+    "distribution": {
+      "index": "https://pypi.org/simple",
+      "package": "serena-agent",
+      "sdist_sha256": "1ef15db14ee5426f3e3dc48fdd7bb7e864d1f35359115eaa3bdd7248b1533ce6",
+      "version": "1.7.0",
+      "wheel_sha256": "6dbf1459670d96fb0595f84932adef34260a6fe14ba5135b901fdb3c8c76e891"
+    },
+    "fixed_tools": [
+      "find_symbol",
+      "find_referencing_symbols",
+      "get_symbols_overview",
+      "read_file"
+    ],
+    "language_backend": "LSP",
+    "modes": [],
+    "python": "3.13.1",
+    "source": "https://github.com/oraios/serena.git"
+  },
+  "read_only_enforcement": {
+    "editing_tools_exposed": [],
+    "exposed_tools": [
+      "find_referencing_symbols",
+      "find_symbol",
+      "get_symbols_overview",
+      "read_file"
+    ],
+    "project_serena_folder": "/var/folders/l6/44bf7nvs64j60f1mpyy88hdm0000gn/T/serena-navigation-wve6ocuy/data",
+    "project_serena_folder_inside_repository": false
+  },
+  "residue": {
+    "paths_created_by_invocation": [],
+    "serena_folder_in_repository": false,
+    "tree_unchanged": true,
+    "worktree_unchanged": true
+  },
+  "schema_version": 1,
+  "subject": {
+    "commit": "d62d2a5069ce8049fdcac674767519a19e2822af",
+    "project_root_is_repository_root": true,
+    "repository": "ed3c/noodles",
+    "tree": "bc697ab8f734fb72a3711d8d5f169f3c2eef7e46",
+    "uncommitted_paths_at_probe_time": [
+      "migrations/skills-shared/ledger.json",
+      "migrations/skills-shared/serena-navigation-evidence.json",
+      "migrations/skills-shared/serena_navigation_probe.py",
+      "tests/test_serena_navigation.py"
+    ]
+  },
+  "subject_issue": "ed3c/noodles#8"
+}
