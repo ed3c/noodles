@@ -114,6 +114,68 @@
       "claim": "Individual adapter observations did not prove a causal production pipeline.",
       "physical_evidence": ["skills-shared#368 explicitly denies end-to-end chain proof"],
       "non_claims": ["No GrepAI→SCIP→SQLite→Tree-sitter→Serena chain is migrated as a unit."]
+    },
+    {
+      "id": "code-intelligence-v1",
+      "disposition": "MIGRATE",
+      "claim": "The landed band converges to exactly one chain - intent query -> candidate paths -> pinned-grammar structural range -> exact-subject SQLite row -> refusable consumer admission - re-run over the repository's declared 17-task corpus at ed3c/noodles@d62c2256f191: 17 of 17 tasks crossed every edge, all five planted boundary faults were refused on every task (85 proven refusals), the pinned retrieval binary, the serving embedder digest and the pinned grammar were read back live, and the candidate tree was byte-identical before and after.",
+      "physical_evidence": [
+        "ed3c/noodles#13 corpus re-run at d62c2256f1915009cb38b05bdfbb74e74dcaad03: 17/17 admitted rows, 85 planted refusals, zero tree residue",
+        "migrations/skills-shared/code-intel-v1-evidence.json"
+      ],
+      "non_claims": [
+        "No optional component is admitted. SCIP, Serena navigation, Serena bounded edit and LanceDB each keep their own landed receipt; none of them joins v1, and none was excluded for failing.",
+        "The chain resolved the exact ground-truth symbol on 3 of 17 tasks and the ground-truth file on 14, and it never refused. That is a recorded ceiling of candidate-only authority, not a defect: the chain proves what it serves was read back from current source, never that it answers the intent.",
+        "The largest residual, 12 of 17 definition_selection, is addressed by no landed component. It is a selection step v1 does not have, not a component v1 is missing.",
+        "No universal language coverage: the pinned grammar covers .py, and a candidate it cannot parse is a bounded refusal, never an absence proof.",
+        "No production scale: one repository, one corpus, one embedder, one top-5 candidate budget.",
+        "The numbers here and the LanceDB A/B numbers were measured at different commits against different indexes. The store is excluded by its own same-run verdict, never by comparing across these two runs."
+      ],
+      "validation_receipt": "migrations/skills-shared/code-intel-v1-evidence.json",
+      "not_admitted": [
+        {
+          "capability": "scip-semantic-graph",
+          "evidence_issue": "ed3c/noodles#10",
+          "landed_pr": 210,
+          "receipt": "migrations/skills-shared/scip-validation.json",
+          "addresses": "structural_refusal",
+          "reasons": [
+            "the corpus leaves no structural_refusal residual for it to reduce",
+            "its own capability is 'REVALIDATE', not an admitted MIGRATE"
+          ]
+        },
+        {
+          "capability": "serena-symbol-navigation",
+          "evidence_issue": "ed3c/noodles#8",
+          "landed_pr": 216,
+          "receipt": "migrations/skills-shared/serena-navigation-evidence.json",
+          "addresses": "structural_refusal",
+          "reasons": [
+            "the corpus leaves no structural_refusal residual for it to reduce"
+          ]
+        },
+        {
+          "capability": "serena-bounded-edit",
+          "evidence_issue": "ed3c/noodles#12",
+          "landed_pr": 229,
+          "receipt": "migrations/skills-shared/serena-bounded-edit-evidence.json",
+          "addresses": "edit",
+          "reasons": [
+            "the corpus leaves no edit residual for it to reduce",
+            "its own capability is 'REVALIDATE', not an admitted MIGRATE"
+          ]
+        },
+        {
+          "capability": "lancedb-retrieval-projection",
+          "evidence_issue": "ed3c/noodles#11",
+          "landed_pr": 231,
+          "receipt": "migrations/skills-shared/lancedb-ab-evidence.json",
+          "addresses": "retrieval_rank",
+          "reasons": [
+            "its own capability is 'DROP', not an admitted MIGRATE"
+          ]
+        }
+      ]
     }
   ]
 }
