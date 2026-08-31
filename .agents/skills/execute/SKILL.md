@@ -46,6 +46,17 @@ Immutable route fixtures:
 Unsupported routes fail closed: `control-ui`, Cursor `create-skill`, Cursor `/loop`, Graphite `gt`, cloud-agent infrastructure, standalone `goal`.
 If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed.
 
+Pinned route bundles, assembled at provider sync from the exact pinned bytes in traversal order:
+
+- `investigation` -> `.noodle/bundles/investigation.md`
+- `function-boundary feature work` -> `.noodle/bundles/function-boundary-feature-work.md`
+- `long multi-phase work` -> `.noodle/bundles/long-multi-phase-work.md`
+- `verification skill work` -> `.noodle/bundles/verification-skill-work.md`
+- `CLI control` -> `.noodle/bundles/cli-control.md`
+- `pre-commit cleanup` -> `.noodle/bundles/pre-commit-cleanup.md`
+
+Read the pinned route bundle for the selected route before the live files. A bundle is a byte-preserving cache of the same pinned bytes in the same traversal order, never a substitute for the routing decision and never a summary. If a bundle is absent, stale, or fails its digest chain, load the pinned files live; every other pinned skill stays reachable only that way.
+
 ## Evidence packet
 
 The PR body must contain only:
