@@ -96,6 +96,11 @@ class ExecuteHandoffTests(unittest.TestCase):
         )
         self.issue.start()
         self.addCleanup(self.issue.stop)
+        self.changed_files = mock.patch.object(
+            noodles, "merge_base_changed_files", return_value=[FEATURE.code_surface]
+        )
+        self.changed_files.start()
+        self.addCleanup(self.changed_files.stop)
 
     def pr(self, **overrides: object) -> dict:
         payload = {

@@ -769,6 +769,14 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     resolve_locked_runtime_binary(root, error_cls=GateError)
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
+    base_ref = pr.get("base", {}).get("ref")
+    declared_feature = (contract["feature"] or "").strip()
+    feature_map = None
+    if declared_feature:
+        # constraint: compile the exact base..head changed code nodes into the declared feature's required-journey denominator before awaiting_land; an unmapped journey (feature surface absent from the diff) fails closed here, never after the state flip. A no-feature subject skips this by the mechanically checked non-case: no marker, so admit_acceptance_evidence already rejects any specialized oracle.
+        feature_map = feature_contract.compile_handoff_feature_map(
+            declared_feature, merge_base_changed_files(subject.repo, base_ref, head), error_cls=GateError
+        )
     issue_set_state(subject_value, "awaiting_land")
     receipt = blocking_handoff_readback(root, subject_value, pr_number, head, session_id, error_cls=GateError)
     if receipt is None:
@@ -842,9 +850,13 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
         "pr": pr_number,
         "state": "awaiting_land",
         "acceptance": feature_contract.BASELINE_CONTRACT_ID,
+        "base": base_ref,
         "tree": evidence["tree"],
         "feature": specialized["feature_id"] if specialized else None,
         "feature_code_surface_sha256": specialized["code_surface_sha256"] if specialized else None,
+        "feature_changed_node": feature_map["changed_node"] if feature_map else None,
+        "feature_transitions": feature_map["transitions"] if feature_map else None,
+        "feature_journeys": feature_map["journeys"] if feature_map else None,
         **receipt,
     }
 def protection_policy(root: Path) -> dict[str, Any]:

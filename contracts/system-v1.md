@@ -159,6 +159,10 @@ Every completion claim whose observable behavior extends beyond static repositor
 
 A supported feature SHOULD minimally map feature → code surface → observable transition/journey → physical oracle → evidence. These facts remain target-local; a global registry is not required. Changed supported code must not silently escape verification: it either maps to required journeys/oracles or has an explicit mechanically justified non-case.
 
+### VERIFICATION.FEATURE_MAP.002
+
+When an Issue declares a `noodles-feature:` oracle, `noodles.execute_handoff` MUST compile the exact base..head changed files through that feature's target-local Feature↔Code edge before it flips the Issue to `awaiting_land`. The feature's declared code surface is its one changed code node and its `transitions`/`journeys` are the required-journey denominator; a declared journey whose node never appears in the base..head diff is an unmapped journey and fails closed before the state mutation, because the admitted oracle would otherwise pass vacuously over code the candidate never touched. Changed files are read from the same trusted provider compare readback as `VERIFICATION.COMPONENT_SURFACE.001`, never from a self-report, so a stale or wrong-head receipt cannot launder the mapping. A no-feature-impact subject passes only through the mechanically checked non-case - no feature marker, which forces the acceptance evidence to carry no specialized oracle - and ownership is never inferred from changed path names.
+
 ### VERIFICATION.EVIDENCE_BINDING.001
 
 Authoritative evidence MUST bind the requirement/Issue subject, target repository, candidate head/tree, verification/oracle identity, observation/result, and residue outcome. Stale, wrong-subject, wrong-repository, wrong-head/tree, or self-authorized evidence fails closed.

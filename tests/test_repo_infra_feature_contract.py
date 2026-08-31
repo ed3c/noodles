@@ -185,12 +185,17 @@ class RepoInfraFeatureEvidenceHandoffTests(unittest.TestCase):
             "trusted_workflow_run_readback",
             return_value=failed_run,
         )
+        self.changed_files_patch = mock.patch.object(
+            noodles, "merge_base_changed_files", return_value=[FEATURE.code_surface]
+        )
         self.failed_run_patch.start()
         self.trusted_run_patch.start()
         self.gh_api_patch.start()
+        self.changed_files_patch.start()
         self.addCleanup(self.failed_run_patch.stop)
         self.addCleanup(self.trusted_run_patch.stop)
         self.addCleanup(self.gh_api_patch.stop)
+        self.addCleanup(self.changed_files_patch.stop)
         self.pr = {
             "state": "open",
             "draft": False,

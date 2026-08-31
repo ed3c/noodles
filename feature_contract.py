@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,9 @@ class FeatureContract:
     operation: tuple[str, ...]
     oracle_phrases: tuple[str, ...]
     oracle: str
+    # constraint: transitions/journeys are the feature's target-local Feature<->Code edge - the observable transition IDs the oracle exercises and the required-journey denominator a changed code node must map to. Empty means the feature declares no journey, so it cannot be admitted at handoff.
+    transitions: tuple[str, ...] = ()
+    journeys: tuple[str, ...] = ()
     observed_check: ObservedCheck = _ok_errors_observed_check
 
 
@@ -47,6 +51,8 @@ VERIFICATION_SKILL_FEATURE = FeatureContract(
     operation=("./noodles", "verify", "--json"),
     oracle_phrases=(EXECUTE_PREFLIGHT_PHRASE, EXECUTE_VERIFICATION_ROUTE, EXECUTE_VERIFICATION_P_CLASS_PHRASE),
     oracle="code-surface digest and required routing bytes plus exit-zero declared operation reporting ok with zero errors",
+    transitions=("execute-skill-verification-route",),
+    journeys=("execute-preflight-to-verification-route",),
 )
 
 
@@ -99,6 +105,8 @@ METRICS_CLI_FEATURE = FeatureContract(
         "recomputed tracked_files count (git ls-tree at the exact candidate head) that must equal the "
         "reported metric"
     ),
+    transitions=("metrics-cli-readback",),
+    journeys=("repository-metrics-json-readback",),
     observed_check=_metrics_observed_check,
 )
 def _independent_workflow_count(root: Path, head: str, *, error_cls: type[Exception]) -> int:
@@ -155,6 +163,8 @@ REPO_INFRA_VERIFY_FEATURE = FeatureContract(
         ".github/workflows/ tracked-file count (git ls-tree at the exact candidate head) that must equal "
         "the reported metrics.workflow_count"
     ),
+    transitions=("verify-workflow-boundary-readback",),
+    journeys=("repository-verify-json-readback",),
     observed_check=_repo_infra_observed_check,
 )
 ADMITTED_FEATURES = {
@@ -174,6 +184,36 @@ def resolve_feature(feature_id: str | None, *, error_cls: type[Exception]) -> Fe
     if not contract.code_surface or not contract.operation or not contract.oracle_phrases:
         raise error_cls(f"feature {key!r} declares no code surface, product operation, and oracle")
     return contract
+
+
+def compile_handoff_feature_map(
+    feature_id: str | None, changed_files: Sequence[str], *, error_cls: type[Exception]
+) -> dict[str, Any]:
+    """Compile the exact base..head changed code nodes through the declared feature's explicit
+    Feature<->Code edge into affected transitions and the complete required-journey denominator.
+
+    The declared feature's code surface is its one target-local code node; a required journey whose
+    node never appears in the base..head diff is an unmapped journey, and admitting it would let the
+    oracle pass vacuously over code the candidate never touched. That, and a feature that declares no
+    journey denominator at all, fail closed here - before any Issue state mutation."""
+    contract = resolve_feature(feature_id, error_cls=error_cls)
+    if not contract.journeys or not contract.transitions:
+        raise error_cls(
+            f"feature {contract.feature_id} declares no required-journey denominator to map changed code to"
+        )
+    changed = set(changed_files)
+    if contract.code_surface not in changed:
+        raise error_cls(
+            f"feature {contract.feature_id} handoff has an unmapped journey: required journeys "
+            f"{list(contract.journeys)} map only through changed code node {contract.code_surface!r}, "
+            f"absent from the exact base..head changed set {sorted(changed)}"
+        )
+    return {
+        "feature_id": contract.feature_id,
+        "changed_node": contract.code_surface,
+        "transitions": list(contract.transitions),
+        "journeys": list(contract.journeys),
+    }
 
 
 def _oracle_readback(root: Path, contract: FeatureContract, *, error_cls: type[Exception]) -> str:
