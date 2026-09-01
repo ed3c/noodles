@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import daemon_lease
 import feature_contract
@@ -1147,3 +1149,41 @@ def assert_valid_start_entrypoint_receipt(receipt: dict[str, object]) -> None:
     errors = validate_start_entrypoint_receipt(receipt)
     if errors:
         raise AssertionError("; ".join(errors))
+
+
+def graphql_backlog_payload(issues: list[dict], pulls: list[dict] | tuple = ()) -> dict:
+    """One GraphQL bulk-sync response in the exact shape `noodles.backlog_graphql_snapshot` reads.
+
+    ed3c/noodles#292 - fixtures state the backlog once, in REST-ish shape, and this projects it into
+    the single query that replaced the per-issue REST fan-out.
+    """
+    return {
+        "data": {
+            "repository": {
+                "issues": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "number": issue["number"],
+                            "title": issue.get("title") or "",
+                            "body": issue.get("body") or "",
+                            "url": issue.get("html_url") or "",
+                            "state": str(issue.get("state") or "open").upper(),
+                        }
+                        for issue in issues
+                    ],
+                },
+                "pullRequests": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": list(pulls)},
+            }
+        }
+    }
+
+
+@contextlib.contextmanager
+def backlog_project():
+    """A throwaway Noodle project, so a sync's cycle record never lands in the real checkout."""
+    with tempfile.TemporaryDirectory(prefix="noodles-backlog-project-") as name:
+        project = Path(name)
+        (project / ".noodle").mkdir()
+        with mock.patch.dict(os.environ, {"NOODLE_PROJECT_DIR": str(project)}, clear=False):
+            yield project

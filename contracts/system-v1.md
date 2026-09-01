@@ -358,6 +358,12 @@ A depleted provider quota is a schedulable wait, not a defect, and the only comp
 
 Budget awareness claims only what was observed: a first call into a bucket whose balance this identity has never seen is issued, not guessed, and the recorded balance of one credential never speaks for another.
 
+### CONCURRENCY.PROVIDER_BUDGET.001
+
+Idle cycles MUST NOT pay full price for a backlog that did not change. Four cures live at the shared exit, none of them a second identity and none of them a webhook. First, the carrier caches ETags per (token-identity, URL) and sends `If-None-Match` for read-only `gh api` requests that carry their own headers; a `304` is surfaced to the caller as the cached bytes with a `NOODLES_GH_NOT_MODIFIED` note and costs zero core quota, while a changed upstream still returns fresh bytes. Mutations and shapes the cache cannot reproduce byte-for-byte are never served from it. Second, `noodles.adapter_sync` derives the open backlog through one GraphQL query — open issues with their bodies plus the open pull requests a later cycle correlates against — on GraphQL's separate point budget; a GraphQL error or a malformed connection fails closed with its own diagnostic and MUST NOT degrade into the per-issue REST fan-out it replaced. Third, a cycle whose frontier produced nothing schedulable holds the next derivation for an exponentially growing interval, and both the consecutive count and the interval are recorded in that repository's cycle record. Fourth, the derivation is front-loaded: the finalists are persisted the moment they exist and before any per-subject spend, so a bucket death in the finishing stage resumes from that derivation instead of paying for it again. Admission boundary: `tests/test_gh_pacing.py` (conditional-request 304 replay and changed-upstream control, plus planted mutation/header-free shapes that must never be cached) and `tests/test_issue_contract.py::BacklogConsumptionTests` (one-query positive control, planted GraphQL error, exponential no-order backoff, planted mid-cycle bucket death resumed from the persisted derivation, and a counted ten-cycle idle core-quota receipt).
+
+The measured drop is claimed for an unchanged backlog and for nothing else: on a backlog whose issues change every cycle, conditional requests correctly return fresh bytes at full price, and the hold never engages while the frontier is schedulable.
+
 ## 14. Non-claims and placement rules
 
 - Passing baseline tests does not prove undeclared product/runtime behavior.

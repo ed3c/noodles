@@ -21,11 +21,13 @@ from tests.support import (
     ADMISSION_RECEIPT_GRACE_SECONDS,
     CANDIDATE_ROOT,
     ENGINE_ROOT,
+    backlog_project,
     cmd,
     codex_real_bin_export,
     codex_real_bin_resolution,
     copy_tracked,
     cursor_pstack_fixture,
+    graphql_backlog_payload,
     handoff_fixture,
     provider_fixture,
     runtime_release_reader,
@@ -708,14 +710,15 @@ class RepositoryGateTests(unittest.TestCase):
         ]
 
         def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
-            if method == "GET":
-                return issues
+            if endpoint == "graphql":
+                return graphql_backlog_payload(issues)
             if method == "PATCH":
                 return {"number": 122, "state": "open", "body": payload["body"]}
             return {"id": 1}
 
         stdout = io.StringIO()
-        with mock.patch.dict(os.environ, {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
+        with backlog_project(), \
+             mock.patch.dict(os.environ, {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
              mock.patch.object(noodles, "gh_api", side_effect=fake), \
              mock.patch("sys.stdout", stdout):
             self.assertEqual(noodles.adapter_sync(), 0)

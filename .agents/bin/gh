@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import json
@@ -17,6 +18,7 @@ from pathlib import Path
 
 PACE_STATE = ".noodle/gh-pace.state"
 BUDGET_STATE = ".noodle/gh-budget.json"
+ETAG_CACHE = ".noodle/gh-etag"
 DEFAULT_MIN_INTERVAL = 1.0
 MAX_RETRY_AFTER_SECONDS = 120.0
 DEFAULT_QUOTA_FLOOR = 25
@@ -35,6 +37,11 @@ RETRY_AFTER = re.compile(r"retry-after\s*[:=]?\s*(\d+)", re.IGNORECASE)
 # constraint: response that merely mentions the budget can never be read as the budget itself.
 RATE_REMAINING = re.compile(r"(?im)^[ \t]*x-ratelimit-remaining[ \t]*:[ \t]*(\d+)[ \t]*\r?$")
 RATE_RESET = re.compile(r"(?im)^[ \t]*x-ratelimit-reset[ \t]*:[ \t]*(\d+)[ \t]*\r?$")
+# constraint: ed3c/noodles#292 - an If-None-Match hit returns 304 and costs zero core quota, so the
+# constraint: cache only ever needs the ETag the response stated and the exact bytes it came with.
+ETAG_HEADER = re.compile(r"(?im)^[ \t]*etag[ \t]*:[ \t]*(\S+)[ \t]*\r?$")
+STATUS_LINE = re.compile(r"(?im)^HTTP/[0-9.]+[ \t]+(\d{3})\b")
+INCLUDE_FLAGS = frozenset({"--include", "-i"})
 
 
 def fail(message: str) -> None:
@@ -183,6 +190,57 @@ def quota_diagnostic(argv: list[str], remaining: int, reset: float, wait: float,
     )
 
 
+def conditional_key(argv: list[str]) -> str | None:
+    """The (token-identity, URL) this invocation may be cached under, or nothing.
+
+    ed3c/noodles#292 - only a read-only `gh api` that already asked for its own headers qualifies:
+    the ETag lives in those headers, and replaying a 304 has to reproduce the exact byte shape the
+    caller asked for. Every mutation and every shape this cannot reproduce is refused here."""
+    if not argv or argv[0] != "api" or not is_read_only(argv):
+        return None
+    if not INCLUDE_FLAGS & set(argv[1:]):
+        return None
+    payload = "\n".join([token_identity(), *argv])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def etag_cache_path(root: Path, key: str) -> Path:
+    base = Path(os.environ.get("NOODLES_GH_ETAG_CACHE") or (root / ETAG_CACHE))
+    return base / f"{key}.json"
+
+
+def read_cached(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) and payload.get("etag") and payload.get("stdout") else {}
+
+
+def write_cached(path: Path, etag: str, stdout: bytes) -> None:
+    # ponytail: one entry per (identity, URL) with no eviction - the URL set a cycle reads is small
+    # ponytail: and bounded; add an age sweep only if .noodle/gh-etag measurably grows.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"etag": etag, "stdout": base64.b64encode(stdout).decode("ascii")}
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def spends_core_budget(argv: list[str]) -> bool:
+    """Whether this invocation's rate-limit headers describe the core bucket at all.
+
+    ed3c/noodles#292 - a GraphQL response states the GraphQL point budget in the same header names.
+    Recording it as core would let a full point budget mask an empty core bucket, which is exactly
+    the blindness ed3c/noodles#291 exists to remove."""
+    return not (argv and argv[0] == "api" and API_WRITE_TARGET in argv[1:])
+
+
+def response_status(text: str) -> int | None:
+    match = STATUS_LINE.search(text)
+    return int(match.group(1)) if match else None
+
+
 def pace(root: Path) -> None:
     try:
         interval = float(os.environ.get("NOODLES_GH_MIN_INTERVAL") or DEFAULT_MIN_INTERVAL)
@@ -225,17 +283,34 @@ def main() -> int:
         print(quota_diagnostic(argv, remaining, reset, wait, deferred=True), file=sys.stderr)
         return QUOTA_WAIT_EXIT
     binary = real_gh(Path(__file__).resolve())
+    key = conditional_key(argv)
+    cached = read_cached(etag_cache_path(root, key)) if key else {}
+    # constraint: ed3c/noodles#292 - the conditional header is additive; the caller's own argv is
+    # constraint: never rewritten, so a cache miss is byte-identical to the unconditional call.
+    attempt = [*argv, "-H", f"If-None-Match: {cached['etag']}"] if cached else list(argv)
     retried = False
     while True:
         pace(root)
         # ponytail: output is buffered so a retried attempt cannot emit twice; interactive gh loses its TTY output shape - call the real binary for that.
-        result = subprocess.run([binary, *argv], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        observed = observed_budget((result.stdout + result.stderr).decode("utf-8", "replace"))
+        result = subprocess.run([binary, *attempt], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        combined = (result.stdout + result.stderr).decode("utf-8", "replace")
+        observed = observed_budget(combined) if spends_core_budget(argv) else None
         if observed is not None:
             write_budget(state, *observed)
+        if key and cached and response_status(combined) == 304:
+            # constraint: the upstream said "unchanged" and charged nothing for saying it; the caller
+            # constraint: gets the bytes it would have been charged for, and knows they are cached.
+            sys.stdout.buffer.write(base64.b64decode(str(cached["stdout"])))
+            sys.stdout.buffer.flush()
+            print(f"NOODLES_GH_NOT_MODIFIED: {cached['etag']}", file=sys.stderr)
+            return 0
+        if key and result.returncode == 0:
+            etag = ETAG_HEADER.search(result.stdout.decode("utf-8", "replace"))
+            if etag is not None:
+                write_cached(etag_cache_path(root, key), etag.group(1), result.stdout)
         if retried:
             break
-        if result.returncode != 0 and observed is not None and HTTP_403.search((result.stdout + result.stderr).decode("utf-8", "replace")):
+        if result.returncode != 0 and observed is not None and HTTP_403.search(combined):
             quota_wait = quota_wait_seconds(observed[0], float(observed[1]), time.time())
             if quota_wait > 0:
                 # constraint: a quota 403 is a wait, not a defect: it is never retried here and never
