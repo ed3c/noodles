@@ -97,13 +97,15 @@ The Agent never uses an auto-close keyword and never merges or closes the Issue.
 ./noodles providers check           # HEAD/tree/license/blob/admission/SKILL/detached/clean readback
 ./noodles retrieval probe --index-root DIR  # pinned grepai candidate paths + direct source readback
 ./noodles issue validate REPO#N     # exact Issue contract
-./noodles issue handoff REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff
+./noodles issue handoff REPO#N --pr N  # Noodle-cook route ceremony: exact head/body + I2 worktree provenance + awaiting_land + blocking current-session handoff
 ./noodles github protect audit
 ./noodles github protect apply
 ./noodles repair                    # read failed awaiting_land PR lanes and emit exact repair receipts
 ./noodles reconcile                 # one machine reconciliation pass
 ./noodles start                     # unattended Noodle + reconciliation
 ```
+
+`./noodles issue handoff` is the Noodle-cook route's ceremony and nothing wider. It is one of several writers that can reach `awaiting_land` — a lane running from an ordinary clone reaches it by writing the marker directly — and reaching that marker is an unauthenticated precondition, never landing authority: `./noodles github verify-pr` is the single confluence every candidate crosses, and it recompiles component surface and declared feature journeys from provider truth regardless of which writer set the marker (`ed3c/noodles#264`). What this verb does own is invariant I2, unique worktree provenance: `noodles.execute_provenance_admission` is reached only from `noodles.execute_handoff`, which this verb is the only entrypoint to, so retiring the verb would delete I2's only production caller. `policy/concurrency-proof.json` records that custody, and `tests/test_feature_journey_route.py` holds it — the route's declaring line, its live caller chain, and I2's planted negatives are checked together, so a route with zero live callers cannot go unnoticed again (`ed3c/noodles#275`).
 
 ## Fitness budget
 

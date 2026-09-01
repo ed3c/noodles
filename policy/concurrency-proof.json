@@ -37,7 +37,18 @@
         "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_same_branch_in_a_second_registered_worktree_is_refused",
         "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_worktree_path_reused_by_a_second_session_is_refused",
         "tests.test_execute_provenance.ExecuteProvenanceAdmissionTests.test_stale_base_not_contained_by_the_candidate_branch_is_refused"
-      ]
+      ],
+      "custody": {
+        "recorded_by": "ed3c/noodles#275",
+        "disposition": "kept-with-live-caller",
+        "route": "./noodles issue handoff",
+        "admission": "execute_provenance_admission",
+        "live_caller": "execute_handoff",
+        "module": "noodles.py",
+        "declared_at": "README.md",
+        "held_by": "tests.test_feature_journey_route.HandoffVerbCustodyTests",
+        "note": "ed3c/noodles#264 moved the journey-compilation gate off this route to noodles.verify_pull_request, which left the verb with no gate the landing route needed and made 'retire it' look free. It is not free: this admission has exactly one production caller and that caller has exactly one entrypoint, so retiring the verb retires I2. The disposition is to keep the verb as the Noodle-cook route's ceremony and record that chain here. Retiring it later is admitted only by an atom that also disposes of I2 - re-homed behind a named live caller, or retired with its own receipt."
+      }
     },
     {
       "id": "I3",
@@ -78,6 +89,7 @@
     "The I4 receipt is the pre-land candidate head, not a merge commit: ed3c/noodles#100 was authored stacked on ed3c/noodles#99 rather than after its land, so no merge SHA existed at write time. A landing-train rebase of that branch changes the head and no gate re-reads this field; the digest is N-class in both directions.",
     "Every planted-negative name here is checked for existence, never for what it asserts. A test that was gutted but kept its name still satisfies this lock.",
     "N-dependent behaviour - per-lane wall time, repair rate, provider throttling - is report-only in ./noodles metrics and is deliberately not a gate here; a lock that gated on it would be the numeric stop-loss this atom exists to refuse.",
-    "max_concurrency itself binds nothing operationally: it is read in exactly one place in the tracked tree (this gate, to decide whether the lock is required at all), and the number actually admitted per schedule cycle is max_useful_workers = len(components) in schedule_domain.schedule_decision, computed independently of .noodle.toml. Raising or lowering max_concurrency changes only whether this gate fires, never how many lanes noodles.py admits."
+    "max_concurrency itself binds nothing operationally: it is read in exactly one place in the tracked tree (this gate, to decide whether the lock is required at all), and the number actually admitted per schedule cycle is max_useful_workers = len(components) in schedule_domain.schedule_decision, computed independently of .noodle.toml. Raising or lowering max_concurrency changes only whether this gate fires, never how many lanes noodles.py admits.",
+    "I2's custody is recorded, not exercised: keeping ./noodles issue handoff keeps the admission's only production caller reachable, and says nothing about how much traffic actually takes that route. Provider readback on 2026-09-01 shows the last merge from a cook execute branch was ed3c/noodles#259 (ed3c-noodles-83-0-execute, merged 2026-08-31T19:27:21Z); every merge after it came from an ordinary clone branch that reached awaiting_land by writing the marker directly, and execute_provenance_admission can admit none of those. So I2 is live by declaration and idle by traffic. That is the standing reason someone will want to retire the verb, and ed3c/noodles#275 declines to read one day of idleness as a dead route; a future retirement atom must dispose of I2 explicitly rather than deleting its caller as a side effect."
   ]
 }
