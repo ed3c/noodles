@@ -17,25 +17,29 @@ GUARANTEE_CLASSES = ("P", "L", "R", "N")
 # constraint: cook runs, matched inside a fenced command block, so a copy parked in prose or a dead
 # constraint: example cannot stand in for the runnable one.
 SCHEDULE_PUBLISH_ENTRYPOINT = ("python3", "skill_contract.py", "publish", ".noodle/orders-next.candidate.json")
+# constraint: ed3c/noodles#277 - the summary gate is argv for the same reason as the publish gate.
+SCHEDULE_SUMMARY_ENTRYPOINT = ("python3", "skill_contract.py", "summary", ".noodle/schedule-summary.md")
+# constraint: ed3c/noodles#277 - the dotted policy pointer the order-construction section must name,
+# constraint: resolved against the candidate's own policy/fitness.json by `task_profiles`.
+SCHEDULE_TASK_MODEL_POINTER = "required_codex_task_profiles.execute.model"
+# constraint: ed3c/noodles#277 - the emitted order field that identifies the order-construction
+# constraint: section, so the task-model rule is anchored to structure rather than to a heading name.
+SCHEDULE_ORDER_ID_FIELD = "`order_id`"
+POLICY_FITNESS_PATH = "policy/fitness.json"
 _FENCE_RE = re.compile(r"(?ms)^```[^\n]*\n(?P<body>.*?)^```[ \t]*$")
 _HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 _SECTION_RE = re.compile(r"(?m)^##[ \t]+\S[^\n]*$")
 _ROUTE_BULLET_RE = re.compile(r"(?m)^- `[^`]+` -> ")
 _GUARANTEE_CELL_RE = re.compile(r"^([PLRN])(?![A-Za-z0-9])")
-
-
-# constraint: ed3c/noodles#84 - retired as a gate, not yet deletable. The invariant it stated is now
-# constraint: decided on the exact proposed bytes by `validate_schedule_output`, which refuses a
-# constraint: `schedule` order by exit code. These bytes survive one landing because the
-# constraint: default-branch copy of tests/test_noodles.py comments out this exact source line as its
-# constraint: untagged-comment probe; a candidate that deletes it reds in trusted verify and no rerun
-# constraint: fixes that. The successor filed on ed3c/noodles#84 deletes it once main's probe is
-# constraint: re-anchored by this atom.
-SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
-SCHEDULE_TASK_MODEL_PHRASE = (
-    "Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model "
-    "on the order's only `execute` stage."
-)
+_DIAGNOSTIC_BULLET_RE = re.compile(r"^- signal: (?P<signal>.+?); action: (?P<action>.+?); why: (?P<why>.+)$")
+# constraint: ed3c/noodles#277 - a receipt shaped only enough for `cycle_summary_lines` to emit one
+# constraint: line per required key, so the documented template is compared against the emitter.
+_SUMMARY_PROBE_RECEIPT = {
+    "frontier": [],
+    "winners": [],
+    "max_useful_workers": 0,
+    "claims": [{"subject": "owner/repo#N", "status": "claimed", "meaning": ""}],
+}
 EXECUTE_PREFLIGHT_PHRASE = "0. Run `./noodles preflight` before any source edit. Stop if it names a missing capability."
 EXECUTE_ENTRYPOINT_PHRASE = "Every execute task enters `poteto-mode` before any matched playbook or leaf skill."
 EXECUTE_BYPASS_PHRASE = "Do not bypass `poteto-mode` by entering a leaf skill directly."
@@ -57,18 +61,6 @@ EXECUTE_VERIFICATION_P_CLASS_PHRASE = (
 # constraint: ed3c/noodles#130 owns these bytes as the stable line-start prefix; ed3c/noodles#84 adds
 # constraint: only ownership structure around them, and everything after the prefix stays free text.
 EXECUTE_UNSUPPORTED_PHRASE = "Unsupported routes fail closed:"
-SCHEDULE_SUMMARY_COMMAND = "python3 skill_contract.py summary .noodle/schedule-summary.md"
-SCHEDULE_RECEIPT_VERBATIM_PHRASE = (
-    "Quote `frontier`, `winners`, `max_useful_workers`, and every per-subject status line verbatim from "
-    "`.noodle/schedule-cycle.json`. Never re-derive, rename, or paraphrase a decision the receipt already states."
-)
-SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE = (
-    "- signal: consecutive empty proposals while `mise.json` still lists schedulable ready issues; "
-    "action: quote the receipt verbatim, then run the starvation diagnostic in order "
-    "(remote claim branches vs their subject issue states -> claimed components vs ready pool -> "
-    "receipt status definitions), and publish the diagnostic as data, never a re-derived causal story; "
-    "why: a re-derived causal story misdiagnosed the 2026-08-31 starvation for hours."
-)
 SCHEDULE_CLAIM_STATUS_MEANINGS = {
     "claimed": "this cycle created the subject's exact execute branch on the provider",
     "claimed_elsewhere": "the subject's exact execute branch already existed, so another executor holds the claim",
@@ -116,10 +108,16 @@ def _has_scheduler_frontmatter(content: str) -> bool:
     return False
 
 
+def _quotable(text: str) -> str:
+    """The document minus what it merely parks in an HTML comment. Fences survive here because a
+    fenced argv is a runnable artifact; the same argv inside a comment runs nothing."""
+    return _HTML_COMMENT_RE.sub("", text)
+
+
 def _document_body(text: str) -> str:
     """What a Markdown document asserts in its own voice: everything outside fenced examples and
     HTML comments. A phrase parked in either is quoted, not owned."""
-    return _HTML_COMMENT_RE.sub("", _FENCE_RE.sub("", text))
+    return _FENCE_RE.sub("", _quotable(text))
 
 
 def _sections(body: str) -> list[str]:
@@ -131,32 +129,192 @@ def _fenced_command_lines(content: str) -> list[str]:
     return [line.strip() for match in _FENCE_RE.finditer(content) for line in match["body"].splitlines() if line.strip()]
 
 
-def schedule_publish_entrypoint_errors(root: Path, skill_name: str, content: str) -> list[str]:
-    """ed3c/noodles#84 - structural plus resolution control for the deterministic publish entrypoint.
+def _fenced_entrypoint_errors(
+    root: Path, skill_name: str, sections: list[str], command: tuple[str, ...], label: str
+) -> tuple[list[str], int | None]:
+    """ed3c/noodles#84 shape, generalized by ed3c/noodles#277 to also return the owning section.
 
-    The invariant this gate exists to enforce: a scheduler proposal reaches `.noodle/orders-next.json`
-    only through the publish gate, never by a direct write. Exact-string membership proved only that
-    the sentence existed somewhere, so a planted control could keep it in a comment, an unrelated
-    section, or a dead example while deleting the block a cook actually runs. This requires exactly
-    one fenced command whose argv is the tracked script, the `publish` subcommand, and the candidate
-    path, and resolves that script on disk. Surrounding prose stays free text.
-
-    Scheduler ownership and active-order preservation are no longer prose here at all: once the
-    proposal goes through this entrypoint, `validate_schedule_output` rejects a `schedule` order and
-    any re-emitted active non-schedule order by exit code, on the exact bytes."""
-    command = list(SCHEDULE_PUBLISH_ENTRYPOINT)
-    matches = [line for line in _fenced_command_lines(content) if line.split() == command]
+    The invariant: the gate a cook runs is argv, not a sentence. Exactly one fenced command in the
+    whole document must be these exact tokens, and the script they name must resolve on disk, so a
+    copy parked in prose or an HTML comment cannot stand in for the runnable one. The returned index
+    is the section that owns the gate, which is what the co-located rules anchor to."""
+    argv = list(command)
+    matches = [
+        index
+        for index, section in enumerate(sections)
+        for line in _fenced_command_lines(section)
+        if line.split() == argv
+    ]
     if len(matches) != 1:
         return [
-            f"backlog adapter skill {skill_name!r} missing deterministic publish gate: exactly one "
-            f"fenced `{' '.join(command)}` command is required, found {len(matches)}"
-        ]
-    if not (root / command[1]).is_file():
+            f"backlog adapter skill {skill_name!r} missing {label}: exactly one "
+            f"fenced `{' '.join(argv)}` command is required, found {len(matches)}"
+        ], None
+    if not (root / argv[1]).is_file():
         return [
-            f"backlog adapter skill {skill_name!r} deterministic publish gate names unresolvable "
-            f"entrypoint {command[1]}"
+            f"backlog adapter skill {skill_name!r} {label} names unresolvable "
+            f"entrypoint {argv[1]}"
+        ], None
+    return [], matches[0]
+
+
+def _sole_owning_section(sections: list[str], marker: str) -> int | None:
+    owners = [index for index, section in enumerate(sections) if marker in _document_body(section)]
+    return owners[0] if len(owners) == 1 else None
+
+
+def schedule_task_model_routing_errors(root: Path, skill_name: str, sections: list[str]) -> list[str]:
+    """ed3c/noodles#277 - structural plus resolution control for task-model routing.
+
+    The invariant this gate exists to enforce: the one `execute` stage the scheduler emits takes its
+    model from the repository's single committed task-profile source, never from an Agent's own
+    choice. Where it holds: the section that constructs the order - identified by the emitted
+    `order_id` field it names, not by its heading text - must carry exactly one document-voice line
+    naming the policy pointer, and that pointer must resolve in the candidate's own
+    `policy/fitness.json` to a complete non-empty profile. Wording is free; the pointer line alone
+    parked in an HTML comment, a fenced example, an unrelated section, or a second copy routes
+    nothing, because the check is mutual co-location with the `order_id` line, not a fixed section
+    identity.
+
+    Non-claim: this cannot detect the pointer line and the `order_id` line relocated together - a
+    coordinated move of both anchors into the same unrelated section still names one owner and
+    passes. Defeating it that way also relocates the order-construction contract itself, which is a
+    materially bigger, more visible edit than rewording one sentence."""
+    pointer = f"`{SCHEDULE_TASK_MODEL_POINTER}`"
+    naming = [index for index, section in enumerate(sections) for line in _document_body(section).splitlines() if pointer in line]
+    if len(naming) != 1:
+        return [
+            f"backlog adapter skill {skill_name!r} missing task-model routing contract: exactly one "
+            f"document line must name {pointer}, found {len(naming)}"
+        ]
+    owner = _sole_owning_section(sections, SCHEDULE_ORDER_ID_FIELD)
+    if owner is None or naming[0] != owner:
+        return [
+            f"backlog adapter skill {skill_name!r} task-model routing contract is not owned by the "
+            f"single section that constructs the order and names {SCHEDULE_ORDER_ID_FIELD}"
+        ]
+    try:
+        task_profiles(root)
+    except ValueError as exc:
+        return [
+            f"backlog adapter skill {skill_name!r} task-model routing contract names "
+            f"{SCHEDULE_TASK_MODEL_POINTER}, which does not resolve: {exc}"
         ]
     return []
+
+
+def schedule_summary_template_errors(skill_name: str, section: str) -> list[str]:
+    """ed3c/noodles#277 - behavioral control for the receipt-verbatim summary.
+
+    The invariant this gate exists to enforce: what the Skill tells the cook to write is exactly what
+    `validate_cycle_summary` demands of it, so a summary built from this template cannot be rejected
+    by the gate that reads it, and a renamed or re-derived field cannot pass as a quote. Where it
+    holds: the section that owns the deterministic summary entrypoint, in exactly one fenced
+    template. The required key labels are computed from `cycle_summary_lines`, never restated here,
+    so relabeling one of the four keys it already reads reds the document. Placeholder wording is
+    free.
+
+    Non-claim: `_SUMMARY_PROBE_RECEIPT` is a fixture, not a spec, so it only tracks keys
+    `cycle_summary_lines` already reads today. If the emitter starts reading a fifth receipt field,
+    the fixture is stale and `cycle_summary_lines` raises `KeyError` on it - caught below and turned
+    into a labeled red naming the missing fixture key, so a stale fixture reds the document instead
+    of crashing `verify`."""
+    try:
+        required = [line.partition(":")[0] for line in cycle_summary_lines(_SUMMARY_PROBE_RECEIPT)]
+    except KeyError as exc:
+        return [
+            f"backlog adapter skill {skill_name!r} summary probe fixture is stale: "
+            f"cycle_summary_lines now reads {exc}, missing from _SUMMARY_PROBE_RECEIPT"
+        ]
+    templates = [
+        lines
+        for match in _FENCE_RE.finditer(section)
+        if (lines := [line.strip() for line in match["body"].splitlines() if line.strip()])
+        and len(lines) == len(required)
+        and [line.partition(":")[0] for line in lines[:-1]] == required[:-1]
+        and lines[-1].partition(":")[0]
+    ]
+    if len(templates) != 1:
+        return [
+            f"backlog adapter skill {skill_name!r} missing receipt-verbatim summary contract: exactly "
+            f"one fenced template must quote the receipt keys {', '.join(required[:-1])} in order, "
+            f"then one per-subject status line, found {len(templates)}"
+        ]
+    if " - " not in templates[0][-1].partition(":")[2]:
+        return [
+            f"backlog adapter skill {skill_name!r} receipt-verbatim summary contract drops the "
+            "per-subject `<status> - <meaning>` shape `cycle_summary_lines` emits"
+        ]
+    return []
+
+
+def schedule_starvation_routing_errors(skill_name: str, section: str) -> list[str]:
+    """ed3c/noodles#277 - parsed-bullet control for starvation diagnostic routing.
+
+    The invariant this gate exists to enforce: when the scheduler keeps proposing nothing, the
+    response is a fixed ordered diagnostic read off the receipt, not a fresh causal story. Where it
+    holds: the section that owns the cycle summary, in exactly one document-voice bullet parsed into
+    non-empty signal, action and why fields whose action chains at least three `->` separated steps.
+    Every field's wording is free; a bullet parked in a comment, a fenced example, or duplicated
+    routes nothing.
+
+    Non-claim: `section` here is whichever section the caller already decided owns the summary
+    entrypoint (see `validate_backlog_scheduler`'s `summary_owner`); this function does not itself
+    re-derive that ownership, so a bullet moved together with the summary entrypoint fence and its
+    template into another section is invisible to this check - it inherits the entrypoint's
+    co-location boundary rather than adding its own."""
+    bullets = [
+        match
+        for line in _document_body(section).splitlines()
+        if (match := _DIAGNOSTIC_BULLET_RE.match(line.strip()))
+    ]
+    if len(bullets) != 1:
+        return [
+            f"backlog adapter skill {skill_name!r} missing starvation diagnostic routing contract: "
+            f"exactly one document bullet must route signal, action and why, found {len(bullets)}"
+        ]
+    if bullets[0]["action"].count("->") < 2:
+        return [
+            f"backlog adapter skill {skill_name!r} starvation diagnostic routing contract names no "
+            "ordered diagnostic: its action must chain at least three `->` separated steps"
+        ]
+    return []
+
+
+def validate_policy_key_consumption(root: Path, tracked_paths: set[str]) -> list[str]:
+    """ed3c/noodles#277 - every key the candidate's own fitness policy declares is named by tracked source.
+
+    The invariant this gate exists to enforce: policy is a contract between a file and its readers,
+    and a key no reader names is not a weakened contract but a fictional one. Six orphan workflow
+    phrase lists sat in `policy/fitness.json` looking like gates until ed3c/noodles#84 read the
+    consumers. This reads the CANDIDATE's own policy, not the trusted one, which is what makes an
+    added orphan red on the candidate that added it.
+
+    Non-claim: this proves the key name appears literally in some tracked `.py` source. It does not
+    claim the consumer reads the value, or reads it correctly - and the match is unscoped, so a
+    retirement comment or docstring that names a key only to say it is unused, or a test asserting
+    the key must NOT appear, both count as "consumed" the same as a real reader. This gate best
+    catches a key nobody has typed anywhere yet; a key already known and described as dead - which
+    this repo's own `# constraint:` retirement-comment convention produces at the moment a key is
+    retired - can outlive its last real reader undetected until the key itself is deleted."""
+    try:
+        policy = json.loads((root / POLICY_FITNESS_PATH).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"{POLICY_FITNESS_PATH} is unreadable: {exc}"]
+    if not isinstance(policy, dict):
+        return [f"{POLICY_FITNESS_PATH} must be a JSON object"]
+    sources: list[str] = []
+    for relative in sorted(path for path in tracked_paths if path.endswith(".py")):
+        try:
+            sources.append((root / relative).read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            continue
+    named = "\n".join(sources)
+    return [
+        f"{POLICY_FITNESS_PATH} key {key!r} is consumed by zero tracked .py sources"
+        for key in sorted(policy)
+        if key not in named
+    ]
 
 
 def execute_route_refusal_errors(skill_name: str, content: str) -> list[str]:
@@ -208,7 +366,7 @@ def _markdown_tables(body: str) -> list[list[list[str]]]:
 
 
 def validate_agent_guarantee_classes(root: Path) -> list[str]:
-    """ed3c/noodles#84 - structural replacement for the removed `required_agent_phrases` grep.
+    """ed3c/noodles#84 - structural replacement for the retired Agent-document phrase grep.
 
     The invariant that gate existed to enforce: the always-loaded Agent document declares the four
     guarantee classes and what each is allowed to prove. Exact-string membership proved only that
@@ -277,16 +435,23 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
             f"backlog adapter skill {skill_name!r} is not scheduler-capable: "
             f"{relative} requires non-empty top-level schedule frontmatter"
         ]
-    required_contracts = (
-        (SCHEDULE_TASK_MODEL_PHRASE, "task-model routing"),
-        (SCHEDULE_RECEIPT_VERBATIM_PHRASE, "receipt-verbatim summary"),
-        (SCHEDULE_SUMMARY_COMMAND, "deterministic summary gate"),
-        (SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE, "starvation diagnostic routing"),
+    # constraint: ed3c/noodles#277 - the last four schedule sentence locks are gone. Each remaining
+    # constraint: contract is decided by structure the document really owns: two fenced argvs, one
+    # constraint: policy pointer resolved against the candidate's own policy, one fenced template
+    # constraint: compared against `cycle_summary_lines`, and one parsed signal/action/why bullet.
+    sections = _sections(_quotable(content))
+    errors, _publish_owner = _fenced_entrypoint_errors(
+        root, skill_name, sections, SCHEDULE_PUBLISH_ENTRYPOINT, "deterministic publish gate"
     )
-    errors = schedule_publish_entrypoint_errors(root, skill_name, content)
-    for phrase, label in required_contracts:
-        if phrase not in content:
-            errors.append(f"backlog adapter skill {skill_name!r} missing {label} contract")
+    summary_errors, summary_owner = _fenced_entrypoint_errors(
+        root, skill_name, sections, SCHEDULE_SUMMARY_ENTRYPOINT, "deterministic summary gate"
+    )
+    errors.extend(summary_errors)
+    errors.extend(schedule_task_model_routing_errors(root, skill_name, sections))
+    if summary_owner is None:
+        return errors
+    errors.extend(schedule_summary_template_errors(skill_name, sections[summary_owner]))
+    errors.extend(schedule_starvation_routing_errors(skill_name, sections[summary_owner]))
     return errors
 
 
