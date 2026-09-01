@@ -72,6 +72,21 @@
       "owner_component": "verify",
       "status": "open",
       "chain": "f22c7dc41c09f4701feef54acfae377b2b72d69b21c3c1e44480401e3a73f15d"
+    },
+    {
+      "id": 6,
+      "date": "2026-09-01",
+      "severity": "S3",
+      "finding": "ed3c/noodles#272 routed `repair_contract.find_open_pr_for_subject` through `noodles.matching_open_pull_requests`, which makes that function's own `constraint:` comment (\"repair_contract.find_open_pr_for_subject does not route through this exit yet\") false; the atom declares component `verify` and `policy/component-owners.json` gives `matching_open_pull_requests` to `schedule`, so `component_owner_errors` refuses the candidate that would correct the comment. Any future `schedule`-declared atom touching that definition should delete those four lines.",
+      "receipts": [
+        "noodles.py:matching_open_pull_requests - the four stale `# constraint:` lines naming ed3c/noodles#272",
+        "policy/component-owners.json - `\"matching_open_pull_requests\": [\"schedule\"]`",
+        "noodles.py:component_owner_errors - refuses a changed definition owned by an undeclared component",
+        "tests/test_repair.py::RepairOpenPrCorrelationTests - the routing the comment now contradicts"
+      ],
+      "owner_component": "schedule",
+      "status": "open",
+      "chain": "fa969216fd0829295448203c39c20ce0c9af7a9a3db4e7e83bb59b409bb1c8bc"
     }
   ]
 }

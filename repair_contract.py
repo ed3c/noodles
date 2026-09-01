@@ -25,11 +25,17 @@ def _engine():
 
 
 def find_open_pr_for_subject(repository: str, subject_value: str) -> dict[str, Any]:
+    # constraint: ed3c/noodles#272 - a refusal and its named remedy must correlate on the same
+    # constraint: keys, or the machine manufactures dead ends: `schedule_publish`'s
+    # constraint: `open_pr_exists` refusal correlates on the exact lane branch OR the exact
+    # constraint: `Refs owner/repo#N` body and routes the caller to `./noodles repair`, while
+    # constraint: this lookup correlated on the body alone - so a branch-matched, body-drifted
+    # constraint: PR was named by the refusal and unreachable by the remedy it named.
+    # constraint: There is deliberately no correlation predicate here: the single exit
+    # constraint: `noodles.matching_open_pull_requests` owns both keys and the pagination, so a
+    # constraint: narrowing or widening at that home is inherited instead of re-implemented.
     engine = _engine()
-    pulls = engine.gh_api(f"repos/{repository}/pulls?state=open&per_page=100")
-    if not isinstance(pulls, list):
-        raise engine.GateError(f"open PR readback failed for {repository}")
-    matches = [item for item in pulls if isinstance(item, dict) and engine.parse_pr_reference(item.get("body") or "") == subject_value]
+    matches = engine.matching_open_pull_requests(repository, subject_value)
     if len(matches) != 1:
         raise engine.GateError(f"expected exactly one open PR referencing {subject_value}, got {len(matches)}")
     return matches[0]

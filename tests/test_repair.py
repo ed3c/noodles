@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import json
+import textwrap
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -55,7 +57,10 @@ class RepairTests(unittest.TestCase):
     def gh_payloads(self, *, pr: dict | None = None, issue_state: str = "open", contract_state: str = "awaiting_land") -> dict[str, object]:
         pr_payload = pr or self.pr()
         return {
-            "repos/ed3c/noodles/pulls?state=open&per_page=100": [pr_payload],
+            # constraint: ed3c/noodles#272 - find_open_pr_for_subject now reads through the
+            # constraint: paginated shared exit noodles.matching_open_pull_requests, so the
+            # constraint: fixture answers that endpoint shape and nothing else.
+            "repos/ed3c/noodles/pulls?state=open&per_page=100&page=1": [pr_payload],
             "repos/ed3c/noodles/issues/33": {"number": 33, "state": issue_state, "body": self.issue_body(contract_state)},
             f"repos/ed3c/noodles/actions/runs?head_sha={self.head}&per_page=100": {
                 "workflow_runs": [{
@@ -228,3 +233,90 @@ class RepairTests(unittest.TestCase):
         escalations = [item for item in events if item["type"] == "repair_escalation"]
         self.assertEqual(len(escalations), 1)
         self.assertEqual(escalations[0]["payload"]["attempts"], noodles.REPAIR_MAX_ATTEMPTS)
+
+
+class RepairOpenPrCorrelationTests(unittest.TestCase):
+    """ed3c/noodles#272 - the refusal and its named remedy correlate on the same two keys.
+
+    `schedule_publish`'s `open_pr_exists` refusal names an open PR and routes the caller to
+    `./noodles repair`. While those two correlated differently the machine manufactured a dead
+    end: the scheduler said "that PR exists, go repair it" and the repair verb answered
+    "no such PR".
+    """
+
+    REPOSITORY = "ed3c/noodles"
+    SUBJECT = "ed3c/noodles#82"
+
+    def pull(self, number: int, *, body: str, head_ref: str) -> dict:
+        return {"number": number, "state": "open", "body": body, "head": {"ref": head_ref}}
+
+    def provider(self, pulls: list[dict]):
+        prefix = f"repos/{self.REPOSITORY}/pulls?state=open&per_page=100&page="
+
+        def api(endpoint: str, **_kwargs: object) -> object:
+            if endpoint.startswith(prefix):
+                page = int(endpoint.removeprefix(prefix))
+                return pulls[(page - 1) * 100:page * 100]
+            raise AssertionError(f"unexpected provider call: {endpoint}")
+
+        return api
+
+    def test_lane_branch_match_with_a_drifted_body_resolves_to_the_pr_the_refusal_names(self) -> None:
+        # constraint: ed3c/noodles#272 - the reproduced failing shape: head branch equals
+        # constraint: execute_branch(subject) but the body is not the exact one-line `Refs`.
+        # constraint: The body-only predicate raised GateError here while the refusal pointed at
+        # constraint: this exact PR, so the remedy the refusal named had no path to it.
+        target = self.pull(9, body="WIP: no exact reference line", head_ref=noodles.execute_branch(self.SUBJECT))
+        with mock.patch.object(noodles, "gh_api", side_effect=self.provider([target])):
+            found = noodles.find_open_pr_for_subject(self.REPOSITORY, self.SUBJECT)
+            named = noodles.subject_open_pull_requests(self.REPOSITORY, self.SUBJECT)
+        self.assertEqual(found, target)
+        self.assertEqual([f"{self.REPOSITORY}#{found['number']}"], named)
+
+    def test_body_match_on_a_foreign_branch_still_resolves(self) -> None:
+        target = self.pull(7, body=f"Refs {self.SUBJECT}", head_ref="fix-82-second-attempt")
+        with mock.patch.object(noodles, "gh_api", side_effect=self.provider([target])):
+            found = noodles.find_open_pr_for_subject(self.REPOSITORY, self.SUBJECT)
+            named = noodles.subject_open_pull_requests(self.REPOSITORY, self.SUBJECT)
+        self.assertEqual(found, target)
+        self.assertEqual([f"{self.REPOSITORY}#{found['number']}"], named)
+
+    def test_planted_negative_pr_with_neither_key_is_still_not_matched(self) -> None:
+        # constraint: ed3c/noodles#272 - the shared exit narrows as well as widens: a foreign
+        # constraint: branch with a drifted body correlates on nothing and must stay unfound.
+        foreign = self.pull(11, body="WIP: unrelated work", head_ref="fix-something-else")
+        with mock.patch.object(noodles, "gh_api", side_effect=self.provider([foreign])):
+            with self.assertRaisesRegex(noodles.GateError, "got 0"):
+                noodles.find_open_pr_for_subject(self.REPOSITORY, self.SUBJECT)
+            self.assertEqual(noodles.subject_open_pull_requests(self.REPOSITORY, self.SUBJECT), [])
+
+    def test_planted_negative_a_sibling_subjects_open_pr_is_not_this_subjects_pr(self) -> None:
+        sibling = self.pull(12, body=f"Refs {self.REPOSITORY}#83", head_ref=noodles.execute_branch(f"{self.REPOSITORY}#83"))
+        with mock.patch.object(noodles, "gh_api", side_effect=self.provider([sibling])):
+            with self.assertRaisesRegex(noodles.GateError, "got 0"):
+                noodles.find_open_pr_for_subject(self.REPOSITORY, self.SUBJECT)
+
+    def test_match_beyond_the_first_page_is_reachable_by_the_remedy(self) -> None:
+        # constraint: ed3c/noodles#272 - pagination is inherited from the shared exit; the
+        # constraint: unpaginated read stopped correlating past the provider's first 100 PRs.
+        filler = [
+            self.pull(100 + index, body=f"Refs {self.REPOSITORY}#{900 + index}", head_ref=f"filler-{index}")
+            for index in range(100)
+        ]
+        target = self.pull(9, body=f"Refs {self.SUBJECT}", head_ref="fix-82-second-attempt")
+        with mock.patch.object(noodles, "gh_api", side_effect=self.provider(filler + [target])):
+            self.assertEqual(noodles.find_open_pr_for_subject(self.REPOSITORY, self.SUBJECT), target)
+
+    def test_readback_find_open_pr_for_subject_carries_no_correlation_predicate_of_its_own(self) -> None:
+        # constraint: ed3c/noodles#272 - "one shared exit" stays true only while the remedy holds
+        # constraint: no second copy of the rule. Read the definition's own source: every engine
+        # constraint: attribute it reaches for must be the shared exit or the error type, so a
+        # constraint: re-added `parse_pr_reference`/`gh_api`/head-ref predicate reds here.
+        source = (CANDIDATE_ROOT / "repair_contract.py").read_text(encoding="utf-8")
+        definition = noodles.top_level_definitions(source, "repair_contract.py")["find_open_pr_for_subject"]
+        reached = {
+            node.attr
+            for node in ast.walk(ast.parse(textwrap.dedent(definition)))
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "engine"
+        }
+        self.assertEqual(reached, {"matching_open_pull_requests", "GateError"})
