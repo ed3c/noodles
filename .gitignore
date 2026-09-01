@@ -14,3 +14,4 @@ __pycache__/
 .agents/skills/control-cli/
 .agents/skills/control-noodle/
 .agents/skills/deslop/
+.grepai/
