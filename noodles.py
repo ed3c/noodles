@@ -61,6 +61,7 @@ from skill_contract import (
     validate_concurrency_proof,
     validate_execute_task,
     validate_noodle_worktree_ignore,
+    validate_policy_key_consumption,
 )
 SCHEMA_VERSION = 1
 # constraint: ed3c/noodles#99 - the exact entrypoint an open-PR refusal routes to; repair owns an
@@ -547,6 +548,10 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     errors.extend(validate_task_profile_single_source(root, paths, policy, expected_task_profiles))
     errors.extend(validate_noodle_worktree_ignore(root, paths))
     errors.extend(validate_agent_document_route(root, paths, policy))
+    # constraint: ed3c/noodles#277 - reads the CANDIDATE's own policy/fitness.json, not policy_root's:
+    # constraint: an orphan key must red on the candidate that added it, which is exactly the gate
+    # constraint: that would have caught the six orphan workflow phrase lists ed3c/noodles#84 removed.
+    errors.extend(validate_policy_key_consumption(root, paths))
     for required in policy["required_paths"]:
         if required not in paths:
             errors.append(f"missing required tracked path: {required}")
@@ -604,10 +609,10 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         except GateError as exc:
             errors.append(f"schedule cycle receipt unreadable: {exc}")
     # constraint: ed3c/noodles#84 - the AGENTS.md exact-phrase grep that stood here is retired: it
-    # constraint: proved the bytes existed somewhere, not that the document owned the rule. Removing
-    # constraint: the read is also the widening half of the staged transition - a successor can now
-    # constraint: delete `required_agent_phrases` from policy/fitness.json without the
-    # constraint: default-branch verifier raising KeyError against the candidate's own policy file.
+    # constraint: proved the bytes existed somewhere, not that the document owned the rule.
+    # constraint: ed3c/noodles#277 closed that staged transition by deleting the orphaned policy list
+    # constraint: the retired read used to consume; the key-consumption gate above now names any
+    # constraint: successor orphan by its own key rather than letting it sit as a fictional gate.
     errors.extend(validate_agent_guarantee_classes(root))
     workflow_paths = sorted(path for path in paths if path.startswith(".github/workflows/"))
     if len(workflow_paths) != policy["max_workflows"]:

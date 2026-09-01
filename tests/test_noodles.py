@@ -92,9 +92,9 @@ class RepositoryGateTests(unittest.TestCase):
         shell_lines.insert(2, "# reminder: keep this fast")
         shell_path.write_text("\n".join(shell_lines) + "\n")
         # constraint: ed3c/noodles#84 - the probe needs any tracked assignment line, and the previous
-        # constraint: anchor was a prose phrase constant this atom retires. Re-anchoring here is the
-        # constraint: widening half of the staged transition: once main carries this line, the
-        # constraint: successor can delete SCHEDULE_OWNERSHIP_PHRASE without reddening trusted verify.
+        # constraint: anchor was a prose phrase constant that atom retired. Re-anchoring here was the
+        # constraint: widening half of the staged transition; ed3c/noodles#277 flipped it by deleting
+        # constraint: that constant, so this anchor must stay a real assignment in skill_contract.py.
         phrase = 'CONCURRENCY_PROOF_PATH = "policy/concurrency-proof.json"'
         py_path = root / "skill_contract.py"
         py_mutated = py_path.read_text().replace(phrase, f"# {phrase}", 1)

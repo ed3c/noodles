@@ -82,13 +82,5 @@
     "package.json",
     "go.mod",
     "Cargo.toml"
-  ],
-  "required_agent_phrases": [
-    "NO PROSE MIGRATION",
-    "P \u2014 probabilistic guidance",
-    "L \u2014 local deterministic gate",
-    "R \u2014 provider-enforced readback",
-    "N \u2014 non-claim",
-    "Human Verifier is not an operational state"
   ]
 }
