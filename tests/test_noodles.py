@@ -60,6 +60,33 @@ RETIRED_ROUTE_INVENTORY = (
 )
 
 
+# constraint: ed3c/noodles#274 - the staged-transition rule states a cost, and the one instance this
+# constraint: repository physically paid lived only in the bodies of ed3c/noodles#252 and #253. When
+# constraint: those close the rule keeps its statement and loses its evidence, so the receipt has to
+# constraint: sit in the paragraph that makes the claim: the PR, the verify run, and the trusted test
+# constraint: path that actually red.
+STAGED_TRANSITION_ANCHOR = "the staged transition"
+STAGED_TRANSITION_RECEIPT = ("ed3c/noodles#129", "33366751879", ".trusted/tests/test_noodles.py")
+
+
+def staged_transition_receipt_errors(system_contract: str) -> list[str]:
+    """ed3c/noodles#274 - the pure predicate. The paragraph that states the trusted-transition rule
+    must carry the instance that justifies it, so the rule outlives the closure of the two split
+    atoms whose bodies were the only other copy."""
+    paragraphs = [block for block in system_contract.split("\n\n") if STAGED_TRANSITION_ANCHOR in block]
+    if len(paragraphs) != 1:
+        return [
+            f"contracts/system-v1.md must state the trusted-transition rule in exactly one paragraph "
+            f"naming {STAGED_TRANSITION_ANCHOR!r}, found {len(paragraphs)}"
+        ]
+    return [
+        f"contracts/system-v1.md states the staged-transition rule with no receipt attached: the "
+        f"paragraph does not name {token!r}"
+        for token in STAGED_TRANSITION_RECEIPT
+        if token not in paragraphs[0]
+    ]
+
+
 def agent_procedure_owner_errors(schedule_skill: str, execute_skill: str) -> list[str]:
     """ed3c/noodles#253 - the pure predicate both the positive control and its planted negatives call,
     so reinstating either historical drift is a red instead of a rewritten assertion."""
@@ -378,6 +405,30 @@ class RepositoryGateTests(unittest.TestCase):
                 self.assertEqual(result["ok"], accepted, result["errors"])
                 if not accepted:
                     self.assertTrue(any("unsupported route refusal" in item for item in result["errors"]))
+
+    def test_staged_transition_rule_keeps_the_instance_it_was_paid_for(self) -> None:
+        """ed3c/noodles#274 - promoted from docs/findings/register.json entry 2. The planted negative
+        is the paragraph exactly as it stood before this atom: the rule stated in full, with no
+        receipt attached. It must red, or closing ed3c/noodles#252 and ed3c/noodles#253 leaves the
+        next lane to re-derive the pattern from its own red CI run."""
+        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        self.assertEqual(staged_transition_receipt_errors(system_contract), [])
+
+        stated_without_receipt = (
+            "Trusted-transition rejection - a candidate changing a value the default-branch verifier "
+            "pins - has exactly one supported path, the staged transition: widen acceptance on the "
+            "default branch, then flip the pinned value, then retire the widened acceptance. "
+            "Rerunning, rebasing, or re-pushing the same candidate cannot resolve it, because the "
+            "rejecting verifier is the default branch's, not the candidate's."
+        )
+        planted = system_contract.split("\n\n")
+        rule = next(index for index, block in enumerate(planted) if STAGED_TRANSITION_ANCHOR in block)
+        planted[rule] = stated_without_receipt
+        errors = staged_transition_receipt_errors("\n\n".join(planted))
+        self.assertEqual(len(errors), len(STAGED_TRANSITION_RECEIPT), errors)
+        for token in STAGED_TRANSITION_RECEIPT:
+            with self.subTest(receipt=token):
+                self.assertTrue(any(f"does not name {token!r}" in error for error in errors), errors)
 
     def test_agent_facing_procedure_facts_have_exactly_one_owner(self) -> None:
         """ed3c/noodles#253 - the two facts this atom gave back to their owners. Schedule admission
