@@ -119,16 +119,6 @@ Metrics are N-class disclosure. `./noodles metrics --json` reports every metric 
 
 Resolve module-size pressure at a real module seam. Do not delete useful newlines, compress readable code, or revert already useful seams merely to shrink a metric.
 
-## Migration
-
-`migrations/skills-shared/ledger.json` starts from observed claims, not architecture prose. The only dispositions are:
-
-```text
-MIGRATE | REVALIDATE | ADAPT_EXTERNAL | DROP | HOLD
-```
-
-The migration law is `NO PROSE MIGRATION`: evidence or a fresh experiment first, smallest atom second.
-
 ## Current scope
 
 The v1 provider policy admits `ed3c/noodles`. Different repositories require target-local Noodle/worktree authority, trusted workflows, protection, token-scope readback, and a live canary. That expansion is intentionally held behind Issues rather than hidden behind an unproven “multi-repo” claim.
