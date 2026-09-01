@@ -883,15 +883,49 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertIn("enabled providers 3 exceed limit 2", result["errors"])
 
     def test_workflow_count_still_fails_closed(self) -> None:
+        # constraint: ed3c/noodles#311 - the limit is read from the CANDIDATE copy's own policy, and
+        # constraint: the control reds one above AND one below it. Pinning the trusted number here is
+        # constraint: what made this an equality no candidate could ever change: the default branch
+        # constraint: judged every candidate against its own count. Equality, not ceiling - a ceiling
+        # constraint: would let an atom silently drop a tracked workflow file.
+        _hold, root = self.mutated_copy()
+        self.addCleanup(_hold.cleanup)
+        limit = json.loads((root / "policy/fitness.json").read_text())["max_workflows"]
+        workflows = sorted(path.name for path in (root / ".github/workflows").iterdir())
+        self.assertEqual(len(workflows), limit)
+        for observed in (limit + 1, limit - 1):
+            with self.subTest(observed=observed):
+                temp, case = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                if observed > limit:
+                    (case / ".github/workflows/extra.yml").write_text("name: extra\non: workflow_dispatch\njobs: {}\n")
+                else:
+                    (case / ".github/workflows" / workflows[0]).unlink()
+                self.commit(case)
+                with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
+                    result = self.verify(case)
+                self.assertFalse(result["ok"])
+                self.assertIn(f"workflow count must equal {limit}, got {observed}", result["errors"])
+
+    def test_planted_negative_a_malformed_candidate_workflow_limit_falls_back_to_the_trusted_pin(self) -> None:
+        # constraint: ed3c/noodles#311 - reading the candidate's own number must not become a way to
+        # constraint: disable the equality: a candidate that declares no usable limit is judged
+        # constraint: against the default branch's pin rather than passing unchecked.
+        trusted = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
-        extra = root / ".github/workflows/extra.yml"
-        extra.write_text("name: extra\non: workflow_dispatch\njobs: {}\n")
-        self.commit(root)
-        with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
-            result = self.verify(root)
-        self.assertFalse(result["ok"])
-        self.assertIn("workflow count must equal 2, got 3", result["errors"])
+        path = root / "policy/fitness.json"
+        for planted in (None, "3", True, [3], "absent"):
+            with self.subTest(planted=planted):
+                payload = json.loads(path.read_text())
+                if planted == "absent":
+                    payload.pop("max_workflows", None)
+                else:
+                    payload["max_workflows"] = planted
+                path.write_text(json.dumps(payload, indent=2) + "\n")
+                self.assertEqual(noodles.candidate_workflow_limit(root, trusted), trusted["max_workflows"])
+        path.write_text("{ not json")
+        self.assertEqual(noodles.candidate_workflow_limit(root, trusted), trusted["max_workflows"])
 
     def test_runtime_dependency_manifest_still_fails_closed(self) -> None:
         temp, root = self.mutated_copy()

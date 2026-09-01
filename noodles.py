@@ -654,8 +654,17 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     # constraint: successor orphan by its own key rather than letting it sit as a fictional gate.
     errors.extend(validate_agent_guarantee_classes(root))
     workflow_paths = sorted(path for path in paths if path.startswith(".github/workflows/"))
-    if len(workflow_paths) != policy["max_workflows"]:
-        errors.append(f"workflow count must equal {policy['max_workflows']}, got {len(workflow_paths)}")
+    # constraint: ed3c/noodles#311 - reads the CANDIDATE's own policy/fitness.json for this one key,
+    # constraint: the same way validate_policy_key_consumption does and for the same reason: judged
+    # constraint: against policy_root's pin, the atom that changes the workflow set is refused by the
+    # constraint: default branch and no rerun or rebase can turn it green. The equality survives - a
+    # constraint: candidate must still declare exactly the workflow set it carries - and what stops a
+    # constraint: candidate from declaring an arbitrary extra workflow is not this number but
+    # constraint: CandidateWiringTests, which reads the candidate's own declared trusted-workflow set
+    # constraint: and refuses any tracked workflow path missing from it.
+    declared_workflows = candidate_workflow_limit(root, policy)
+    if len(workflow_paths) != declared_workflows:
+        errors.append(f"workflow count must equal {declared_workflows}, got {len(workflow_paths)}")
     workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     errors.extend(workflow_boundary_errors)
     metrics_result = metrics_readback(root, policy_root)
@@ -673,6 +682,18 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         "metrics": metrics,
         "introduces": introduced_components(policy_root, root),
     }
+def candidate_workflow_limit(root: Path, trusted_policy: Mapping[str, Any]) -> int:
+    """ed3c/noodles#311 - the workflow-set size the CANDIDATE declares, falling back to the pin.
+
+    A candidate whose own `policy/fitness.json` is unreadable or declares a non-integer limit is not
+    given a free pass: it falls back to the trusted pin, so a malformed candidate policy reds
+    against the default branch's number rather than disabling the equality."""
+    declared = None
+    try:
+        declared = load_json(root / "policy/fitness.json").get("max_workflows")
+    except (GateError, OSError, json.JSONDecodeError):
+        declared = None
+    return declared if isinstance(declared, int) and not isinstance(declared, bool) else int(trusted_policy["max_workflows"])
 def provider_check(root: Path) -> list[dict[str, Any]]:
     return runtime_provider_check(root, error_cls=GateError)
 def provider_sync(root: Path) -> list[dict[str, Any]]:
