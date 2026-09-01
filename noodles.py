@@ -667,6 +667,12 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         errors.append(f"workflow count must equal {declared_workflows}, got {len(workflow_paths)}")
     workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     errors.extend(workflow_boundary_errors)
+    # constraint: ed3c/noodles#265 - the hosted lane's compiled bytes are judged by the same trusted
+    # constraint: repository gate that judges the two hand-written workflows, so a hand-edited lock,
+    # constraint: a floating action tag, or a stale recompilation reds here instead of surfacing
+    # constraint: only as a hosted run that behaved unexpectedly.
+    gh_aw_errors, _gh_aw_lock = github_protection.gh_aw_lock_readback(root, sha256_file)
+    errors.extend(gh_aw_errors)
     metrics_result = metrics_readback(root, policy_root)
     metrics = {key: value for key, value in metrics_result.items() if key not in {"warnings", "warning_readback"}}
     for key, (direction, policy_key) in skill_contract.FAILING_FITNESS_LIMITS.items():
@@ -1643,7 +1649,16 @@ def evidence_publication(candidate_root: Path, receipt: Mapping[str, Any]) -> di
     return {"status": "custody_unadmitted", **publication, **readback,
             "reason": "no admitted Google Drive destination credential exists for GitHub Actions; the packaged evidence stays on the GitHub artifact spool"}
 GHA_HOSTED_LANE = "gha-agentic"
-GHA_TRUSTED_WORKFLOW_PATHS = (".github/workflows/verify.yml", ".github/workflows/land.yml")
+# constraint: ed3c/noodles#265 - the hosted lane's own source and compiled lock join the trusted set
+# constraint: the apply gate refuses to let a proposal rewrite. The source is listed beside the lock
+# constraint: because the lock is only ever a compilation of it: leaving the source writable would
+# constraint: let the lane author the next recompilation of the gate that judges it.
+GHA_TRUSTED_WORKFLOW_PATHS = (
+    ".github/workflows/verify.yml",
+    ".github/workflows/land.yml",
+    ".github/workflows/noodles-hosted.md",
+    ".github/workflows/noodles-hosted.lock.yml",
+)
 # constraint: ed3c/noodles#189 - the exact typed declaration one target-local execution task is
 # constraint: bound to. Task identity is the sha256 of these fields and nothing else, so the
 # constraint: idempotency nonce is derived and never supplied: a sender cannot hold an identity

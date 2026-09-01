@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from unittest import mock
 
 import github_protection
 import noodles
-from tests.support import CANDIDATE_ROOT
+from tests.support import CANDIDATE_ROOT, copy_tracked
 
 ENGINE_ROOT = Path(noodles.__file__).resolve().parent
 
@@ -756,6 +757,199 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("unsupported gh eval argv before subprocess spawn/provider contact", stderr.getvalue())
         run_mock.assert_not_called()
+
+
+LOCK = json.loads((CANDIDATE_ROOT / github_protection.GH_AW_LOCK_PATH).read_text(encoding="utf-8"))
+SOURCE_PATH = LOCK["workflow"]["source_path"]
+LOCK_PATH = LOCK["workflow"]["lock_path"]
+
+
+def readback(root: Path) -> tuple[list[str], dict[str, object]]:
+    return github_protection.gh_aw_lock_readback(root, noodles.sha256_file)
+
+
+class GhAwLockPositiveControlTests(unittest.TestCase):
+    """ed3c/noodles#265 - the stored agentic source and its compiled lock correspond to the pin.
+
+    The invalid state these controls exist to make impossible: compiled workflow bytes that do not
+    correspond to the pinned `gh-aw` compiler and the human-authored source they claim to be
+    compiled from. Every pin below is read back from the tracked bytes themselves, never from a
+    compile-time report. These live here rather than in a file of their own because a new tracked
+    test module importing `github_protection` would move the grandfathered cross-surface edge counts
+    that `GrandfatheredImportDebtTests` quotes from AGENTS.md, and AGENTS.md is outside this atom's
+    declared write boundary.
+    """
+
+    def test_the_tracked_tree_reads_back_the_pinned_compiler_and_every_action_commit(self) -> None:
+        errors, evidence = readback(CANDIDATE_ROOT)
+        self.assertEqual(errors, [])
+        # constraint: ed3c/noodles#265 - the compiler release is read twice from two independent
+        # constraint: places in the tracked bytes: the policy pin, and the provenance line the
+        # constraint: compiler stamped into the lock it produced.
+        self.assertEqual(evidence["compiler_release"], "v0.86.2")
+        self.assertEqual(evidence["stamped_compiler_version"], evidence["compiler_release"])
+        self.assertEqual(evidence["compiler_commit"], "48e5fa3ff52294d91d97715017a9f8693a48387f")
+        self.assertTrue(evidence["compiler_platform_checksums"])
+        for platform, digest in evidence["compiler_platform_checksums"].items():
+            with self.subTest(platform=platform):
+                self.assertRegex(str(digest), r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            evidence["action_pins"],
+            {
+                "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+                "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+                "oven-sh/setup-bun": "0c5077e51419868618aeaa5fe8019c62421857d6",
+            },
+        )
+        for entry in LOCK["actions"]:
+            with self.subTest(uses=entry["uses"]):
+                text = (CANDIDATE_ROOT / entry["readback_path"]).read_text(encoding="utf-8")
+                self.assertIn(f"{entry['uses']}@{entry['commit']}", text)
+
+    def test_the_agent_job_holds_read_only_scope_and_the_apply_job_holds_only_the_three_writes(self) -> None:
+        _errors, evidence = readback(CANDIDATE_ROOT)
+        self.assertEqual(evidence["agent_job_permissions"], {"contents": "read"})
+        self.assertEqual(
+            evidence["apply_job_permissions"],
+            {"contents": "write", "issues": "write", "pull-requests": "write"},
+        )
+
+    def test_the_new_workflow_bytes_joined_the_trusted_set_the_apply_gate_refuses(self) -> None:
+        self.assertIn(LOCK_PATH, noodles.GHA_TRUSTED_WORKFLOW_PATHS)
+        self.assertIn(SOURCE_PATH, noodles.GHA_TRUSTED_WORKFLOW_PATHS)
+
+
+class GhAwLockPlantedNegativeTests(unittest.TestCase):
+    """Each plant is an inverse-editable mutation of one tracked file in a throwaway copy."""
+
+    def mutated(self) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-ghaw-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        return root
+
+    def diagnostics(self, root: Path) -> list[str]:
+        errors, _evidence = readback(root)
+        self.assertNotEqual(errors, [])
+        return errors
+
+    def test_planted_negative_a_hand_edited_lock_file_is_refused_by_its_own_digest(self) -> None:
+        root = self.mutated()
+        path = root / LOCK_PATH
+        path.write_text(path.read_text(encoding="utf-8").replace("runs-on: ubuntu-latest", "runs-on: self-hosted", 1), encoding="utf-8")
+        errors = self.diagnostics(root)
+        self.assertTrue(any(f"gh-aw compiled lock bytes were hand-edited: {LOCK_PATH}" in item for item in errors), errors)
+
+    def test_planted_negative_a_floating_action_tag_is_refused_by_name(self) -> None:
+        root = self.mutated()
+        path = root / LOCK_PATH
+        text = path.read_text(encoding="utf-8").replace(
+            "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6", "oven-sh/setup-bun@v2"
+        )
+        path.write_text(text, encoding="utf-8")
+        # constraint: ed3c/noodles#265 - keep the tracked digest honest so the floating tag is
+        # constraint: what reds here, not the hand-edit check that would otherwise mask it.
+        self.repin(root, "lock_sha256", noodles.sha256_file(path))
+        errors = self.diagnostics(root)
+        self.assertIn("gh-aw compiled lock references unpinned action refs: oven-sh/setup-bun@v2", errors)
+        self.assertIn(
+            "gh-aw lock action pin oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 "
+            f"is absent from its readback path {LOCK_PATH}",
+            errors,
+        )
+
+    def test_planted_negative_a_stale_recompilation_is_refused_by_the_stamped_body_hash(self) -> None:
+        root = self.mutated()
+        path = root / SOURCE_PATH
+        text = path.read_text(encoding="utf-8") + "\nOne more sentence the compiled lock never saw.\n"
+        path.write_text(text, encoding="utf-8")
+        # constraint: ed3c/noodles#265 - a stale recompilation is exactly 'source changed, ledger
+        # constraint: updated, gh aw compile not run', so repinning the source digest is what
+        # constraint: isolates the stamped-body-hash diagnostic from the source-digest one.
+        self.repin(root, "source_sha256", noodles.sha256_file(path))
+        body = github_protection._gh_aw_source_body(text)
+        self.repin(root, "body_sha256", hashlib.sha256(body.encode("utf-8")).hexdigest())
+        errors = self.diagnostics(root)
+        self.assertTrue(any("is a stale recompilation" in item for item in errors), errors)
+
+    def test_planted_negative_an_unpinned_compiler_version_is_refused(self) -> None:
+        root = self.mutated()
+        self.repin(root, "release", "v0.86.3", section="compiler")
+        errors = self.diagnostics(root)
+        self.assertIn(
+            "gh-aw compiled lock was produced by compiler 'v0.86.2', not the pinned 'v0.86.3'",
+            errors,
+        )
+
+    def test_planted_negative_a_widened_agent_job_permission_is_refused(self) -> None:
+        root = self.mutated()
+        path = root / LOCK_PATH
+        lines = path.read_text(encoding="utf-8").splitlines()
+        agent = lines.index("  agent:")
+        permissions = lines.index("    permissions:", agent)
+        lines[permissions + 1] = "      contents: write"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.repin(root, "lock_sha256", noodles.sha256_file(path))
+        errors = self.diagnostics(root)
+        self.assertTrue(any("Agent job permissions must stay" in item for item in errors), errors)
+
+    def test_planted_negative_landing_authority_inside_the_lock_is_refused(self) -> None:
+        root = self.mutated()
+        path = root / LOCK_PATH
+        text = path.read_text(encoding="utf-8").replace("        run: |\n", "        run: |\n          python3 noodles.py github land\n", 1)
+        path.write_text(text, encoding="utf-8")
+        self.repin(root, "lock_sha256", noodles.sha256_file(path))
+        errors = self.diagnostics(root)
+        self.assertIn("gh-aw compiled lock must hold no landing authority: noodles.py github land", errors)
+
+    def test_planted_negative_a_missing_lock_policy_fails_closed_rather_than_passing_empty(self) -> None:
+        root = self.mutated()
+        (root / github_protection.GH_AW_LOCK_PATH).unlink()
+        self.assertEqual(self.diagnostics(root), [f"missing {github_protection.GH_AW_LOCK_PATH}"])
+
+    def repin(self, root: Path, key: str, value: str, *, section: str = "workflow") -> None:
+        path = root / github_protection.GH_AW_LOCK_PATH
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[section][key] = value
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+class GhAwRecompilationControlTests(unittest.TestCase):
+    """PROD-class: the tracked lock really is what the pinned compiler emits from the tracked source.
+
+    Skipped without `NOODLES_GH_AW_COMPILER`. When it is set, the binary's own sha256 must be one of
+    the platform checksums this repository pinned, so the control cannot be satisfied by pointing it
+    at a different compiler.
+    """
+
+    def test_positive_control_the_tracked_lock_recompiles_byte_identically(self) -> None:
+        binary = os.getenv("NOODLES_GH_AW_COMPILER", "").strip()
+        if not binary:
+            self.skipTest("NOODLES_GH_AW_COMPILER is unset: the pinned gh-aw compiler is not present")
+        digest = noodles.sha256_file(Path(binary))
+        pinned = {entry["asset_sha256"] for entry in LOCK["compiler"]["platforms"].values()}
+        self.assertIn(digest, pinned, f"{binary} sha256 {digest} is not a pinned gh-aw {LOCK['compiler']['release']} asset")
+        with tempfile.TemporaryDirectory(prefix="noodles-ghaw-compile-") as temp:
+            root = Path(temp)
+            for relative in (SOURCE_PATH, LOCK["workflow"]["action_pin_path"]):
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(CANDIDATE_ROOT / relative, root / relative)
+            # constraint: ed3c/noodles#265 - the compiler refuses to run outside a git repository
+            # constraint: and seeds fuzzy schedules from the origin slug, so the control gives it the
+            # constraint: exact remote the tracked lock was built on.
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "remote", "add", "origin", "https://github.com/ed3c/noodles.git"], cwd=root, check=True)
+            result = subprocess.run(
+                [binary, "compile", "--no-check-update", "--approve"],
+                cwd=root, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(
+                noodles.sha256_file(root / LOCK_PATH),
+                LOCK["workflow"]["lock_sha256"],
+                "the tracked compiled lock is not what the pinned compiler emits from the tracked source",
+            )
 
 
 if __name__ == "__main__":
