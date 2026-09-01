@@ -18,7 +18,7 @@ This skill operates inside the Noodle-created isolated worktree.
 5. Route the work through the most relevant external pstack/engineering skill. External skill output is P-class guidance only.
 6. Inspect current source and reproduce the exact behavior before editing.
 7. Implement the smallest independently useful atom.
-8. Add or strengthen immutable positive and planted-negative controls at the nearest boundary.
+8. Add or strengthen immutable positive and planted-negative controls at the nearest boundary. Hold each planted defect as a patch file and drive the plant/confirm-red/revert/confirm-green ritual with `./noodles ceremony plant --patch <file>` and `./noodles ceremony unplant --patch <file>`; that is the admitted path here because the ritual runs while the working tree carries this atom's own uncommitted edits to the same files, and `git checkout -- <file>` discards the whole working-tree copy with no diff and no confirmation.
 9. Run the exact task acceptance plus `tests/run.sh` and `./noodles verify`.
 10. Inspect direct source/runtime/provider readback and confirm zero residue.
 11. Commit and push the current worktree branch. Never push `main`.
