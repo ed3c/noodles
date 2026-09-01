@@ -16,7 +16,9 @@ from tests.support import (
     ISSUE_FEATURE_MARKER,
     READY_BACKLOG_FIXTURE,
     assert_candidate_preserves_or_migrates_ready_backlog,
+    backlog_project,
     copy_tracked,
+    graphql_backlog_payload,
     load_ready_backlog_fixtures,
 )
 
@@ -583,11 +585,11 @@ class BacklogAdapterTests(unittest.TestCase):
 
         def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
             calls.append(endpoint)
-            if endpoint == "repos/ed3c/noodles/issues?state=open&per_page=100":
-                return [
+            if endpoint == "graphql":
+                return graphql_backlog_payload([
                     {"number": 82, "state": "open", "body": dependent_body, "title": "dependent", "html_url": "https://github.test/82"},
                     {"number": 90, "state": "open", "body": issue_body(subject="ed3c/noodles#90"), "title": "independent", "html_url": "https://github.test/90"},
-                ]
+                ])
             if endpoint == "repos/ed3c/noodles/issues/81":
                 return {"number": 81, "state": "closed" if predecessor_state == "landed" else "open", "body": predecessor_body(predecessor_state)}
             raise noodles.GateError(f"unexpected endpoint {endpoint}")
@@ -597,7 +599,8 @@ class BacklogAdapterTests(unittest.TestCase):
     def sync(self, dependent_body: str, predecessor_state: str = "landed") -> tuple[list[dict], list[str]]:
         fake, calls = self.gh(dependent_body, predecessor_state)
         printed: list[str] = []
-        with mock.patch.object(noodles, "gh_api", side_effect=fake), \
+        with backlog_project(), \
+             mock.patch.object(noodles, "gh_api", side_effect=fake), \
              mock.patch.dict("os.environ", {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
              mock.patch("builtins.print", side_effect=lambda line, **_: printed.append(line)):
             self.assertEqual(noodles.adapter_sync(), 0)
@@ -638,8 +641,8 @@ class IntakeNormalizerTests(unittest.TestCase):
         writes: list[tuple[str, str, dict]] = []
 
         def fake(endpoint: str, *, method: str = "GET", payload: dict | None = None, token: object | None = None) -> object:
-            if method == "GET" and endpoint == "repos/ed3c/noodles/issues?state=open&per_page=100":
-                return [dict(issue) for issue in state.values()]
+            if endpoint == "graphql":
+                return graphql_backlog_payload([dict(issue) for issue in state.values()])
             if method == "GET" and endpoint.startswith("repos/ed3c/noodles/issues/"):
                 return dict(state[int(endpoint.rsplit("/", 1)[1])])
             if method == "PATCH" and endpoint.startswith("repos/ed3c/noodles/issues/"):
@@ -653,7 +656,8 @@ class IntakeNormalizerTests(unittest.TestCase):
             raise noodles.GateError(f"unexpected endpoint {method} {endpoint}")
 
         printed: list[str] = []
-        with mock.patch.object(noodles, "gh_api", side_effect=fake), \
+        with backlog_project(), \
+             mock.patch.object(noodles, "gh_api", side_effect=fake), \
              mock.patch.dict("os.environ", {"NOODLES_REPOSITORIES": "ed3c/noodles"}, clear=False), \
              mock.patch("builtins.print", side_effect=lambda line, **_: printed.append(line)):
             self.assertEqual(noodles.adapter_sync(), 0)
@@ -761,6 +765,255 @@ class IntakeNormalizerTests(unittest.TestCase):
         self.assertIn("no '## goal' section", reasons)
         self.assertIn("no '## claim' section", reasons)
         self.assertIn("no '## Physical trigger' section", reasons)
+
+
+class BacklogConsumptionTests(unittest.TestCase):
+    """ed3c/noodles#292 - what one idle cycle costs, and what a cycle keeps when the bucket dies.
+
+    Every provider call here goes through one counting fake, so a spend claim is a counted number
+    rather than an adjective. The planted negatives are a GraphQL error that must never degrade into
+    the per-issue REST fan-out it replaced, and a re-derivation stub that must never be reached once
+    a cycle has already paid for its finalists.
+    """
+
+    OPEN_ISSUES = [
+        {"number": 82, "state": "open", "title": "held", "body": issue_body(depends_on=PREDECESSOR), "html_url": "https://github.test/82"},
+        {"number": 90, "state": "open", "title": "held too", "body": issue_body(subject="ed3c/noodles#90", depends_on=PREDECESSOR), "html_url": "https://github.test/90"},
+    ]
+
+    def counting_gh(self, *, graphql_error: bool = False):
+        calls: list[str] = []
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
+            calls.append(endpoint)
+            if endpoint == "graphql":
+                if graphql_error:
+                    return {"errors": [{"message": "planted GraphQL failure"}]}
+                return graphql_backlog_payload(self.OPEN_ISSUES)
+            if endpoint == "repos/ed3c/noodles/issues/81":
+                return {"number": 81, "state": "open", "body": predecessor_body("ready")}
+            if endpoint == "repos/ed3c/noodles/issues?state=open&per_page=100":
+                return [dict(issue) for issue in self.OPEN_ISSUES]
+            raise noodles.GateError(f"unexpected endpoint {endpoint}")
+
+        return fake, calls
+
+    def project(self) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-backlog-cycle-")
+        self.addCleanup(temp.cleanup)
+        project = Path(temp.name)
+        (project / ".noodle").mkdir()
+        return project
+
+    def cycle(self, project: Path, fake, *, now: float) -> list[dict]:
+        with mock.patch.object(noodles, "gh_api", side_effect=fake):
+            return noodles.sync_backlog(
+                project, "ed3c/noodles", {}, noodles.system_requirement_ids(CANDIDATE_ROOT), now=now
+            )
+
+    def record(self, project: Path) -> dict:
+        return json.loads(noodles.backlog_cycle_path(project, "ed3c/noodles").read_text(encoding="utf-8"))
+
+    def test_positive_control_one_graphql_query_reproduces_the_rest_sync_output_bytes(self) -> None:
+        project = self.project()
+        fake, calls = self.counting_gh()
+        items = self.cycle(project, fake, now=1_000.0)
+
+        self.assertEqual(calls.count("graphql"), 1)
+        self.assertEqual([item["id"] for item in items], [SUBJECT, "ed3c/noodles#90"])
+        self.assertEqual(
+            items[0]["body_sha256"], issue_contract.body_digest(issue_body(depends_on=PREDECESSOR))
+        )
+        self.assertFalse(items[0]["schedulable"])
+        self.assertEqual(items[0]["target"], "ed3c/noodles")
+        self.assertEqual(self.record(project)["finalists"]["pull_requests"], [])
+
+    def test_planted_negative_graphql_error_fails_closed_and_never_falls_back_to_rest(self) -> None:
+        project = self.project()
+        fake, calls = self.counting_gh(graphql_error=True)
+
+        with self.assertRaisesRegex(noodles.GateError, "refusing to fall back to per-issue REST reads"):
+            self.cycle(project, fake, now=1_000.0)
+        self.assertEqual(calls, ["graphql"])
+
+    def test_an_exhausted_connection_is_never_consumed_twice_while_the_other_paginates(self) -> None:
+        """One query carries two connections; the finished one keeps re-serving its first page."""
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                            "nodes": [{"number": 82, "title": "one", "body": issue_body(), "url": "u82", "state": "OPEN"}],
+                        },
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"number": 7, "body": "Refs ed3c/noodles#82", "url": "p7", "headRefName": "lane"}],
+                        },
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"number": 90, "title": "two", "body": issue_body(subject="ed3c/noodles#90"), "url": "u90", "state": "OPEN"}
+                            ],
+                        },
+                        # constraint: the provider re-serves the finished connection's first page.
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"number": 7, "body": "Refs ed3c/noodles#82", "url": "p7", "headRefName": "lane"}],
+                        },
+                    }
+                }
+            },
+        ]
+
+        with mock.patch.object(noodles, "gh_api", side_effect=lambda *_a, **_k: pages.pop(0)):
+            snapshot = noodles.backlog_graphql_snapshot("ed3c/noodles")
+
+        self.assertEqual([issue["number"] for issue in snapshot["issues"]], [82, 90])
+        self.assertEqual([pull["number"] for pull in snapshot["pull_requests"]], [7])
+        self.assertEqual(snapshot["pull_requests"][0]["head_ref"], "lane")
+
+    def test_three_consecutive_no_order_cycles_back_off_exponentially_in_the_cycle_record(self) -> None:
+        project = self.project()
+        fake, calls = self.counting_gh()
+        intervals: list[float] = []
+        now = 1_000.0
+        for _ in range(3):
+            self.cycle(project, fake, now=now)
+            record = self.record(project)
+            intervals.append(record["interval_seconds"])
+            now = record["next_derivation_at"]
+
+        self.assertEqual([record["consecutive_empty"], len(intervals)], [3, 3])
+        self.assertGreater(intervals[2], intervals[0])
+        self.assertEqual(intervals, [180.0, 360.0, 720.0])
+        # constraint: the hold is the whole point - inside its window a cycle costs nothing.
+        held = self.cycle(project, fake, now=now - 1.0)
+        self.assertEqual(calls.count("graphql"), 3)
+        self.assertEqual([item["id"] for item in held], [SUBJECT, "ed3c/noodles#90"])
+        self.assertEqual(self.record(project)["served"], "backoff_hold")
+
+    def test_a_bucket_death_after_finalists_resumes_from_the_persisted_derivation(self) -> None:
+        project = self.project()
+        fake, calls = self.counting_gh()
+
+        def die(*_args: object, **_kwargs: object) -> dict:
+            raise noodles.GateError("planted bucket death after finalist identification")
+
+        with mock.patch.object(noodles, "backlog_items", side_effect=die):
+            with self.assertRaisesRegex(noodles.GateError, "planted bucket death"):
+                self.cycle(project, fake, now=1_000.0)
+        checkpoint = self.record(project)
+        self.assertEqual(checkpoint["stage"], "finalists")
+        self.assertEqual([node["number"] for node in checkpoint["finalists"]["issues"]], [82, 90])
+
+        def never(*_args: object, **_kwargs: object) -> dict:
+            raise AssertionError("a resumed cycle must not re-derive finalists it already paid for")
+
+        with mock.patch.object(noodles, "backlog_graphql_snapshot", side_effect=never):
+            items = self.cycle(project, fake, now=1_100.0)
+
+        self.assertEqual([item["id"] for item in items], [SUBJECT, "ed3c/noodles#90"])
+        self.assertEqual(self.record(project)["resumed"], True)
+        self.assertEqual(calls.count("graphql"), 1)
+
+    def test_a_resumed_cycle_refuses_to_overwrite_a_body_edited_since_the_snapshot(self) -> None:
+        """ed3c/noodles#292 monitor reconcile - a resumed cycle's finalists snapshot can be older
+        than the bucket death that interrupted it. It must never silently discard a human edit made
+        to the live body after that snapshot was taken; it must refuse the write instead."""
+        project = self.project()
+        snapshot_body = issue_body(depends_on=PREDECESSOR).replace(
+            "<!-- noodles-role: repository-mutating-atom -->\n", ""
+        )
+        live_body = snapshot_body + "\n<!-- a human edited this after the snapshot -->\n"
+        noodles.write_backlog_cycle(project, "ed3c/noodles", {
+            "repository": "ed3c/noodles",
+            "stage": "finalists",
+            "finalists": {
+                "issues": [{"number": 82, "title": "held", "body": snapshot_body, "html_url": "https://github.test/82"}],
+                "pull_requests": [],
+            },
+            "consecutive_empty": 0,
+            "derived_at": 900.0,
+        })
+
+        calls: list[tuple[str, str]] = []
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
+            calls.append((endpoint, method))
+            if endpoint == "repos/ed3c/noodles/issues/82" and method == "GET":
+                return {"number": 82, "body": live_body}
+            raise noodles.GateError(f"unexpected endpoint {endpoint} {method}")
+
+        items = self.cycle(project, fake, now=1_000.0)
+
+        self.assertEqual(items[0]["status"], "blocked")
+        self.assertIn("live body changed since derivation", items[0]["diagnostic"])
+        self.assertNotIn(("repos/ed3c/noodles/issues/82", "PATCH"), calls)
+
+    IDLE_ISSUES = [
+        {
+            "number": 100 + index,
+            "state": "open",
+            "title": f"held {index}",
+            "body": issue_body(subject=f"ed3c/noodles#{100 + index}", depends_on=f"ed3c/noodles#{200 + index}"),
+            "html_url": f"https://github.test/{100 + index}",
+        }
+        for index in range(12)
+    ]
+
+    def core_spend_gh(self, *, conditional: bool):
+        """Count core-quota charges the way GitHub charges them.
+
+        A repeated conditional read returns 304 and costs zero core quota; a GraphQL query spends
+        the separate point budget and charges core nothing. Everything else is one core call."""
+        charged: list[str] = []
+        seen: set[str] = set()
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
+            if endpoint == "graphql":
+                return graphql_backlog_payload(self.IDLE_ISSUES)
+            if not (conditional and endpoint in seen):
+                charged.append(endpoint)
+            seen.add(endpoint)
+            if endpoint == "repos/ed3c/noodles/issues?state=open&per_page=100":
+                return [dict(issue) for issue in self.IDLE_ISSUES]
+            if endpoint.startswith("repos/ed3c/noodles/issues/"):
+                number = int(endpoint.rsplit("/", 1)[1])
+                return {"number": number, "state": "open", "body": predecessor_body("ready")}
+            raise noodles.GateError(f"unexpected endpoint {endpoint}")
+
+        return fake, charged
+
+    def test_measured_receipt_ten_idle_cycles_before_and_after(self) -> None:
+        """The claim is an order-of-magnitude drop; the number is the receipt, not the adjective."""
+        project = self.project()
+        after_fake, after_charged = self.core_spend_gh(conditional=True)
+        now = 1_000.0
+        for _ in range(10):
+            self.cycle(project, after_fake, now=now)
+            now += 30.0
+
+        before_fake, before_charged = self.core_spend_gh(conditional=False)
+        for _ in range(10):
+            # constraint: the pre-cure shape replayed against the same fixture through the same
+            # constraint: counting exit - one unconditional list read plus one REST body read per
+            # constraint: distinct predecessor, every cycle, nothing held and nothing conditional.
+            with mock.patch.object(noodles, "gh_api", side_effect=before_fake):
+                before_fake("repos/ed3c/noodles/issues?state=open&per_page=100")
+                for index in range(12):
+                    noodles.dependency_readback(f"ed3c/noodles#{200 + index}")
+
+        # constraint: 130 -> 12 on this fixture. The backlog stayed unchanged for all ten cycles,
+        # constraint: which is exactly the case the cure claims and the only case it claims.
+        self.assertEqual((len(before_charged), len(after_charged)), (130, 12))
+        self.assertGreaterEqual(len(before_charged) / len(after_charged), 10.0)
 
 
 class DependencyDerivationTests(unittest.TestCase):

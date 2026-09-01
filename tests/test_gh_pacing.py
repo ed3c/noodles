@@ -18,6 +18,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import noodles
 from tests.support import CANDIDATE_ROOT, cmd, copy_tracked
@@ -74,6 +75,18 @@ HEADER_OK_GH = (
     "sys.stdout.write(f\"x-ratelimit-remaining: {os.environ['FAKE_GH_REMAINING']}\\n\")\n"
     "sys.stdout.write(f\"x-ratelimit-reset: {os.environ['FAKE_GH_RESET']}\\n\")\n"
     "sys.stdout.write('\\n{}\\n')\n"
+)
+CONDITIONAL_GH = (
+    "import os, sys\n"
+    "open(os.environ['FAKE_GH_LOG'], 'a', encoding='utf-8').write('x')\n"
+    "argv = sys.argv[1:]\n"
+    "sent = [value for value in argv if value.startswith('If-None-Match: ')]\n"
+    "etag = open(os.environ['FAKE_GH_ETAG'], encoding='utf-8').read().strip()\n"
+    "body = open(os.environ['FAKE_GH_BODY'], encoding='utf-8').read()\n"
+    "if sent == [f'If-None-Match: {etag}']:\n"
+    "    sys.stdout.write(f'HTTP/2.0 304 Not Modified\\netag: {etag}\\n\\n')\n"
+    "    raise SystemExit(0)\n"
+    "sys.stdout.write(f'HTTP/2.0 200 OK\\netag: {etag}\\n\\n{body}')\n"
 )
 BURST_CALLS = 3
 BURST_INTERVAL = 1.5
@@ -299,6 +312,62 @@ class GhPacingCarrierTests(unittest.TestCase):
         self.assertEqual(carrier.quota_wait_seconds(5000, 1_000_300.0, 1_000_000.0), 0.0)
         self.assertEqual(carrier.quota_wait_seconds(0, 1_000_300.0, 1_000_000.0), 360.0)
         self.assertEqual(carrier.quota_wait_seconds(0, 900_000.0, 1_000_000.0), 0.0)
+
+    def conditional_env(self, base: Path, etag: str, body: str) -> dict[str, str]:
+        env = self.carrier_env(base, CONDITIONAL_GH)
+        env["NOODLES_GH_ETAG_CACHE"] = str(base / "etag-cache")
+        env["FAKE_GH_ETAG"] = str(base / "etag.txt")
+        env["FAKE_GH_BODY"] = str(base / "body.txt")
+        Path(env["FAKE_GH_ETAG"]).write_text(etag + "\n", encoding="utf-8")
+        Path(env["FAKE_GH_BODY"]).write_text(body, encoding="utf-8")
+        return env
+
+    def test_conditional_request_replays_a_304_from_cache_but_changed_upstream_still_returns_fresh_bytes(self) -> None:
+        """ed3c/noodles#292 - both directions: a 304 costs zero core quota, and a stale cache that
+        served old bytes over a changed upstream would be worse than the spend it saves."""
+        base = self.scratch()
+        env = self.conditional_env(base, 'W/"v1"', '[{"number":1}]')
+        argv = [str(GH_CARRIER), "api", "repos/ed3c/noodles/issues?state=open", "--include"]
+
+        first = subprocess.run(argv, env=env, capture_output=True, check=False)
+        second = subprocess.run(argv, env=env, capture_output=True, check=False)
+
+        self.assertEqual((first.returncode, second.returncode), (0, 0))
+        self.assertIn(b'[{"number":1}]', first.stdout)
+        self.assertEqual(second.stdout, first.stdout)
+        self.assertIn(b"NOODLES_GH_NOT_MODIFIED", second.stderr)
+        self.assertNotIn(b"NOODLES_GH_NOT_MODIFIED", first.stderr)
+
+        Path(env["FAKE_GH_ETAG"]).write_text('W/"v2"\n', encoding="utf-8")
+        Path(env["FAKE_GH_BODY"]).write_text('[{"number":2}]', encoding="utf-8")
+        third = subprocess.run(argv, env=env, capture_output=True, check=False)
+
+        self.assertEqual(third.returncode, 0)
+        self.assertIn(b'[{"number":2}]', third.stdout)
+        self.assertNotIn(b"NOODLES_GH_NOT_MODIFIED", third.stderr)
+        self.assertEqual(self.calls(env), 3)
+
+    def test_planted_negative_mutations_and_header_free_reads_are_never_served_from_cache(self) -> None:
+        carrier = load_carrier_module()
+        for argv in (
+            ["api", "repos/ed3c/noodles/issues?state=open"],
+            ["api", "--method", "POST", "repos/ed3c/noodles/issues", "--include"],
+            ["api", "graphql", "--include", "-f", "query=x"],
+            ["issue", "view", "292"],
+        ):
+            self.assertIsNone(carrier.conditional_key(argv), argv)
+        self.assertIsNotNone(carrier.conditional_key(["api", "repos/ed3c/noodles", "--include"]))
+        # constraint: a GraphQL response states the GraphQL point budget in the core header names.
+        self.assertFalse(carrier.spends_core_budget(["api", "graphql", "--input", "-"]))
+        self.assertTrue(carrier.spends_core_budget(["api", "repos/ed3c/noodles"]))
+        # constraint: the key is per (token-identity, URL) - one identity's cached bytes must never
+        # constraint: be replayed to another, and two URLs must never collide on one entry.
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "ghs_one"}, clear=False):
+            one = carrier.conditional_key(["api", "repos/ed3c/noodles", "--include"])
+            other_url = carrier.conditional_key(["api", "repos/ed3c/other", "--include"])
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "ghs_two"}, clear=False):
+            two = carrier.conditional_key(["api", "repos/ed3c/noodles", "--include"])
+        self.assertEqual(len({one, other_url, two}), 3)
 
     def test_cook_path_ordering_puts_the_carrier_ahead_of_a_planted_decoy_gh(self) -> None:
         base = self.scratch()

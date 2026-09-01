@@ -114,6 +114,27 @@ CYCLE_STATUS_MEANINGS = {
     "quota_wait": "the generation stopped on a declared provider quota wait; recoverable, backoff runs until the bucket's own reset",
     "failed": "the generation exited non-zero for a reason the provider budget does not explain",
 }
+# constraint: ed3c/noodles#292 - one pointed query on GraphQL's separate point budget in place of
+# constraint: the per-issue REST fan-out. Bodies come with the issues; the open pull requests a
+# constraint: later cycle correlates against come with the same round trip.
+BACKLOG_GRAPHQL_QUERY = """
+query($owner: String!, $name: String!, $issues: String, $pulls: String) {
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, states: [OPEN], after: $issues, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number title body url state }
+    }
+    pullRequests(first: 100, states: [OPEN], after: $pulls) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number body url headRefName }
+    }
+  }
+}
+"""
+BACKLOG_GRAPHQL_PAGE_LIMIT = 50
+BACKLOG_CYCLE_PREFIX = ".noodle/backlog-cycle-"
+BACKLOG_EMPTY_BASE_SECONDS = 180.0
+BACKLOG_EMPTY_CEILING_SECONDS = 3600.0
 TOKEN_COMMAND_ENV = "NOODLES_TOKEN_COMMAND"
 GH_CARRIER_RELATIVE = ".agents/bin/gh"
 COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -834,7 +855,11 @@ def issue_contract_payload(
     cache = dependency_cache if dependency_cache is not None else {}
     observed = {}
     for dependency in contract["dependencies"] or ():
-        observed[dependency] = cache.setdefault(dependency, dependency_readback(dependency))
+        # constraint: ed3c/noodles#292 - `setdefault` evaluates its default even on a hit, so the
+        # constraint: cache was reading every predecessor once per dependent instead of once.
+        if dependency not in cache:
+            cache[dependency] = dependency_readback(dependency)
+        observed[dependency] = cache[dependency]
     body_sections = issue_contract.sections(body)
     resolved_requirements = known_requirements if known_requirements is not None else system_requirement_ids()
     derived = issue_contract.derive_schedulability(
@@ -2364,13 +2389,22 @@ def intake_comment(subject: Subject, title: str, defects: Sequence[str]) -> str:
     )
 
 
-def intake_normalize(issue: dict[str, Any], repository: str) -> dict[str, Any]:
+def intake_normalize(issue: dict[str, Any], repository: str, *, verify_live: bool = False) -> dict[str, Any]:
     """Apply the intake repair to one open issue and read the write back; conforming issues are untouched."""
     subject = Subject(repository, int(issue.get("number") or 0))
     body = issue.get("body") or ""
     plan = intake_normalization(body, subject, str(issue.get("title") or subject.value))
     if plan is None:
         return issue
+    if verify_live:
+        # constraint: ed3c/noodles#292 - a resumed cycle's finalists snapshot can be older than the
+        # constraint: bucket death that interrupted it; refuse to overwrite a body a human has since
+        # constraint: edited rather than silently discarding the edit underneath the derived markers.
+        live = gh_api(f"repos/{repository}/issues/{subject.number}")
+        if not isinstance(live, dict) or (live.get("body") or "") != body:
+            raise GateError(
+                f"intake normalization snapshot is stale for {subject.value}: live body changed since derivation"
+            )
     updated = gh_api(
         f"repos/{repository}/issues/{subject.number}", method="PATCH", payload={"body": plan["body"]}
     )
@@ -2385,10 +2419,228 @@ def intake_normalize(issue: dict[str, Any], repository: str) -> dict[str, Any]:
     return {**issue, "body": plan["body"]}
 
 
+def backlog_graphql_snapshot(repository: str) -> dict[str, Any]:
+    """One pointed GraphQL query in place of the whole per-issue REST fan-out.
+
+    ed3c/noodles#292 - open issues with their bodies plus the open pull requests a later cycle
+    correlates against, on GraphQL's own point budget. A malformed or errored response is named and
+    fails closed here: falling back to N REST reads would restore exactly the spend this replaces."""
+    owner, _, name = repository.partition("/")
+    if not owner or not name:
+        raise GateError(f"backlog GraphQL bulk sync needs an owner/name repository, got {repository!r}")
+    issues: list[dict[str, Any]] = []
+    pull_requests: list[dict[str, Any]] = []
+    issue_cursor: str | None = None
+    pull_cursor: str | None = None
+    issue_done = pull_done = False
+    for _ in range(BACKLOG_GRAPHQL_PAGE_LIMIT):
+        payload = gh_api(
+            "graphql",
+            method="POST",
+            payload={
+                "query": BACKLOG_GRAPHQL_QUERY,
+                "variables": {"owner": owner, "name": name, "issues": issue_cursor, "pulls": pull_cursor},
+            },
+        )
+        repo = (payload.get("data") or {}).get("repository") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or payload.get("errors") or not isinstance(repo, dict):
+            detail = json.dumps(payload.get("errors") if isinstance(payload, dict) else payload, default=str)[:400]
+            raise GateError(
+                f"backlog GraphQL bulk sync failed for {repository}: {detail}; "
+                "refusing to fall back to per-issue REST reads"
+            )
+        issue_page, pull_page = repo.get("issues"), repo.get("pullRequests")
+        if not isinstance(issue_page, dict) or not isinstance(pull_page, dict):
+            raise GateError(
+                f"backlog GraphQL bulk sync for {repository} returned no issues/pullRequests connections; "
+                "refusing to fall back to per-issue REST reads"
+            )
+        # constraint: one query carries two independently paginated connections, so an exhausted one
+        # constraint: keeps re-serving its first page while the other advances; consuming that page
+        # constraint: twice would silently duplicate every entry in it.
+        if not issue_done:
+            issues.extend(graphql_issue_records(repository, issue_page.get("nodes")))
+            issue_done = not bool((issue_page.get("pageInfo") or {}).get("hasNextPage"))
+            issue_cursor = str((issue_page.get("pageInfo") or {}).get("endCursor") or "") or None
+        if not pull_done:
+            pull_requests.extend(graphql_pull_records(repository, pull_page.get("nodes")))
+            pull_done = not bool((pull_page.get("pageInfo") or {}).get("hasNextPage"))
+            pull_cursor = str((pull_page.get("pageInfo") or {}).get("endCursor") or "") or None
+        if issue_done and pull_done:
+            return {"repository": repository, "issues": issues, "pull_requests": pull_requests}
+    raise GateError(f"backlog GraphQL bulk sync for {repository} did not terminate within {BACKLOG_GRAPHQL_PAGE_LIMIT} pages")
+
+
+def graphql_issue_records(repository: str, nodes: Any) -> list[dict[str, Any]]:
+    """GraphQL issue nodes in the exact shape every existing contract reader already consumes."""
+    if not isinstance(nodes, list):
+        raise GateError(f"backlog GraphQL issue nodes for {repository} were not an array")
+    records: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("number"), int):
+            raise GateError(f"backlog GraphQL issue node for {repository} was malformed")
+        records.append(
+            {
+                "number": node["number"],
+                "state": str(node.get("state") or "").lower() or "open",
+                "title": node.get("title") or "",
+                "body": node.get("body") or "",
+                "html_url": node.get("url") or "",
+            }
+        )
+    return records
+
+
+def graphql_pull_records(repository: str, nodes: Any) -> list[dict[str, Any]]:
+    if not isinstance(nodes, list):
+        raise GateError(f"backlog GraphQL pull request nodes for {repository} were not an array")
+    records: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("number"), int):
+            raise GateError(f"backlog GraphQL pull request node for {repository} was malformed")
+        records.append(
+            {
+                "number": node["number"],
+                "head_ref": str((node.get("headRef") or {}).get("name") or node.get("headRefName") or ""),
+                "body": node.get("body") or "",
+                "url": node.get("url") or "",
+            }
+        )
+    return records
+
+
+def backlog_backoff_seconds(consecutive_empty: int) -> float:
+    """How long an empty frontier is held before it is derived again.
+
+    ed3c/noodles#292 - 19 cycles x ~250 calls in one window, every one ending with no orders, is
+    what emptied the bucket. Re-polling an empty frontier at full price every three minutes is the
+    dominant idle waste, and doubling the hold is the smallest thing that removes it."""
+    if consecutive_empty <= 0:
+        return 0.0
+    return min(BACKLOG_EMPTY_BASE_SECONDS * float(2 ** min(consecutive_empty - 1, 20)), BACKLOG_EMPTY_CEILING_SECONDS)
+
+
+def backlog_cycle_path(project: Path, repository: str) -> Path:
+    return project / f"{BACKLOG_CYCLE_PREFIX}{repository.replace('/', '-')}.json"
+
+
+def backlog_cycle_record(project: Path, repository: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(backlog_cycle_path(project, repository).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) and payload.get("repository") == repository else {}
+
+
+def write_backlog_cycle(project: Path, repository: str, record: dict[str, Any]) -> None:
+    path = backlog_cycle_path(project, repository)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def backlog_items(
+    repository: str,
+    finalists: Mapping[str, Any],
+    dependency_cache: dict[str, dict[str, Any]],
+    known_requirements: frozenset[str],
+    *,
+    resumed: bool = False,
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for issue in finalists.get("issues") or ():
+        if "pull_request" in issue:
+            continue
+        try:
+            issue = intake_normalize(issue, repository, verify_live=resumed)
+            contract = issue_contract_payload(issue, None, dependency_cache, known_requirements)
+        except GateError as exc:
+            number = issue.get("number")
+            output.append(
+                {
+                    "id": f"{repository}#{number}",
+                    "title": issue.get("title") or f"{repository}#{number}",
+                    "status": "blocked",
+                    "url": issue.get("html_url"),
+                    "diagnostic": f"issue contract invalid: {exc}",
+                }
+            )
+            continue
+        output.append(
+            {
+                "id": contract["subject"],
+                "title": issue.get("title") or contract["subject"],
+                "status": contract["state"],
+                "url": issue.get("html_url"),
+                "target": contract["target"],
+                "feature": contract["feature"],
+                "dependencies": contract["dependencies"],
+                "blocker": contract["blocker"],
+                "body_sha256": contract["body_sha256"],
+                "requirements": contract["requirements"],
+                "schedulable": contract["schedulable"],
+                "reasons": contract["reasons"],
+            }
+        )
+    return output
+
+
+def sync_backlog(
+    project: Path,
+    repository: str,
+    dependency_cache: dict[str, dict[str, Any]],
+    known_requirements: frozenset[str],
+    *,
+    now: float,
+) -> list[dict[str, Any]]:
+    """One backlog cycle: front-loaded, resumable, and held when the frontier keeps coming back empty.
+
+    ed3c/noodles#292 - the finalists are persisted the moment they exist, before any per-subject
+    spend, so a bucket death in the finishing stage resumes from that derivation instead of paying
+    for it again. A cycle that produced nothing schedulable holds the next derivation for an
+    exponentially growing interval, and both the count and the interval live in the cycle record."""
+    record = backlog_cycle_record(project, repository)
+    empty_before = int(record.get("consecutive_empty") or 0)
+    if record.get("stage") == "complete" and now < float(record.get("next_derivation_at") or 0.0):
+        write_backlog_cycle(project, repository, {**record, "served": "backoff_hold"})
+        return [dict(item) for item in record.get("items") or ()]
+    finalists = record.get("finalists") if record.get("stage") == "finalists" else None
+    resumed = finalists is not None
+    if not resumed:
+        finalists = backlog_graphql_snapshot(repository)
+        write_backlog_cycle(project, repository, {
+            "repository": repository,
+            "stage": "finalists",
+            "finalists": finalists,
+            "consecutive_empty": empty_before,
+            "derived_at": now,
+            "resumed": False,
+            "served": "derived",
+        })
+    items = backlog_items(repository, finalists or {}, dependency_cache, known_requirements, resumed=resumed)
+    empty = 0 if any(item.get("schedulable") for item in items) else empty_before + 1
+    interval = backlog_backoff_seconds(empty)
+    write_backlog_cycle(project, repository, {
+        "repository": repository,
+        "stage": "complete",
+        "finalists": finalists,
+        "items": items,
+        "consecutive_empty": empty,
+        "interval_seconds": interval,
+        "derived_at": now,
+        "next_derivation_at": now + interval,
+        "resumed": resumed,
+        "served": "derived",
+    })
+    return items
+
+
 def adapter_sync() -> int:
+    root = repo_root()
     repositories = [item.strip() for item in os.getenv("NOODLES_REPOSITORIES", "").split(",") if item.strip()]
     if not repositories:
-        repositories = [runtime_gh_repo_from_git(repo_root(), error_cls=GateError)]
+        repositories = [runtime_gh_repo_from_git(root, error_cls=GateError)]
     output: list[dict[str, Any]] = []
     dependency_cache: dict[str, dict[str, Any]] = {}
     # constraint: ed3c/noodles#120 monitor reconcile - resolved once rather than once per issue below:
@@ -2396,43 +2648,11 @@ def adapter_sync() -> int:
     # constraint: unreadable specification would otherwise read as N unrelated per-issue defects
     # constraint: instead of one cause.
     known_requirements = system_requirement_ids()
+    project = runtime_contract.noodle_project_root(root, error_cls=GateError)
+    now = time.time()
     for repository in repositories:
-        issues = gh_api(f"repos/{repository}/issues?state=open&per_page=100")
-        for issue in issues:
-            if "pull_request" in issue:
-                continue
-            try:
-                issue = intake_normalize(issue, repository)
-                contract = issue_contract_payload(issue, None, dependency_cache, known_requirements)
-            except GateError as exc:
-                number = issue.get("number")
-                output.append(
-                    {
-                        "id": f"{repository}#{number}",
-                        "title": issue.get("title") or f"{repository}#{number}",
-                        "status": "blocked",
-                        "url": issue.get("html_url"),
-                        "diagnostic": f"issue contract invalid: {exc}",
-                    }
-                )
-                continue
-            output.append(
-                {
-                    "id": contract["subject"],
-                    "title": issue.get("title") or contract["subject"],
-                    "status": contract["state"],
-                    "url": issue.get("html_url"),
-                    "target": contract["target"],
-                    "feature": contract["feature"],
-                    "dependencies": contract["dependencies"],
-                    "blocker": contract["blocker"],
-                    "body_sha256": contract["body_sha256"],
-                    "requirements": contract["requirements"],
-                    "schedulable": contract["schedulable"],
-                    "reasons": contract["reasons"],
-                }
-            )
-    output.extend(findings_backlog_items(repo_root()))
+        output.extend(sync_backlog(project, repository, dependency_cache, known_requirements, now=now))
+    output.extend(findings_backlog_items(root))
     for item in output:
         print(json.dumps(item, separators=(",", ":")))
     return 0
