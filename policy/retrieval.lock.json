@@ -6,6 +6,8 @@
     "binary_sha256": "e2d5ad30710eba500cb5d783a914ea16ba4e5c66ac23abe8691165b4aa5732bc",
     "argv": ["grepai", "search", "{query}", "--json", "--compact", "--limit", "5"],
     "version_argv": ["grepai", "version"],
+    "init_argv": ["grepai", "init", "--yes", "--provider", "ollama", "--backend", "gob"],
+    "index_owner": "grepai watch (operator-owned long-running indexer; the intent ceremony never starts it)",
     "authority": "P",
     "embedder": {
       "provider": "ollama",

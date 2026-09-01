@@ -102,6 +102,47 @@ PR_ORIGIN_RE = re.compile(
     r"(?m)^<!-- noodles-origin: ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*) sha256:([0-9a-f]{64}) -->$"
 )
 CODE_INTEL_CHECKOUT_FIELD = "code_intel_checkout"
+# constraint: ed3c/noodles#295 - the retrieval slice's terminal conditions. backend-missing,
+# constraint: index-absent, index-mismatch, and a real miss are four different repairs, and a surface
+# constraint: that cannot tell them apart manufactures misdiagnoses instead of answering questions.
+RETRIEVAL_CAPABILITY = "code-intel-retrieval"
+RETRIEVAL_CANDIDATES = "candidates"
+RETRIEVAL_NO_MATCH = "no-match"
+RETRIEVAL_BACKEND_UNAVAILABLE = "backend-unavailable"
+RETRIEVAL_INDEX_ABSENT = "index-absent"
+RETRIEVAL_INDEX_MISMATCH = "index-mismatch"
+RETRIEVAL_STATES = (
+    RETRIEVAL_CANDIDATES,
+    RETRIEVAL_NO_MATCH,
+    RETRIEVAL_BACKEND_UNAVAILABLE,
+    RETRIEVAL_INDEX_ABSENT,
+    RETRIEVAL_INDEX_MISMATCH,
+)
+RETRIEVAL_FIELDS = (
+    "schema_version",
+    "capability",
+    "verb",
+    "state",
+    "authority",
+    "checkout_receipt",
+    "clone_path",
+    "repository",
+    "commit",
+    "query",
+    "embedder",
+    "backend",
+    "index",
+    "candidates",
+    "non_claims",
+)
+# constraint: grepai 0.30.0 populates vectors only from its watcher; `init` is the one-shot half.
+RETRIEVAL_INDEX_DAEMON_VERB = "watch"
+LOCAL_EMBEDDER_PROVIDERS = frozenset({"ollama", "lmstudio"})
+RETRIEVAL_NON_CLAIMS = (
+    "Every candidate is a hypothesis: the receipt marks each one unconfirmed until a cook verifies it against current bytes.",
+    "A zero-candidate result is a miss in this index at this commit, never proof that the code is absent.",
+    "Rank is similarity, never causality; the navigation slice or a direct read is what confirms a candidate.",
+)
 COMPONENT_MAP_PATH = "policy/components.json"
 COMPONENT_OWNER_MAP_PATH = "policy/component-owners.json"
 DEFINITION_DISPOSITION_PATH = "policy/definition-dispositions.json"
@@ -845,6 +886,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
     errors.extend(structural_contract.validate_parser_lock(root))
     errors.extend(retrieval_contract.validate_retrieval_lock(root))
+    errors.extend(retrieval_slice_lock_errors(root))
     errors.extend(scip_validation.validate_code_intel_lock(root))
     for executable in policy["required_executables"]:
         full = root / executable
@@ -4223,6 +4265,218 @@ def cross_repository_receipt_errors(receipt: Any, repository: str) -> list[str]:
     return []
 
 
+def retrieval_spend_admission(pin: Mapping[str, Any]) -> dict[str, Any]:
+    """Index construction is never an unmetered consumption channel.
+
+    The pinned embedder is a local model, so building the retrieval index makes no external call and
+    the receipt records a zero-spend local channel by name. An external provider would have to route
+    through a budget-aware carrier, and the machine owns exactly one - the GitHub call pacer at
+    `.agents/bin/gh` - so an external embedder is refused here rather than silently billed."""
+    embedder = pin["embedder"]
+    provider = str(embedder.get("provider", ""))
+    if provider not in LOCAL_EMBEDDER_PROVIDERS:
+        raise GateError(
+            f"retrieval embedder provider {provider!r} is external, so index construction would be an "
+            f"unmetered consumption channel; the machine's only budget-aware carrier is "
+            f"{GH_CARRIER_RELATIVE} and it carries GitHub calls, not embeddings. Route the embedder "
+            f"through a metered carrier before pinning it, or pin one of {sorted(LOCAL_EMBEDDER_PROVIDERS)}"
+        )
+    return {
+        "provider": provider,
+        "model": str(embedder.get("model", "")),
+        "digest": str(embedder.get("digest", "")),
+        "dimensions": embedder.get("dimensions"),
+        "external": False,
+        "external_calls": 0,
+        "spend": 0.0,
+        "metered_carrier": None,
+        "reason": "pinned local embedding model; index construction opens no external channel",
+    }
+
+
+def retrieval_slice_lock_errors(root: Path) -> list[str]:
+    """Deterministic gate for the retrieval slice's own two lock fields, run with no tool and no index.
+
+    `retrieval_contract.validate_retrieval_lock` already owns the search pin; this adds only what the
+    lazy-initialisation half needs, so the lock keeps exactly one writer per field."""
+    try:
+        pin = json.loads((Path(root) / retrieval_contract.LOCK_PATH).read_text(encoding="utf-8"))["retrieval"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return []
+    errors = retrieval_init_argv_errors(pin)
+    try:
+        retrieval_spend_admission(pin)
+    except GateError as failure:
+        errors.append(str(failure))
+    return errors
+
+
+def retrieval_init_argv_errors(pin: Mapping[str, Any]) -> list[str]:
+    """The lazy backend initialisation is pinned argv like every other tool call, and it must stay
+    one-shot: the daemon that populates vectors is a separate owner, never something a batch ceremony
+    starts behind a cook's back."""
+    command = str(pin.get("command", ""))
+    argv = pin.get("init_argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(token, str) for token in argv):
+        return [f"{retrieval_contract.LOCK_PATH} retrieval init_argv must be a non-empty list of exact string tokens"]
+    errors: list[str] = []
+    if argv[0] != command:
+        errors.append(f"retrieval init_argv[0] must be the pinned command {command!r}, got {argv[0]!r}")
+    if retrieval_contract.QUERY_PLACEHOLDER in " ".join(argv):
+        errors.append(f"retrieval init_argv must not contain {retrieval_contract.QUERY_PLACEHOLDER}")
+    if RETRIEVAL_INDEX_DAEMON_VERB in argv:
+        errors.append(
+            f"retrieval init_argv must stay one-shot; {RETRIEVAL_INDEX_DAEMON_VERB!r} is the long-running "
+            "indexer and is owned by its operator, not by this batch ceremony"
+        )
+    if not str(pin.get("index_owner", "")).strip():
+        errors.append("retrieval index_owner must name what populates the vectors, so an empty index has an addressee")
+    return errors
+
+
+def ensure_retrieval_backend(index_root: Path, pin: Mapping[str, Any]) -> dict[str, Any]:
+    """Lazily materialize the per-repository file-backed backend on the first intent query.
+
+    One-shot and daemon-free: it writes the backend's own config beside the clone, never inside it, so
+    a cook needs no setup and the target tree stays residue-free."""
+    index_root = Path(index_root).resolve()
+    marker = index_root / retrieval_contract.INDEX_DIRNAME / "config.yaml"
+    if marker.is_file():
+        return {"initialized": False, "config": str(marker)}
+    index_root.mkdir(parents=True, exist_ok=True)
+    result = run(list(pin["init_argv"]), cwd=index_root, check=False)
+    if result.returncode != 0 or not marker.is_file():
+        raise GateError(
+            f"retrieval backend initialisation failed: {(result.stderr or result.stdout).strip() or 'no config written'}"
+        )
+    return {"initialized": True, "config": str(marker)}
+
+
+def write_intent_receipt(path: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    receipt["receipt_path"] = str(path)
+    write_json(path, receipt)
+    return receipt
+
+
+def retrieval_index_admission(index_root: Path, clone: Path, commit: str) -> dict[str, Any]:
+    """Refuse a commit-mismatched or corrupted retrieval index before any query runs.
+
+    Both checks are file and git reads, so hosted CI runs them with the retrieval binary absent. An
+    empty or truncated index answers every query with a result that is byte-identical to a real miss,
+    which is exactly the misdiagnosis this surface exists to retire."""
+    head = git(clone, "rev-parse", "HEAD")
+    if head != commit:
+        raise GateError(f"index-mismatch: {clone} now sits at {head}, not the checked-out {commit}")
+    index = Path(index_root) / retrieval_contract.INDEX_DIRNAME / retrieval_contract.INDEX_FILENAME
+    if not index.is_file() or index.stat().st_size == 0:
+        raise GateError(
+            f"index-absent: no populated retrieval index at {index}; an unindexed clone answers every "
+            "query with an empty result that is indistinguishable from a real miss"
+        )
+    return {"index_root": str(index_root), "index_bytes": index.stat().st_size, "index_sha256": sha256_file(index)}
+
+
+def code_intel_intent(root: Path, checkout_receipt: str, query: str) -> dict[str, Any]:
+    """The retrieval slice of the code-intel surface: 'where is the code that does X'.
+
+    Answers are hypotheses. Every candidate is written into the receipt marked unconfirmed, because a
+    ranked list is the machine asking a better question, not the machine knowing the answer. Backend
+    absent, index absent, index stale, and a real miss are four distinct states, because a surface
+    that cannot tell them apart manufactures misdiagnoses."""
+    if not query.strip():
+        raise GateError("retrieval intent requires a non-empty query")
+    root = Path(root).resolve()
+    receipt_path = Path(checkout_receipt).resolve()
+    pins = scip_validation.load_code_intel_pins(root)
+    try:
+        checkout = load_json(receipt_path)
+    except GateError as exc:
+        raise GateError(f"cannot read checkout receipt {receipt_path}: {exc}") from exc
+    scip_validation.admit_checkout_receipt(checkout, pins)
+    pin = retrieval_contract.load_retrieval_pin(root, error_cls=GateError)
+    errors = retrieval_init_argv_errors(pin)
+    if errors:
+        raise GateError("; ".join(errors))
+    workspace = receipt_path.parent
+    clone = Path(str(checkout["clone_path"]))
+    receipt: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "capability": RETRIEVAL_CAPABILITY,
+        "verb": "intent",
+        "authority": retrieval_contract.AUTHORITY,
+        "state": RETRIEVAL_CANDIDATES,
+        "checkout_receipt": str(receipt_path),
+        "clone_path": str(clone),
+        "repository": str(checkout["repository"]),
+        "commit": str(checkout["commit"]),
+        "query": query,
+        "embedder": retrieval_spend_admission(pin),
+        "backend": {},
+        "index": {},
+        "candidates": [],
+        "non_claims": list(RETRIEVAL_NON_CLAIMS),
+    }
+    intent_path = workspace / f"intent-{hashlib.sha256(query.encode()).hexdigest()[:12]}.json"
+    try:
+        receipt["backend"] = retrieval_contract.verify_pinned_executable(pin, error_cls=GateError)
+    except GateError as failure:
+        receipt["state"] = RETRIEVAL_BACKEND_UNAVAILABLE
+        receipt["diagnostic"] = f"{failure} (pinned in {retrieval_contract.LOCK_PATH} as {pin['command']} {pin['version']})"
+        return write_intent_receipt(intent_path, receipt)
+    receipt["backend"]["initialisation"] = ensure_retrieval_backend(workspace, pin)
+    try:
+        receipt["index"] = retrieval_index_admission(workspace, clone, str(checkout["commit"]))
+    except GateError as failure:
+        receipt["state"] = RETRIEVAL_INDEX_MISMATCH if "index-mismatch" in str(failure) else RETRIEVAL_INDEX_ABSENT
+        receipt["diagnostic"] = f"{failure}; vector population is owned by {pin['index_owner']!r}"
+        return write_intent_receipt(intent_path, receipt)
+    search = retrieval_contract.pinned_search(pin, receipt["index"]["index_root"], error_cls=GateError)
+    candidates = retrieval_contract.parse_candidates(search(query), error_cls=GateError)
+    readbacks = [retrieval_contract.readback_candidate(clone, candidate, error_cls=GateError) for candidate in candidates]
+    receipt["candidates"] = [{**item, "confirmed": False} for item in readbacks]
+    receipt["state"] = RETRIEVAL_CANDIDATES if readbacks else RETRIEVAL_NO_MATCH
+    return write_intent_receipt(intent_path, receipt)
+
+
+def admit_intent_receipt(receipt: Any, pin: Mapping[str, Any]) -> dict[str, Any]:
+    """Admit an intent receipt only when it names the pinned backend and embedder, carries a query,
+    and marks every candidate unconfirmed."""
+    if not isinstance(receipt, dict):
+        raise GateError("intent receipt must be a JSON object")
+    missing = [field for field in RETRIEVAL_FIELDS if field not in receipt]
+    if missing:
+        raise GateError(f"intent receipt is an agent self-report; missing physical fields: {', '.join(missing)}")
+    if receipt["capability"] != RETRIEVAL_CAPABILITY or receipt["verb"] != "intent":
+        raise GateError(f"intent receipt names {receipt['capability']!r}/{receipt['verb']!r}")
+    if receipt["authority"] != retrieval_contract.AUTHORITY:
+        raise GateError(f"intent receipt claims authority {receipt['authority']!r}; retrieval is candidate-only")
+    if receipt["state"] not in RETRIEVAL_STATES:
+        raise GateError(f"intent receipt declares undefined state {receipt['state']!r}; defined: {', '.join(RETRIEVAL_STATES)}")
+    if not str(receipt["query"]).strip():
+        raise GateError("intent receipt records no query")
+    if not str(receipt["checkout_receipt"]).strip():
+        raise GateError("intent receipt names no checkout receipt")
+    if not receipt["non_claims"]:
+        raise GateError("intent receipt records no non-claims")
+    embedder = receipt["embedder"] if isinstance(receipt["embedder"], dict) else {}
+    if embedder.get("provider") != pin["embedder"]["provider"] or embedder.get("digest") != pin["embedder"]["digest"]:
+        raise GateError("intent receipt does not name the pinned embedding model that computed the index")
+    if embedder.get("external") is not False or embedder.get("external_calls") != 0:
+        raise GateError("intent receipt records an unmetered external embedding channel")
+    if receipt["state"] != RETRIEVAL_CANDIDATES:
+        raise GateError(f"intent receipt state is {receipt['state']!r}: {receipt.get('diagnostic') or 'no diagnostic recorded'}")
+    if receipt["backend"].get("sha256") != pin["binary_sha256"]:
+        raise GateError("intent receipt records a retrieval binary that is not the pinned digest")
+    if not receipt["candidates"]:
+        raise GateError("intent receipt in the candidates state carries no candidates")
+    for candidate in receipt["candidates"]:
+        if candidate.get("confirmed") is not False:
+            raise GateError(f"intent receipt candidate {candidate.get('path')!r} is not marked unconfirmed")
+        if not str(candidate.get("path") or "") or int(candidate.get("start_line") or 0) < 1:
+            raise GateError("intent receipt candidate carries no file and line")
+    return receipt
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="noodles")
     parser.add_argument("--root", default=None, help="repository root (testing/audit only)")
@@ -4337,6 +4591,9 @@ def build_parser() -> argparse.ArgumentParser:
     ceremony_lookup_command.add_argument("--checkout-receipt", required=True)
     ceremony_lookup_command.add_argument("--module", required=True)
     ceremony_lookup_command.add_argument("--name", required=True)
+    ceremony_intent_command = ceremony_sub.add_parser("intent")
+    ceremony_intent_command.add_argument("--checkout-receipt", required=True)
+    ceremony_intent_command.add_argument("--query", required=True)
     return parser
 
 
@@ -4577,6 +4834,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.ceremony_verb == "lookup":
                 print(json.dumps(ceremony_lookup(root, args.checkout_receipt, args.module, args.name), indent=2, sort_keys=True))
                 return 0
+            if args.ceremony_verb == "intent":
+                receipt = code_intel_intent(root, args.checkout_receipt, args.query)
+                print(json.dumps(receipt, indent=2, sort_keys=True))
+                return 0 if receipt["state"] in {RETRIEVAL_CANDIDATES, RETRIEVAL_NO_MATCH} else 1
             if args.ceremony_verb == "gh":
                 child = list(args.argv[1:] if args.argv[:1] == ["--"] else args.argv)
                 result = paced_gh(root, child, check=False)

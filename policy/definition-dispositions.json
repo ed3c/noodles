@@ -102,6 +102,7 @@
           "repo_root",
           "repository_metrics",
           "requirement_definition_source",
+          "retrieval_spend_admission",
           "rotation_env",
           "run",
           "session_worktree_paths",
@@ -120,6 +121,7 @@
           "validate_comment_tags",
           "workflow_run_readback",
           "write_backlog_cycle",
+          "write_intent_receipt",
           "write_json"
         ]
       },
