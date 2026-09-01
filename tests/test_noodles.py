@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
@@ -72,7 +73,7 @@ class RepositoryGateTests(unittest.TestCase):
             return noodles.verify_repository(root, ENGINE_ROOT)
 
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-test-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
@@ -613,7 +614,7 @@ class RepositoryGateTests(unittest.TestCase):
         )
 
     def test_planted_negative_schedule_self_order_fixture_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-schedule-negative-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
             runtime = root / ".noodle"
@@ -660,7 +661,7 @@ class RepositoryGateTests(unittest.TestCase):
         )
 
     def test_schedule_publish_is_atomic_and_does_not_mutate_active_orders(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-schedule-contract-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-schedule-contract-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             shutil.copytree(ENGINE_ROOT / "policy", root / "policy")
             runtime = root / ".noodle"
@@ -1022,6 +1023,54 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(all(not skill_contract.threshold_exceeded(metrics[k], d, policy[p]) for k, (d, p) in skill_contract.FAILING_FITNESS_LIMITS.items()))
 
 
+class FixtureTeardownTests(unittest.TestCase):
+    """ed3c/noodles#319: a fixture's teardown must not be able to red a run.
+
+    Observed three times in one lane's verify runs, on two different fixtures and on candidates that
+    touch neither: `shutil.rmtree` walks a fixture's git tree with `os.scandir`, something repopulates
+    a directory before the matching `os.rmdir`, and the run reports `ERROR: <test name>` for a test
+    whose own assertions all passed. The writer is not identified, and this disposition deliberately
+    does not depend on identifying it: cleanup is not part of what any control asserts, so cleanup is
+    made unable to fail."""
+
+    def temporary_directory_calls(self) -> list[tuple[str, int, list[str]]]:
+        calls: list[tuple[str, int, list[str]]] = []
+        for path in sorted((CANDIDATE_ROOT / "tests").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                if node.func.attr != "TemporaryDirectory":
+                    continue
+                relative = path.relative_to(CANDIDATE_ROOT).as_posix()
+                calls.append((relative, node.lineno, [keyword.arg or "**" for keyword in node.keywords]))
+        return calls
+
+    def test_every_fixture_temporary_directory_tolerates_a_failed_cleanup(self) -> None:
+        calls = self.temporary_directory_calls()
+        self.assertTrue(calls, "no tempfile.TemporaryDirectory call sites found under tests/")
+        undisposed = [f"{path}:{line}" for path, line, keywords in calls if "ignore_cleanup_errors" not in keywords]
+        self.assertEqual(undisposed, [], "these call sites can still fail a run from teardown")
+
+    def test_the_disposition_really_swallows_a_cleanup_failure_on_this_python(self) -> None:
+        """The coverage check above proves the kwarg is written; this proves it does what it claims.
+
+        The planted failure is the exact observed one - `os.rmdir` answering ENOTEMPTY partway through
+        the walk - so this is the negative control for the coverage check above: without the kwarg the
+        same planted failure escapes and reds the run."""
+        for ignore, expect_raise in ((True, False), (False, True)):
+            with self.subTest(ignore_cleanup_errors=ignore):
+                temp = tempfile.TemporaryDirectory(prefix="noodles-teardown-control-", ignore_cleanup_errors=ignore)
+                name = temp.name
+                self.addCleanup(shutil.rmtree, name, True)
+                with mock.patch("os.rmdir", side_effect=OSError(39, "Directory not empty")):
+                    if expect_raise:
+                        with self.assertRaises(OSError):
+                            temp.cleanup()
+                    else:
+                        temp.cleanup()
+
+
 class StartUnattendedTests(unittest.TestCase):
     def test_control_checkout_admission_fails_before_runtime_provider_sync_or_spawn(self) -> None:
         with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
@@ -1200,7 +1249,7 @@ class StartUnattendedTests(unittest.TestCase):
             assert_materialized(start_entrypoint_with_delayed_listener(start_listener=False))
 
     def test_codex_real_bin_export_materializes_fixture_only_in_offline_mode(self) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-export-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-export-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
 
@@ -1217,7 +1266,7 @@ class StartUnattendedTests(unittest.TestCase):
             self.assertIsNone(codex_real_bin_export(base))
 
     def test_codex_real_bin_override_is_load_bearing_for_planted_resolver(self) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-fixture-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-fixture-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         fake_codex = Path(temp.name) / "fake-codex"
         write_fake_codex_stub(fake_codex)
@@ -1382,7 +1431,7 @@ class ProviderPhysicalTests(unittest.TestCase):
 
 class RuntimePhysicalTests(unittest.TestCase):
     def runtime_candidate(self, version: str = "v9.9.9") -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-runtime-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-runtime-test-", ignore_cleanup_errors=True)
         candidate = Path(temp.name) / "candidate"
         copy_tracked(CANDIDATE_ROOT, candidate)
         runtime_path = Path(temp.name) / "bin"
@@ -1511,7 +1560,7 @@ CONTROL_URL = "http://127.0.0.1:3210"
 
 class DaemonLeaseTests(unittest.TestCase):
     def lease_project(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-lease-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-lease-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         project = Path(temp.name)
         (project / ".noodle").mkdir()

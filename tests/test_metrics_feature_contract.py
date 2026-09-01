@@ -50,7 +50,7 @@ class MetricsFeatureVerifierTests(unittest.TestCase):
     independently recompute the reported metric from the git tree, not trust the CLI's own report."""
 
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-metrics-feature-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-metrics-feature-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)

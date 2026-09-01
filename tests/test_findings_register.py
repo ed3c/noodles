@@ -24,7 +24,7 @@ class PlantedRegister:
     """A tree carrying only the two files the gate reads, so a planted defect is the only variable."""
 
     def __init__(self, case: unittest.TestCase) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-findings-register-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-findings-register-", ignore_cleanup_errors=True)
         case.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / "policy").mkdir()

@@ -22,7 +22,7 @@ from tests.support import (
 
 class ProviderReplacementTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-provider-replacement-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-provider-replacement-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
@@ -32,7 +32,7 @@ class ProviderReplacementTests(unittest.TestCase):
         cmd(["git", "commit", "-q", "-m", "provider replacement negative"], root)
 
     def runtime_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-provider-discovery-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-provider-discovery-", ignore_cleanup_errors=True)
         candidate = Path(temp.name) / "candidate"
         copy_tracked(CANDIDATE_ROOT, candidate)
         binary = Path(temp.name) / "bin/noodle"

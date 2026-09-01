@@ -34,7 +34,7 @@ OBSERVATIONS = (
 class EvidenceLedgerTests(unittest.TestCase):
     def ledger_dir(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         # constraint: a real on-disk SQLite database, never :memory:, so residue is observable.
-        temp = tempfile.TemporaryDirectory(prefix="noodles-evidence-ledger-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-evidence-ledger-", ignore_cleanup_errors=True)
         return temp, Path(temp.name)
 
     def test_insert_exact_readback_and_order_independent_rebuild(self) -> None:

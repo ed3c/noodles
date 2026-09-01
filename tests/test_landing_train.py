@@ -309,7 +309,7 @@ class LandingRaceTests(unittest.TestCase):
         return RaceLandApi(self.BASE, pulls, issues)
 
     def land(self, api: RaceLandApi, pr_number: int, issue_number: int, head_sha: str) -> dict:
-        with tempfile.TemporaryDirectory(prefix="noodles-landing-race-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-landing-race-", ignore_cleanup_errors=True) as name:
             work = Path(name)
             event_path = work / "event.json"
             receipt_path = work / "receipt.json"
@@ -397,7 +397,7 @@ class LandingRaceTests(unittest.TestCase):
 
 class LandingTrainRebaseTests(unittest.TestCase):
     def test_planted_control_sibling_behind_new_main_is_rebased_and_pushed_with_lease(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             pulls = [pr_fixture(2, 500, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -418,7 +418,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertEqual(sorted(tree), ["a.txt", "b.txt", "c.txt"])
 
     def test_planted_conflict_control_fails_back_naming_paths_and_never_pushes(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=True)
             pulls = [pr_fixture(3, 501, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -439,7 +439,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertIn("never auto-resolves", payload["body"])
 
     def test_planted_negative_absent_push_token_fails_closed_before_touching_the_remote(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             pulls = [pr_fixture(8, 502, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -454,7 +454,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertEqual(posts, [])
 
     def test_head_drift_between_selection_and_fetch_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             with self.assertRaisesRegex(noodles.GateError, "landing train head drifted"):
@@ -465,7 +465,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
 
 class LandingTrainBoundaryTests(unittest.TestCase):
     def workflow_boundary(self, mutate) -> tuple[list[str], dict]:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-boundary-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-boundary-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             workflow_dir = root / ".github/workflows"
             workflow_dir.mkdir(parents=True)

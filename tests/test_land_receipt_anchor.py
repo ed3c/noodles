@@ -106,7 +106,7 @@ class LandApi:
 
 class LandReceiptAnchorTests(unittest.TestCase):
     def land(self, api: LandApi) -> dict:
-        with tempfile.TemporaryDirectory(prefix="noodles-land-anchor-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-land-anchor-", ignore_cleanup_errors=True) as name:
             work = Path(name)
             event_path = work / "event.json"
             receipt_path = work / "receipt.json"

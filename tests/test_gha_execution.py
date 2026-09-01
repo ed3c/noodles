@@ -402,7 +402,7 @@ class VerifyPullRequestGhaGateTests(unittest.TestCase):
     def run_verify(self, body: str, changed_files: list[str], *, head_ref: str = BRANCH, pr_body: str | None = None,
                    run_env: dict[str, str] | None = None,
                    frontier: tuple[dict[str, object], ...] = ()) -> dict[str, object]:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         event_path = base / "event.json"

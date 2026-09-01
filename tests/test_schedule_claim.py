@@ -214,7 +214,7 @@ class ProviderClaimTests(unittest.TestCase):
 
 class SchedulePublishTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="noodles-schedule-claim-")
+        self.temp = tempfile.TemporaryDirectory(prefix="noodles-schedule-claim-", ignore_cleanup_errors=True)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, self.root)
@@ -839,7 +839,7 @@ class StaleCycleReceiptRetirementTests(unittest.TestCase):
     accept, and it is scoped to receipts an earlier generation wrote."""
 
     def candidate(self, body: str) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-stale-cycle-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-stale-cycle-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)

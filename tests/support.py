@@ -523,7 +523,7 @@ def handoff_fixture(
     worktree_name: str | None = None,
 ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, str]:
     worktree_name = worktree_name or execute_branch_name(subject)
-    temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-")
+    temp = tempfile.TemporaryDirectory(prefix="noodles-handoff-test-", ignore_cleanup_errors=True)
     root = Path(temp.name) / "repo"
     copy_tracked(source, root)
     cmd(["git", "remote", "add", "origin", "git@github.com:ed3c/noodles.git"], root)
@@ -552,7 +552,7 @@ def handoff_fixture(
 
 
 def provider_fixture(subpath: str = "skills/control-noodle", license_path: str = "LICENSE") -> tuple[tempfile.TemporaryDirectory[str], Path]:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-provider-test-")
+    temp = tempfile.TemporaryDirectory(prefix="noodles-provider-test-", ignore_cleanup_errors=True)
     base = Path(temp.name)
     candidate = base / "candidate"
     copy_tracked(CANDIDATE_ROOT, candidate)
@@ -616,7 +616,7 @@ def provider_fixture(subpath: str = "skills/control-noodle", license_path: str =
 
 
 def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-cursor-provider-test-")
+    temp = tempfile.TemporaryDirectory(prefix="noodles-cursor-provider-test-", ignore_cleanup_errors=True)
     base = Path(temp.name)
     candidate = base / "candidate"
     copy_tracked(CANDIDATE_ROOT, candidate)
@@ -658,7 +658,7 @@ def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
 
 
 def control_checkout_fixture(source: Path = CANDIDATE_ROOT) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-control-checkout-test-")
+    temp = tempfile.TemporaryDirectory(prefix="noodles-control-checkout-test-", ignore_cleanup_errors=True)
     base = Path(temp.name)
     provider = base / "provider"
     copy_tracked(source, provider)
@@ -897,7 +897,7 @@ def codex_real_bin_export(base: Path) -> str | None:
 
 
 def codex_real_bin_resolution(*, override: Path | None) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-probe-") as temp_name:
+    with tempfile.TemporaryDirectory(prefix="noodles-codex-real-bin-probe-", ignore_cleanup_errors=True) as temp_name:
         base = Path(temp_name)
         probe = base / "resolve_codex.py"
         write_codex_real_bin_probe(probe)
@@ -1182,7 +1182,7 @@ def graphql_backlog_payload(issues: list[dict], pulls: list[dict] | tuple = ()) 
 @contextlib.contextmanager
 def backlog_project():
     """A throwaway Noodle project, so a sync's cycle record never lands in the real checkout."""
-    with tempfile.TemporaryDirectory(prefix="noodles-backlog-project-") as name:
+    with tempfile.TemporaryDirectory(prefix="noodles-backlog-project-", ignore_cleanup_errors=True) as name:
         project = Path(name)
         (project / ".noodle").mkdir()
         with mock.patch.dict(os.environ, {"NOODLE_PROJECT_DIR": str(project)}, clear=False):

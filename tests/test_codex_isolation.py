@@ -32,7 +32,7 @@ PERMISSION_PROFILE_ARGS = [
 
 class CodexIsolationTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-isolation-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-isolation-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root

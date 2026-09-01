@@ -70,13 +70,13 @@ def move_to_unrelated_section(content: str, chunk: str) -> str:
 
 class ScheduleContractTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-schedule-policy-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-schedule-policy-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
 
     def run_carrier(self, argv: list[str], root: Path = CANDIDATE_ROOT) -> subprocess.CompletedProcess[str]:
-        with tempfile.TemporaryDirectory(prefix="noodles-codex-carrier-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-codex-carrier-", ignore_cleanup_errors=True) as temp_name:
             fake_codex = Path(temp_name) / "codex"
             fake_codex.write_text(
                 f"#!{sys.executable}\n"
@@ -99,7 +99,7 @@ class ScheduleContractTests(unittest.TestCase):
             )
 
     def local_publish(self, payload: dict[str, object], current: dict[str, object] | None = None) -> dict[str, object]:
-        with tempfile.TemporaryDirectory(prefix="noodles-local-publish-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-local-publish-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             runtime = root / ".noodle"
             runtime.mkdir()
@@ -133,7 +133,7 @@ class ScheduleContractTests(unittest.TestCase):
         self, payload: dict[str, object], current: dict[str, object] | None = None
     ) -> dict[str, object]:
         binary = runtime_contract.resolve_locked_runtime_binary(CANDIDATE_ROOT, error_cls=AssertionError)
-        with tempfile.TemporaryDirectory(prefix="noodles-runtime-promote-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-runtime-promote-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             init = subprocess.run(
                 [str(binary), "--project-dir", str(root), "start", "--once"],
@@ -712,7 +712,7 @@ class ConcurrencyProofLockTests(unittest.TestCase):
     PROOF = skill_contract.CONCURRENCY_PROOF_PATH
 
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-concurrency-proof-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-concurrency-proof-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root

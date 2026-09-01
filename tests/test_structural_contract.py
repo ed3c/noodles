@@ -39,7 +39,7 @@ SAMPLE = (
 
 
 def candidate_copy(case: unittest.TestCase) -> Path:
-    temp = tempfile.TemporaryDirectory(prefix="noodles-structural-test-")
+    temp = tempfile.TemporaryDirectory(prefix="noodles-structural-test-", ignore_cleanup_errors=True)
     case.addCleanup(temp.cleanup)
     root = Path(temp.name) / "repo"
     copy_tracked(CANDIDATE_ROOT, root)

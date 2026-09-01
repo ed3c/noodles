@@ -237,7 +237,7 @@ def provider_issue(number: int, **overrides: object) -> dict:
 
 class SchedulePublishAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-executor-admission-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-executor-admission-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, self.root)

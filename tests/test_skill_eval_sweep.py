@@ -56,7 +56,7 @@ class SweepHarness:
     """One real filesystem: a lane index, an archive root with real bytes, and an empty out dir."""
 
     def __init__(self, case: unittest.TestCase, lanes: list[dict], archives: dict[str, bytes]) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-skill-eval-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-skill-eval-", ignore_cleanup_errors=True)
         case.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.archive_root = self.root / "archives"
@@ -298,7 +298,7 @@ class SecretHygieneTests(unittest.TestCase):
 
 class LaneIndexShapeTests(unittest.TestCase):
     def index_error(self, payload: object) -> str:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-skill-eval-index-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-skill-eval-index-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         path = Path(temp.name) / "lane-index.json"
         path.write_text(json.dumps(payload), encoding="utf-8")

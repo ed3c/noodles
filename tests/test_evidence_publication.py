@@ -230,7 +230,7 @@ class PublicationProducerTests(unittest.TestCase):
         self.assertIn("no admitted Google Drive destination credential", published["reason"])
 
     def test_planted_negative_a_credential_in_a_candidate_lock_fails_the_trusted_gate(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-evidence-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-evidence-", ignore_cleanup_errors=True) as name:
             candidate = Path(name) / "candidate"
             shutil.copytree(CANDIDATE_ROOT / "policy", candidate / "policy")
             leaked = candidate / "policy/leaked.lock.json"
@@ -243,7 +243,7 @@ class PublicationProducerTests(unittest.TestCase):
 
 class VerifyPullRequestEvidenceGateTests(unittest.TestCase):
     def run_verify(self, candidate: Path) -> dict:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-evidence-verify-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-evidence-verify-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         (base / "event.json").write_text(json.dumps({
@@ -273,7 +273,7 @@ class VerifyPullRequestEvidenceGateTests(unittest.TestCase):
         self.assertIn("candidate/workflows/verify.yml", recorded)
 
     def test_planted_negative_a_leaking_candidate_never_receives_a_landing_receipt(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-evidence-leak-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-evidence-leak-", ignore_cleanup_errors=True) as name:
             candidate = Path(name) / "candidate"
             shutil.copytree(CANDIDATE_ROOT / "policy", candidate / "policy")
             (candidate / "policy/leaked.lock.json").write_bytes(b'{"key": "' + PLANTED["private-key-block"] + b'"}\n')
