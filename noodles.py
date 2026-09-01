@@ -3417,6 +3417,56 @@ def ceremony_rebase(root: Path, upstream: str) -> dict[str, Any]:
     return {"verb": "rebase", "upstream": upstream, "before": before, "head": git(root, "rev-parse", "HEAD")}
 
 
+def ceremony_plant(root: Path, patch: Path, *, reverse: bool) -> dict[str, Any]:
+    """Apply or reverse one planted defect as exact hunks, never as a whole-file revert.
+
+    ed3c/noodles#269 - the plant/unplant ritual this repository requires for every load-bearing
+    control (plant, confirm red, revert the plant, confirm green) runs precisely while the working
+    tree carries the atom's own uncommitted edits to the same files. `git checkout -- <file>`
+    discards the entire working-tree copy with no diff and no confirmation, so the co-resident
+    uncommitted work goes with the plant; that cost was paid twice in one lane. A convention every
+    agent has to remember at every call site is a defect of shape, so the reversible form becomes
+    the mechanically shortest one instead of a warning nobody re-reads.
+
+    The hunk-exact carrier is `git apply`, already installed and already atomic: it rejects the
+    whole patch rather than applying it partly, and it never reads or writes a byte the patch does
+    not name. Both directions are the same patch file, so a plant cannot drift from its own
+    reversal. `--check` runs first, so a patch that no longer applies refuses before touching
+    anything; afterwards the opposite direction must apply, which is the direct readback that the
+    tree really moved and is really reversible - a success line is never printed on an assumption.
+
+    Non-claim: this admits a reversible form, it does not forbid the raw command. Nothing here
+    touches the index or the stash: the shared stash stack is multi-session state and the index is
+    shared with every other session on the same checkout."""
+    verb = "unplant" if reverse else "plant"
+    patch_path = patch if patch.is_absolute() else root / patch
+    if not patch_path.is_file():
+        raise GateError(f"ceremony {verb} needs an existing patch file, got {patch_path}")
+
+    def apply(*flags: str, reversed_direction: bool) -> subprocess.CompletedProcess[str]:
+        argv = ["git", "apply", *(("--reverse",) if reversed_direction else ()), *flags, "--", str(patch_path)]
+        return run(argv, cwd=root, check=False)
+
+    probe = apply("--check", reversed_direction=reverse)
+    if probe.returncode != 0:
+        raise GateError(
+            f"ceremony {verb} refused: {patch_path} does not apply cleanly to this tree and nothing was "
+            f"touched: {(probe.stderr or probe.stdout).strip()}"
+        )
+    numstat = apply("--numstat", reversed_direction=reverse)
+    paths = sorted({line.split("\t")[-1] for line in numstat.stdout.splitlines() if line.strip()})
+    result = apply(reversed_direction=reverse)
+    if result.returncode != 0:
+        raise GateError(f"ceremony {verb} failed: {(result.stderr or result.stdout).strip()}")
+    readback = apply("--check", reversed_direction=not reverse)
+    if readback.returncode != 0:
+        raise GateError(
+            f"ceremony {verb} readback failed: {patch_path} does not reverse out of the resulting tree: "
+            f"{(readback.stderr or readback.stdout).strip()}"
+        )
+    return {"verb": verb, "patch": str(patch_path), "paths": paths, "reversible": True}
+
+
 def branch_tip_readback(gh_api_fn: Callable[..., Any], repository: str, branch: str) -> str:
     payload = gh_api_fn(f"repos/{repository}/git/ref/heads/{branch}")
     sha = payload.get("object", {}).get("sha") if isinstance(payload, dict) else None
@@ -3557,6 +3607,9 @@ def build_parser() -> argparse.ArgumentParser:
     ceremony_commit_command.add_argument("--path", action="append", default=[])
     ceremony_rebase_command = ceremony_sub.add_parser("rebase")
     ceremony_rebase_command.add_argument("upstream")
+    for plant_verb in ("plant", "unplant"):
+        plant_command = ceremony_sub.add_parser(plant_verb)
+        plant_command.add_argument("--patch", required=True)
     ceremony_run_command = ceremony_sub.add_parser("run")
     ceremony_run_command.add_argument("--workflow", required=True)
     ceremony_run_command.add_argument("--branch", required=True)
@@ -3748,6 +3801,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.ceremony_verb == "rebase":
                 print(json.dumps(ceremony_rebase(root, args.upstream), indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb in ("plant", "unplant"):
+                receipt = ceremony_plant(root, Path(args.patch), reverse=args.ceremony_verb == "unplant")
+                print(json.dumps(receipt, indent=2, sort_keys=True))
                 return 0
             if args.ceremony_verb == "run":
                 print(json.dumps(ceremony_run(gh_api, args.repository or repository, args.branch, args.workflow), indent=2, sort_keys=True))

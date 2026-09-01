@@ -199,7 +199,7 @@ Do not use `Closes`, `Fixes`, or `Resolves`. Only the provider lander closes the
 
 ## Ceremony entrypoints
 
-Conventions every agent would otherwise have to remember at every call site are executables, not prose. Use `./noodles ceremony <verb>` and keep no duplicate rulebook: `commit`/`rebase` apply the repository commit identity inline, `run` selects a workflow run by name at the provider-read branch tip, `rerun` refuses a run whose head is not that tip (`--dry-run` proves the guard), and `gh` routes through the paced carrier. The invariants live in `AUTONOMY.CEREMONY_ENTRYPOINT.001`.
+Conventions every agent would otherwise have to remember at every call site are executables, not prose. Use `./noodles ceremony <verb>` and keep no duplicate rulebook: `commit`/`rebase` apply the repository commit identity inline, `run` selects a workflow run by name at the provider-read branch tip, `rerun` refuses a run whose head is not that tip (`--dry-run` proves the guard), `gh` routes through the paced carrier, and `plant`/`unplant` apply and reverse a planted defect as the exact hunks of one patch file so the co-resident uncommitted work `git checkout -- <file>` would have discarded stays untouched. The invariants live in `AUTONOMY.CEREMONY_ENTRYPOINT.001`.
 
 ## Entropy and quality budget
 

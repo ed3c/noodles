@@ -18,7 +18,7 @@ from pathlib import Path
 
 import daemon_lease
 import noodles
-from tests.support import cmd, control_checkout_fixture
+from tests.support import CANDIDATE_ROOT, cmd, control_checkout_fixture
 
 DEAD_PID = 4194304
 IDENTITY = ("ed3c", "ed3c@users.noreply.github.com")
@@ -464,6 +464,139 @@ class CeremonyProviderTests(ControlCheckoutFixture):
 
         with self.assertRaisesRegex(noodles.GateError, "carrier is missing"):
             noodles.paced_gh(self.control, ["api", "rate_limit"])
+
+
+COMMITTED_FIXTURE = """def double(value):
+    return value * 2
+
+
+PAD_A = 1
+PAD_B = 2
+PAD_C = 3
+PAD_D = 4
+PAD_E = 5
+
+
+def unrelated(value):
+    return value
+"""
+PLANTED_FIXTURE = COMMITTED_FIXTURE.replace("return value * 2", "return value * 3")
+UNRELATED_EDIT = "    return value + 1\n"
+
+
+class CeremonyPlantTests(ControlCheckoutFixture):
+    """ed3c/noodles#269 - the plant/unplant ritual on a file that also carries uncommitted work.
+
+    This is the exact shape the incident had: the ritual every load-bearing control requires runs
+    while the working tree already carries the atom's own edits to the same file, and the full-file
+    revert takes both. The controls below prove the carrier moves only the plant's own hunk in both
+    directions, by direct byte comparison rather than by reading a diff.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.fixture = self.control / "fixture.py"
+        write(self.fixture, COMMITTED_FIXTURE)
+        cmd(["git", "add", "fixture.py"], self.control)
+        cmd(["git", "commit", "-q", "-m", "control fixture"], self.control)
+        write(self.fixture, PLANTED_FIXTURE)
+        self.patch = Path(self.temp.name) / "plant.patch"
+        self.patch.write_text(
+            subprocess.run(
+                ["git", "diff", "--", "fixture.py"],
+                cwd=self.control,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout,
+            encoding="utf-8",
+        )
+        write(self.fixture, COMMITTED_FIXTURE)
+
+    def add_unrelated_uncommitted_work(self) -> None:
+        write(self.fixture, COMMITTED_FIXTURE.replace("    return value\n", UNRELATED_EDIT))
+
+    def control_is_green(self) -> bool:
+        """The control this ritual reds and greens: `double(2) == 4` against the live file.
+
+        `-B` is load-bearing, not tidiness: the plant is a same-length edit applied within the same
+        second, so a written `__pycache__` entry would be reused and the control would stay green
+        against bytes that no longer exist. It also leaves no residue in the checkout.
+        """
+        return subprocess.run(
+            [sys.executable, "-B", "-c", "import fixture; assert fixture.double(2) == 4"],
+            cwd=self.control,
+            capture_output=True,
+            text=True,
+        ).returncode == 0
+
+    def test_round_trip_reds_and_greens_the_control_and_never_touches_co_resident_work(self) -> None:
+        self.add_unrelated_uncommitted_work()
+        before = self.fixture.read_bytes()
+        self.assertTrue(self.control_is_green())
+
+        planted = noodles.ceremony_plant(self.control, self.patch, reverse=False)
+
+        self.assertEqual(planted["verb"], "plant")
+        self.assertEqual(planted["paths"], ["fixture.py"])
+        self.assertFalse(self.control_is_green())
+        # constraint: ed3c/noodles#269 - direct byte comparison of the region the plant does not
+        # constraint: name, not an inspection of a diff: the uncommitted edit must survive.
+        self.assertIn(UNRELATED_EDIT, self.fixture.read_text(encoding="utf-8"))
+        self.assertNotEqual(self.fixture.read_bytes(), before)
+
+        reversed_receipt = noodles.ceremony_plant(self.control, self.patch, reverse=True)
+
+        self.assertEqual(reversed_receipt["verb"], "unplant")
+        self.assertTrue(self.control_is_green())
+        self.assertEqual(self.fixture.read_bytes(), before)
+
+    def test_planted_negative_a_reversal_whose_hunk_no_longer_applies_touches_nothing(self) -> None:
+        self.add_unrelated_uncommitted_work()
+        before = self.fixture.read_bytes()
+
+        with self.assertRaisesRegex(noodles.GateError, "does not apply cleanly to this tree and nothing was touched"):
+            noodles.ceremony_plant(self.control, self.patch, reverse=True)
+
+        self.assertEqual(self.fixture.read_bytes(), before)
+        self.assertTrue(self.control_is_green())
+
+    def test_planted_negative_a_second_plant_over_an_applied_plant_is_refused(self) -> None:
+        noodles.ceremony_plant(self.control, self.patch, reverse=False)
+        before = self.fixture.read_bytes()
+
+        with self.assertRaisesRegex(noodles.GateError, "does not apply cleanly"):
+            noodles.ceremony_plant(self.control, self.patch, reverse=False)
+
+        self.assertEqual(self.fixture.read_bytes(), before)
+
+    def test_missing_patch_file_fails_closed(self) -> None:
+        with self.assertRaisesRegex(noodles.GateError, "needs an existing patch file"):
+            noodles.ceremony_plant(self.control, Path(self.temp.name) / "absent.patch", reverse=False)
+
+    def test_the_full_file_revert_this_carrier_replaces_really_does_discard_co_resident_work(self) -> None:
+        """The incident itself, reproduced: `git checkout --` is the failure mode the carrier exists for.
+
+        Without this, "the carrier is safer" would be a claim about a failure nothing here observes.
+        """
+        self.add_unrelated_uncommitted_work()
+        noodles.ceremony_plant(self.control, self.patch, reverse=False)
+        self.assertIn(UNRELATED_EDIT, self.fixture.read_text(encoding="utf-8"))
+
+        cmd(["git", "checkout", "--", "fixture.py"], self.control)
+
+        self.assertEqual(self.fixture.read_text(encoding="utf-8"), COMMITTED_FIXTURE)
+        self.assertNotIn(UNRELATED_EDIT, self.fixture.read_text(encoding="utf-8"))
+
+    def test_the_ritual_step_names_the_carrier_as_the_admitted_path(self) -> None:
+        # constraint: ed3c/noodles#269 - the executable existing is not the cure; the cure is that
+        # constraint: the ritual's own documented step points at it, so the reversible form is the
+        # constraint: one an agent reaches for first.
+        skill = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text(encoding="utf-8")
+        step = next(line for line in skill.splitlines() if line.startswith("8. "))
+        self.assertIn("./noodles ceremony plant --patch", step)
+        self.assertIn("./noodles ceremony unplant --patch", step)
+        self.assertIn("git checkout -- <file>", step)
 
 
 if __name__ == "__main__":
