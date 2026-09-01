@@ -77,7 +77,7 @@ A capability enters `noodles` only when all are true:
 4. the implementation is the smallest independently useful atom;
 5. the capability passes the local gate and provider admission path.
 
-Migration dispositions are only `MIGRATE`, `REVALIDATE`, `ADAPT_EXTERNAL`, `DROP`, and `HOLD`.
+The skills-shared migration station is closed (`ed3c/noodles#293`): its probes, evidence documents, and capability ledger were deleted, and git history is the whole archive. `policy/fitness.json` forbids the `migrations` path name, so resurrecting the station reds `./noodles verify` rather than quietly re-entering the tree.
 
 ## Issue and PR contract
 

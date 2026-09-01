@@ -85,7 +85,8 @@
     "build",
     "receipts",
     "runtime",
-    "providers"
+    "providers",
+    "migrations"
   ],
   "forbidden_dependency_manifests": [
     "requirements.txt",

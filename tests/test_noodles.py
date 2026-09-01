@@ -80,6 +80,11 @@ def agent_procedure_owner_errors(schedule_skill: str, execute_skill: str) -> lis
     )
     return errors
 
+
+# constraint: ed3c/noodles#293 - composed, never written literally: the repository-wide readback
+# constraint: below scans every tracked file, and a literal here would be its own counterexample.
+RETIRED_STATION = "migrations" + "/" + "skills-shared"
+
 class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
         return noodles.verify_repository(root, ENGINE_ROOT)
@@ -860,6 +865,29 @@ class RepositoryGateTests(unittest.TestCase):
         result = self.verify(root)
         self.assertFalse(result["ok"])
         self.assertTrue(any("not pinned" in item for item in result["errors"]))
+
+    def test_resurrected_migration_station_is_rejected(self) -> None:
+        # constraint: ed3c/noodles#293 - the retired station is archived by git history alone. The
+        # constraint: owning surface for its non-return is verify's forbidden-tracked-residue check,
+        # constraint: driven by policy/fitness.json forbidden_path_names, so a resurrection is a red
+        # constraint: exit code rather than a convention nobody executes. The station path is
+        # constraint: composed at runtime so this file is not itself a tracked occurrence of it.
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        relative = f"{RETIRED_STATION}/ledger.json"
+        path = root / relative
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"schema_version": 1, "capabilities": []}), encoding="utf-8")
+        self.commit(root)
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertIn(f"forbidden tracked residue: {relative}", result["errors"])
+
+    def test_the_retired_migration_station_leaves_no_tracked_reader(self) -> None:
+        # constraint: ed3c/noodles#293 - repository-wide readback: no tracked byte names the station.
+        for _mode, relative in noodles.tracked_entries(CANDIDATE_ROOT):
+            source = CANDIDATE_ROOT / relative
+            self.assertNotIn(RETIRED_STATION, source.read_text(encoding="utf-8", errors="ignore"), relative)
 
     def test_untrusted_workflow_boundary_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
