@@ -9,6 +9,13 @@ from typing import Any, Collection, Sequence
 
 SUBJECT_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
 SECTION_RE = re.compile(r"(?m)^##[ \t]+(?P<heading>\S[^\n]*?)[ \t]*$")
+# constraint: ed3c/noodles#120 monitor reconcile - an HTML comment or fenced example is guidance, not
+# constraint: an authored assertion (same rule skill_contract._document_body already applies to
+# constraint: SKILL.md/AGENTS.md); without stripping them, a section left as the template's own
+# constraint: placeholder comment reads as "filled in" and the completeness gate cannot tell an
+# constraint: untouched template from a completed one.
+FENCE_RE = re.compile(r"(?ms)^```[^\n]*\n.*?^```[ \t]*$")
+HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 DEPENDENCY_PROSE_RE = re.compile(r"(?i)depend|predecessor|blocked by|waiting|#[0-9]")
 DEPENDENCY_DECLARATION_RE = re.compile(
     r"(?im)^[ \t]*(?:[-*+][ \t]+)?\**(?:depends[ \t]+on|blocked[ \t]+by|predecessors?)\**[ \t]*:?[ \t]*(?P<targets>[^\n]*)$"
@@ -358,7 +365,7 @@ def parse_blocker(raw: str | None, state: str, *, error_cls: type[Exception]) ->
 
 
 def sections(body: str) -> dict[str, str]:
-    text = body or ""
+    text = HTML_COMMENT_RE.sub("", FENCE_RE.sub("", body or ""))
     matches = list(SECTION_RE.finditer(text))
     parsed: dict[str, str] = {}
     for index, match in enumerate(matches):

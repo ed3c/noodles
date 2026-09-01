@@ -742,7 +742,12 @@ class IntakeNormalizerTests(unittest.TestCase):
         self.assertIn(offending, writes[1][2]["body"])
         self.assertEqual(self.sync(state)[1], [])
 
-    def test_issue_template_file_normalizes_into_a_schedulable_contract(self) -> None:
+    def test_issue_template_file_normalizes_markers_but_stays_incomplete_until_authored(self) -> None:
+        # constraint: ed3c/noodles#120 monitor reconcile - the raw template is exactly the ed3c/noodles#69
+        # constraint: shape this atom exists to catch: syntactically valid markers, no authored Goal,
+        # constraint: Claim, or Physical trigger. Marker normalization must still run (subject gets
+        # constraint: patched in), but "normalizes" must never mean "becomes schedulable for free" -
+        # constraint: the guidance comments in Goal/Claim/Physical trigger are not an author's assertion.
         text = (CANDIDATE_ROOT / ".github/ISSUE_TEMPLATE/repository-mutating-atom.md").read_text(encoding="utf-8")
         authored = text.split("\n---\n", 1)[1].lstrip("\n")
         self.assertIsNone(noodles.MARKER_PATTERNS["subject"].search(authored))
@@ -750,8 +755,12 @@ class IntakeNormalizerTests(unittest.TestCase):
         items, writes = self.sync(state)
         self.assertEqual([write[0] for write in writes], ["PATCH"])
         self.assertEqual(items[0]["status"], "ready")
-        self.assertTrue(items[0]["schedulable"], items[0]["reasons"])
         self.assertEqual(items[0]["id"], "ed3c/noodles#900")
+        self.assertFalse(items[0]["schedulable"], items[0]["reasons"])
+        reasons = " ".join(items[0]["reasons"])
+        self.assertIn("no '## goal' section", reasons)
+        self.assertIn("no '## claim' section", reasons)
+        self.assertIn("no '## Physical trigger' section", reasons)
 
 
 class DependencyDerivationTests(unittest.TestCase):

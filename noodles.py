@@ -195,6 +195,17 @@ def parse_subject(raw: str) -> Subject:
         raise GateError(f"invalid exact subject: {raw!r}")
     return Subject(match.group("repo"), int(match.group("number")))
 def one_marker(body: str, name: str, required: bool = True) -> str | None:
+    # constraint: ed3c/noodles#120 monitor reconcile - this stays a whole-body scan, unlike
+    # constraint: declared_markers below. Audited: test_duplicate_component_markers_fail_closed and
+    # constraint: test_duplicate_marker_fails_closed both plant a duplicate marker appended after the
+    # constraint: body's last section and require GateError; header-only scoping (declared_markers'
+    # constraint: fix for `requirement`) would silently admit that duplicate as "documentation" and
+    # constraint: regress both tests. `requirement` is safe to header-scope because its own
+    # constraint: multiplicity is handled by parse_requirements; the other markers here intentionally
+    # constraint: catch a duplicate anywhere in the body. No live Issue body, template, or fixture in
+    # constraint: this repo currently quotes one of these markers' own syntax inside a `##` section
+    # constraint: the way ed3c/noodles#120's own body does for `requirement` - so the dead-example
+    # constraint: failure class is a real latent risk for this shared caller, not a reproduced one.
     matches = MARKER_PATTERNS[name].findall(body or "")
     if not matches:
         if required:
@@ -787,7 +798,19 @@ def issue_contract_readback(subject_value: str, dependency_cache: dict[str, dict
     return issue_contract_payload(issue_read(subject_value), subject_value, dependency_cache)
 
 
-def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dependency_cache: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def issue_contract_payload(
+    issue: dict[str, Any],
+    subject_value: str | None,
+    dependency_cache: dict[str, dict[str, Any]] | None = None,
+    known_requirements: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    # constraint: ed3c/noodles#120 monitor reconcile - known_requirements defaults to a fresh
+    # constraint: system_requirement_ids() call for callers that read one Issue at a time, but a
+    # constraint: batch caller over many issues (schedule_snapshot, adapter_sync) must resolve it
+    # constraint: ONCE outside their per-issue `except GateError` boundary and pass it in here. Read
+    # constraint: inside that per-issue try, a spec-unreadable GateError fires identically for every
+    # constraint: issue and each is silently dropped in turn - the whole backlog vanishes with no
+    # constraint: diagnostic instead of one loud top-level failure.
     body = issue.get("body") or ""
     contract = parse_issue_contract(body, expected_subject=subject_value)
     cache = dependency_cache if dependency_cache is not None else {}
@@ -795,8 +818,9 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
     for dependency in contract["dependencies"] or ():
         observed[dependency] = cache.setdefault(dependency, dependency_readback(dependency))
     body_sections = issue_contract.sections(body)
+    resolved_requirements = known_requirements if known_requirements is not None else system_requirement_ids()
     derived = issue_contract.derive_schedulability(
-        contract, str(issue.get("state") or ""), observed, body_sections, system_requirement_ids()
+        contract, str(issue.get("state") or ""), observed, body_sections, resolved_requirements
     )
     return {
         "subject": contract["subject"],
@@ -2349,6 +2373,11 @@ def adapter_sync() -> int:
         repositories = [runtime_gh_repo_from_git(repo_root(), error_cls=GateError)]
     output: list[dict[str, Any]] = []
     dependency_cache: dict[str, dict[str, Any]] = {}
+    # constraint: ed3c/noodles#120 monitor reconcile - resolved once rather than once per issue below:
+    # constraint: not silent here (each dropped issue still prints its own diagnostic), but an
+    # constraint: unreadable specification would otherwise read as N unrelated per-issue defects
+    # constraint: instead of one cause.
+    known_requirements = system_requirement_ids()
     for repository in repositories:
         issues = gh_api(f"repos/{repository}/issues?state=open&per_page=100")
         for issue in issues:
@@ -2356,7 +2385,7 @@ def adapter_sync() -> int:
                 continue
             try:
                 issue = intake_normalize(issue, repository)
-                contract = issue_contract_payload(issue, None, dependency_cache)
+                contract = issue_contract_payload(issue, None, dependency_cache, known_requirements)
             except GateError as exc:
                 number = issue.get("number")
                 output.append(
@@ -3226,6 +3255,10 @@ def open_issues(repository: str) -> tuple[dict[str, Any], ...]:
 
 
 def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, ...]:
+    # constraint: ed3c/noodles#120 monitor reconcile - resolved once, outside the per-issue
+    # constraint: `except GateError: continue` below, so an unreadable specification raises loudly
+    # constraint: here instead of silently emptying the whole frontier one dropped issue at a time.
+    known_requirements = system_requirement_ids()
     branch_prefix = repository.replace("/", "-") + "-"
     claimed_subjects = active_execute_claims(repository, matching_branch_refs(repository, branch_prefix))
     dependency_cache: dict[str, dict[str, Any]] = {}
@@ -3244,7 +3277,7 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
         assert isinstance(number, int)
         subject_value = f"{repository}#{number}"
         try:
-            contract = issue_contract_payload(issue, subject_value, dependency_cache)
+            contract = issue_contract_payload(issue, subject_value, dependency_cache, known_requirements)
         except GateError:
             continue
         emitted_subjects.add(subject_value)
