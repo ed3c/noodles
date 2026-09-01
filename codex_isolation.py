@@ -21,10 +21,11 @@ FORBIDDEN_FORWARD_ARG = "--dangerously-bypass-approvals-and-sandbox"
 # constraint: named `truncation-guard` or `untruncated-readback`, or a path segment containing either,
 # constraint: raised "emitted truncation warning readback: ['truncat']" with no warning present. The
 # constraint: decision is now a whole hyphen-aware token, so a name that merely contains the token
-# constraint: cannot stand in for one. Ceiling: the boundary is `\w`-based, so a warning that welds
-# constraint: the token to an identifier with an underscore is not recognized; no observed Codex
-# constraint: warning has that shape, and a real one is cured by naming that literal token here.
-TRUNCATION_RE = re.compile(r"(?<![\w-])(?:truncat(?:e|ed|es|ing|ion|ions)|skill-context-budget)(?![\w-])", re.I)
+# constraint: cannot stand in for one. `truncat\w*` covers every inflection an enumeration would need
+# constraint: to list by hand. Ceiling: the boundary is `\w`-based, so a warning that welds the token
+# constraint: to an identifier with an underscore is not recognized; no observed Codex warning has
+# constraint: that shape, and a real one is cured by naming that literal token here.
+TRUNCATION_RE = re.compile(r"(?<![\w-])(?:truncat\w*|skill-context-budget)(?![\w-])", re.I)
 PERMISSION_PROFILE_OVERRIDES = (
     'approval_policy="never"',
     'default_permissions="noodles-cook"',
