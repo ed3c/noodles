@@ -8,10 +8,13 @@ rebase that must leave no in-progress state, and a run whose head is not the bra
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -24,6 +27,11 @@ DEAD_PID = 4194304
 IDENTITY = ("ed3c", "ed3c@users.noreply.github.com")
 TIP_SHA = "a" * 40
 STALE_SHA = "b" * 40
+EDIT_SUBJECT = "ed3c/noodles#903303"
+EDIT_ENDPOINT = "repos/ed3c/noodles/issues/903303"
+LIVE_BODY = "<!-- noodles-state: ready -->\n\n## Goal\n\nCarry the guard at the shared exit.\n"
+DRIFTED_BODY = LIVE_BODY.replace("ready", "awaiting_land")
+NEXT_BODY = LIVE_BODY.replace("Carry the guard", "Carry the guard, edited")
 
 
 def write(path: Path, text: str) -> None:
@@ -597,6 +605,99 @@ class CeremonyPlantTests(ControlCheckoutFixture):
         self.assertIn("./noodles ceremony plant --patch", step)
         self.assertIn("./noodles ceremony unplant --patch", step)
         self.assertIn("git checkout -- <file>", step)
+
+
+class FakeIssueProvider:
+    """One Issue body behind the provider API, so an edit's effect is read back, not inferred."""
+
+    def __init__(self, body: str) -> None:
+        self.body = body
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, endpoint: str, *, method: str = "GET", payload: object | None = None, **_kwargs: object) -> object:
+        self.calls.append((method, endpoint))
+        if endpoint != EDIT_ENDPOINT:
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+        if method == "PATCH":
+            self.body = str((payload or {}).get("body") or "")
+        return {"number": 903303, "body": self.body}
+
+
+class CeremonyEditBodyTests(unittest.TestCase):
+    """ed3c/noodles#303 - the digest-guarded compare-and-swap the wave hand-rolled in a temp dir.
+
+    The provider here is a fake holding real bytes, so "the target body is untouched" is read back
+    out of that state instead of inferred from the absence of a call."""
+
+    def scratch(self) -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="noodles-edit-body-test-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        return directory
+
+    def digest(self, body: str) -> str:
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def test_round_trip_control_a_matching_expected_before_lands_and_the_after_digest_readbacks(self) -> None:
+        provider = FakeIssueProvider(LIVE_BODY)
+        refused = self.scratch() / "refused.md"
+
+        receipt = noodles.ceremony_edit_body(provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, refused)
+
+        self.assertEqual(receipt["before_sha256"], self.digest(LIVE_BODY))
+        self.assertEqual(receipt["after_sha256"], self.digest(NEXT_BODY))
+        self.assertEqual(provider.body, NEXT_BODY)
+        self.assertFalse(refused.exists())
+
+    def test_the_receipt_digests_are_full_sixty_four_hex_by_pattern(self) -> None:
+        provider = FakeIssueProvider(LIVE_BODY)
+
+        receipt = noodles.ceremony_edit_body(provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, self.scratch() / "refused.md")
+
+        for field in ("before_sha256", "after_sha256"):
+            with self.subTest(field=field):
+                self.assertRegex(receipt[field], r"\A[0-9a-f]{64}\Z")
+
+    def test_planted_control_a_drifted_live_body_is_refused_persisted_and_left_untouched(self) -> None:
+        provider = FakeIssueProvider(DRIFTED_BODY)
+        refused = self.scratch() / "nested" / "refused.md"
+
+        with self.assertRaises(noodles.GateError) as raised:
+            noodles.ceremony_edit_body(provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, refused)
+
+        diagnostic = str(raised.exception)
+        self.assertIn("edit-body refused", diagnostic)
+        self.assertIn(self.digest(DRIFTED_BODY), diagnostic)
+        self.assertIn(self.digest(LIVE_BODY), diagnostic)
+        self.assertIn(str(refused), diagnostic)
+        self.assertEqual(refused.read_text(encoding="utf-8"), DRIFTED_BODY)
+        self.assertEqual(provider.body, DRIFTED_BODY)
+        self.assertNotIn("PATCH", [method for method, _ in provider.calls])
+
+    def test_planted_control_an_elided_expected_before_digest_fails_before_any_provider_call(self) -> None:
+        provider = FakeIssueProvider(LIVE_BODY)
+
+        with self.assertRaisesRegex(noodles.GateError, "full 64-hex expected-before"):
+            noodles.ceremony_edit_body(provider, EDIT_SUBJECT, self.digest(LIVE_BODY)[:12], NEXT_BODY, self.scratch() / "refused.md")
+
+        self.assertEqual(provider.calls, [])
+
+    def test_planted_control_a_provider_that_stores_other_bytes_fails_the_after_readback(self) -> None:
+        class LyingProvider(FakeIssueProvider):
+            def __call__(self, endpoint: str, *, method: str = "GET", payload: object | None = None, **kwargs: object) -> object:
+                if method == "PATCH":
+                    payload = {"body": str((payload or {}).get("body") or "") + "\nprovider-side addition\n"}
+                return super().__call__(endpoint, method=method, payload=payload, **kwargs)
+
+        with self.assertRaisesRegex(noodles.GateError, "readback failed"):
+            noodles.ceremony_edit_body(LyingProvider(LIVE_BODY), EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, self.scratch() / "refused.md")
+
+    def test_the_verb_is_reachable_from_the_shared_ceremony_exit(self) -> None:
+        args = noodles.build_parser().parse_args(
+            ["ceremony", "edit-body", "--subject", EDIT_SUBJECT, "--expected-before", "0" * 64, "--body-file", "b.md", "--refused-body", "r.md"]
+        )
+
+        self.assertEqual((args.command, args.ceremony_verb), ("ceremony", "edit-body"))
+        self.assertEqual((args.subject, args.expected_before, args.body_file, args.refused_body), (EDIT_SUBJECT, "0" * 64, "b.md", "r.md"))
 
 
 if __name__ == "__main__":
