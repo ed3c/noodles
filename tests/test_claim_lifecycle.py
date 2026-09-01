@@ -12,7 +12,15 @@ import claim_contract
 import issue_contract
 import noodles
 import skill_contract
-from tests.support import CANDIDATE_ROOT, ISSUE_DEPENDS_ON_MARKER, ISSUE_FEATURE_MARKER, cmd, handoff_fixture
+from tests.support import (
+    CANDIDATE_ROOT,
+    ISSUE_DEPENDS_ON_MARKER,
+    ISSUE_FEATURE_MARKER,
+    ISSUE_REQUIREMENT_MARKER,
+    cmd,
+    complete_issue_sections,
+    handoff_fixture,
+)
 
 REPOSITORY = "ed3c/noodles"
 SUBJECT = "ed3c/noodles#33"
@@ -34,10 +42,9 @@ def issue_body(state: str) -> str:
         "<!-- noodles-write-boundary: none -->\n"
         "<!-- noodles-executor: gha-runtime -->\n"
         "<!-- noodles-runtime: shell -->\n"
-        "<!-- noodles-evidence: github-only-v1 -->\n\n"
-        "## Goal\n\nOne exact claimed atom.\n\n"
-        "## Physical acceptance\n\n- Exact controls pass.\n\n"
-        "## Non-claims\n\n- Nothing adjacent.\n"
+        "<!-- noodles-evidence: github-only-v1 -->\n"
+        f"{ISSUE_REQUIREMENT_MARKER}\n\n"
+        + complete_issue_sections("One exact claimed atom.", "- Nothing adjacent.")
     )
 
 

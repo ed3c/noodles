@@ -14,7 +14,7 @@ import issue_contract
 import noodles
 import schedule_domain
 import skill_contract
-from tests.support import CANDIDATE_ROOT, copy_tracked
+from tests.support import CANDIDATE_ROOT, ISSUE_REQUIREMENT_MARKER, complete_issue_sections, copy_tracked
 
 REPOSITORY = "ed3c/noodles"
 HEAD = "a" * 40
@@ -32,10 +32,9 @@ def issue_body(number: int, *, state: str = "ready", depends_on: str = "none", w
         f"<!-- noodles-write-boundary: {write_boundary} -->\n"
         "<!-- noodles-executor: gha-runtime -->\n"
         "<!-- noodles-runtime: shell -->\n"
-        "<!-- noodles-evidence: github-only-v1 -->\n\n"
-        "## Goal\n\nSchedule one exact atom.\n\n"
-        "## Physical acceptance\n\n- Provider controls pass.\n\n"
-        "## Non-claims\n\n- No scheduler is implemented.\n"
+        "<!-- noodles-evidence: github-only-v1 -->\n"
+        f"{ISSUE_REQUIREMENT_MARKER}\n\n"
+        + complete_issue_sections("Schedule one exact atom.", "- No scheduler is implemented.")
     )
 
 

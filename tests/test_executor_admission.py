@@ -13,7 +13,13 @@ from unittest import mock
 import issue_contract
 import noodles
 import skill_contract
-from tests.support import CANDIDATE_ROOT, copy_tracked, load_ready_backlog_fixtures
+from tests.support import (
+    CANDIDATE_ROOT,
+    ISSUE_REQUIREMENT_MARKER,
+    complete_issue_sections,
+    copy_tracked,
+    load_ready_backlog_fixtures,
+)
 
 REPOSITORY = "ed3c/noodles"
 HEAD = "c" * 40
@@ -46,10 +52,12 @@ def body(
         "<!-- noodles-state: ready -->\n"
         "<!-- noodles-depends-on: none -->\n"
         f"<!-- noodles-write-boundary: {write_boundary} -->\n"
+        f"{ISSUE_REQUIREMENT_MARKER}\n"
         f"{markers}{extra}\n"
-        "## Goal\n\nClassify one exact execution lane.\n\n"
-        "## Physical acceptance\n\n- Positive and planted-negative controls pass.\n\n"
-        "## Non-claims\n\n- Admission does not prove implementation correctness.\n"
+        + complete_issue_sections(
+            "Classify one exact execution lane.",
+            "- Admission does not prove implementation correctness.",
+        )
     )
 
 

@@ -76,6 +76,7 @@ MARKER_PATTERNS = {
     "state": re.compile(r"<!--\s*noodles-state:\s*([^>]+?)\s*-->", re.I),
     "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
     "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
+    "requirement": re.compile(r"<!--\s*noodles-requirement:\s*([^>]+?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
     "write_boundary": re.compile(r"<!--\s*noodles-write-boundary:\s*([^>]+?)\s*-->", re.I),
     "executor": re.compile(r"<!--\s*noodles-executor:\s*([^>]+?)\s*-->", re.I),
@@ -202,6 +203,33 @@ def one_marker(body: str, name: str, required: bool = True) -> str | None:
     if len(matches) != 1:
         raise GateError(f"expected one noodles-{name.replace('_', '-')} marker, found {len(matches)}")
     return matches[0].strip()
+def declared_markers(body: str, name: str) -> list[str]:
+    """Every declaration of a bounded-multiplicity marker, in authored order, read only from the
+    body's marker header - the text above the first `##` section.
+
+    A marker printed inside a section is documentation, not a declaration. ed3c/noodles#120's own
+    body prints this marker's syntax in its `## Required typed surface` section, and a whole-body
+    scan reads that example as a second, unresolvable binding - the same dead-example failure
+    ed3c/noodles#84 removed from the document gates."""
+    header = body or ""
+    first_section = issue_contract.SECTION_RE.search(header)
+    if first_section:
+        header = header[: first_section.start()]
+    return [match.strip() for match in MARKER_PATTERNS[name].findall(header)]
+def requirement_definition_source(root: Path) -> Path:
+    """Node 2 of the declared Agent document route: the specification that owns stable requirement
+    identities. The pointer is read from `policy/fitness.json`, which `validate_agent_document_route`
+    already owns, so this atom introduces no fourth document hop and no second copy of the path."""
+    route = load_json(root / "policy/fitness.json").get("agent_document_route") or []
+    if len(route) < 2 or not str(route[1]).endswith(".md"):
+        raise GateError("agent document route declares no specification node for requirement identities")
+    return root / str(route[1])
+def system_requirement_ids(root: Path | None = None) -> frozenset[str]:
+    try:
+        text = requirement_definition_source(root or ENGINE_ROOT).read_text(encoding="utf-8")
+    except (GateError, OSError) as exc:
+        raise GateError(f"stable requirement definitions are unreadable: {exc}") from exc
+    return issue_contract.requirement_ids(text)
 def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict[str, Any]:
     role = one_marker(body, "role")
     target = one_marker(body, "target")
@@ -234,6 +262,11 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     runtime_token = issue_contract.parse_capability("runtime", one_marker(body, "runtime", required=False), error_cls=GateError)
     evidence = issue_contract.parse_capability("evidence", one_marker(body, "evidence", required=False), error_cls=GateError)
     blocker = issue_contract.parse_blocker(one_marker(body, "blocker", required=False), state_value or "", error_cls=GateError)
+    # constraint: ed3c/noodles#120 - bounded multiplicity, so this marker parses into ids plus named
+    # constraint: diagnostics instead of raising: a malformed declaration must reach the frontier as
+    # constraint: an unschedulable Issue with an exact reason, never as an Issue schedule_snapshot
+    # constraint: silently drops.
+    requirements, requirement_errors = issue_contract.parse_requirements(declared_markers(body, "requirement"))
     return {
         "role": role,
         "target": target or "",
@@ -241,6 +274,8 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "state": state_value or "",
         "feature": feature_value or "",
         "component": component_value or "",
+        "requirements": list(requirements),
+        "requirement_errors": list(requirement_errors),
         "dependencies": dependencies,
         "write_boundary": write_boundary,
         "executor": executor,
@@ -760,7 +795,9 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
     for dependency in contract["dependencies"] or ():
         observed[dependency] = cache.setdefault(dependency, dependency_readback(dependency))
     body_sections = issue_contract.sections(body)
-    derived = issue_contract.derive_schedulability(contract, str(issue.get("state") or ""), observed, body_sections)
+    derived = issue_contract.derive_schedulability(
+        contract, str(issue.get("state") or ""), observed, body_sections, system_requirement_ids()
+    )
     return {
         "subject": contract["subject"],
         "target": contract["target"],
@@ -769,6 +806,7 @@ def issue_contract_payload(issue: dict[str, Any], subject_value: str | None, dep
         "provider_state": issue.get("state"),
         "url": issue.get("html_url"),
         "body_sha256": issue_contract.body_digest(body),
+        "requirements": contract["requirements"],
         "dependencies": contract["dependencies"],
         "write_boundary": contract["write_boundary"],
         "executor": contract["executor"],
@@ -2342,6 +2380,7 @@ def adapter_sync() -> int:
                     "dependencies": contract["dependencies"],
                     "blocker": contract["blocker"],
                     "body_sha256": contract["body_sha256"],
+                    "requirements": contract["requirements"],
                     "schedulable": contract["schedulable"],
                     "reasons": contract["reasons"],
                 }

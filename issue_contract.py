@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any
+from typing import Any, Collection, Sequence
 
 SUBJECT_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
 SECTION_RE = re.compile(r"(?m)^##[ \t]+(?P<heading>\S[^\n]*?)[ \t]*$")
@@ -16,7 +16,33 @@ DEPENDENCY_DECLARATION_RE = re.compile(
 ISSUE_REFERENCE_RE = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[1-9][0-9]*)")
 NO_DEPENDENCY_WORDS = {"", "-", "n/a", "none", "nothing"}
 NO_DEPENDENCIES = "none"
-REQUIRED_SECTIONS = ("goal", "physical_acceptance", "non_claims")
+# constraint: ed3c/noodles#120 - `ready` is necessary but not sufficient. `claim` joins the typed
+# constraint: sections a repository-mutating Issue must carry non-empty before it is schedulable.
+REQUIRED_SECTIONS = ("goal", "claim", "physical_acceptance", "non_claims")
+# constraint: ed3c/noodles#120 - a stable requirement identity is exactly one `### ID` heading in the
+# constraint: specification. No JSON/YAML registry, no generated mirror, no mutable status store: the
+# constraint: headings are the identities, read directly from the document that owns them.
+REQUIREMENT_ID_RE = re.compile(r"^[A-Z][A-Z0-9_.-]+$")
+SPEC_REQUIREMENT_HEADING_RE = re.compile(r"(?m)^### (?P<id>[A-Z][A-Z0-9_.-]+)$")
+MAX_REQUIREMENTS = 4
+# constraint: ed3c/noodles#120 - the rationale section is `## Physical trigger` or one heading from
+# constraint: the admitted `Why ...` family, which is how the landed split atoms ed3c/noodles#252 and
+# constraint: ed3c/noodles#253 already state theirs. Two rules, both closed and deterministic.
+RATIONALE_SECTION = "physical_trigger"
+RATIONALE_PREFIX = "why_"
+NON_CASE_SECTION = "non_case"
+NON_CASE_NONE = "none"
+# constraint: ed3c/noodles#120 - each obligation is a small closed vocabulary, not one exact
+# constraint: sentence: the gate checks that the acceptance NAMES the obligation, so rewording is
+# constraint: free and adding a synonym is a deliberate, reviewable widening.
+ACCEPTANCE_OBLIGATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("positive control", ("positive control", "positive:", "positive/planted", "positive and planted")),
+    ("planted-negative control", ("planted-negative", "planted negative", "negative control", "positive/planted")),
+    ("direct readback", ("readback",)),
+    ("zero-residue readback", ("residue", "cleanup")),
+)
+PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
+PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
 NO_WRITE_BOUNDARY = "none"
 WRITE_BOUNDARY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 LOCAL_LANE = "local-noodle"
@@ -229,6 +255,89 @@ def parse_dependencies(raw: str | None, subject: str, *, error_cls: type[Excepti
     return tuple(dependencies)
 
 
+def requirement_ids(specification: str) -> frozenset[str]:
+    """Stable requirement identities exactly as the specification declares them, one `### ID` heading
+    each. This is a read, not a mirror: nothing here caches, indexes, or records status."""
+    return frozenset(match["id"] for match in SPEC_REQUIREMENT_HEADING_RE.finditer(specification or ""))
+
+
+def parse_requirements(raw_values: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Every `noodles-requirement` marker in declaration order, plus one distinct diagnostic per
+    malformed, duplicate, or over-multiplied declaration.
+
+    Total by construction. A malformed marker is a named schedulability reason rather than an
+    exception, because `schedule_snapshot` drops an Issue whose contract raises, and an Issue that
+    silently disappears from the frontier is exactly the failure this atom exists to prevent."""
+    ids: list[str] = []
+    errors: list[str] = []
+    for raw in raw_values:
+        value = raw.strip()
+        if not REQUIREMENT_ID_RE.fullmatch(value):
+            errors.append(
+                f"malformed noodles-requirement {value!r}: expected one stable requirement id "
+                "matching a '### ID' heading in the system specification"
+            )
+        elif value in ids:
+            errors.append(f"duplicate noodles-requirement entry: {value}")
+        else:
+            ids.append(value)
+    if len(ids) > MAX_REQUIREMENTS:
+        errors.append(
+            f"issue binds {len(ids)} stable requirements; at most {MAX_REQUIREMENTS} are admitted"
+        )
+    return tuple(ids), tuple(errors)
+
+
+def completeness_reasons(
+    contract: dict[str, Any],
+    body_sections: dict[str, str],
+    known_requirements: Collection[str],
+) -> list[str]:
+    """ed3c/noodles#120 - the deterministic half of schedulability that `ready` does not cover.
+
+    Structure, identities, and non-emptiness only: which sections exist, which requirement ids
+    resolve against the specification's own headings, and which acceptance obligations the text
+    names. It never decides whether prose is wise, complete in meaning, or technically correct, and
+    it never promotes a natural-language judgment to an L verdict."""
+    reasons = list(contract.get("requirement_errors") or ())
+    requirements = contract.get("requirements") or ()
+    if not requirements:
+        reasons.append(
+            "issue declares no noodles-requirement marker binding a stable system requirement id"
+        )
+    for requirement in requirements:
+        if requirement not in known_requirements:
+            reasons.append(
+                f"noodles-requirement {requirement} resolves to no stable requirement heading "
+                "in the system specification"
+            )
+    if not any(
+        (body_sections.get(name) or "").strip()
+        for name in body_sections
+        if name == RATIONALE_SECTION or name.startswith(RATIONALE_PREFIX)
+    ):
+        reasons.append(
+            "issue body has no '## Physical trigger' section and no admitted 'Why ...' rationale heading"
+        )
+    if not (body_sections.get(NON_CASE_SECTION) or "").strip():
+        reasons.append(
+            f"issue body has no '## Non-case' section; write exactly {NON_CASE_NONE!r} when there is none"
+        )
+    acceptance = (body_sections.get("physical_acceptance") or "").lower()
+    for label, tokens in ACCEPTANCE_OBLIGATIONS:
+        if not any(token in acceptance for token in tokens):
+            reasons.append(f"'## Physical acceptance' names no {label} obligation")
+    claim = (body_sections.get("claim") or "").lower()
+    if any(token in claim for token in PROVIDER_AUTHORITY_TOKENS) and not any(
+        token in acceptance for token in PROVIDER_READBACK_TOKENS
+    ):
+        reasons.append(
+            "'## Claim' claims provider authority but '## Physical acceptance' names no provider "
+            "readback obligation"
+        )
+    return reasons
+
+
 def parse_blocker(raw: str | None, state: str, *, error_cls: type[Exception]) -> dict[str, str] | None:
     value = (raw or "").strip()
     if state != "blocked":
@@ -268,7 +377,11 @@ def derive_schedulability(
     provider_state: str,
     dependency_states: dict[str, dict[str, Any]],
     body_sections: dict[str, str],
+    known_requirements: Collection[str] = (),
 ) -> dict[str, Any]:
+    # constraint: ed3c/noodles#120 - `known_requirements` defaults to empty and therefore fails
+    # constraint: closed: a caller that cannot read the specification never admits a requirement id
+    # constraint: it could not resolve.
     reasons: list[str] = []
     if provider_state != "open":
         reasons.append(f"issue provider state is {provider_state!r}, not open")
@@ -280,6 +393,7 @@ def derive_schedulability(
     for name in REQUIRED_SECTIONS:
         if not (body_sections.get(name) or "").strip():
             reasons.append(f"issue body has no '## {name.replace('_', ' ')}' section")
+    reasons.extend(completeness_reasons(contract, body_sections, known_requirements))
     if contract.get("dependencies") is None:
         reasons.append(f"issue declares no noodles-depends-on marker; use {NO_DEPENDENCIES!r} for no dependencies")
     for dependency in contract.get("dependencies") or ():
