@@ -4,6 +4,7 @@ component's admitted surface. Planted positive and negative fixtures run against
 candidate component map so scope creep becomes a mechanical FAIL, not a prompt-layer plea."""
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import tempfile
@@ -271,6 +272,134 @@ class GrandfatheredImportDebtTests(unittest.TestCase):
         self.assertEqual(counts, self.DISCLOSED_STANDING_EDGE_COUNTS)
 
 
+def mutate_definition(source: str, name: str) -> str:
+    """The candidate tree of ed3c/noodles#189: one top-level definition's own bytes change, nothing
+    else in the file moves, and the file-level glob still matches every component that lists it."""
+    lines = source.splitlines()
+    node = next(item for item in ast.parse(source).body if getattr(item, "name", "") == name)
+    lines.insert(node.body[0].lineno - 1, "    # planted ed3c/noodles#268 crossing")
+    return "\n".join(lines) + "\n"
+
+
+class ComponentOwnerMapTests(unittest.TestCase):
+    """ed3c/noodles#268: the hand-kept map that gives multi-component files a definition-level owner."""
+
+    def setUp(self) -> None:
+        self.components = noodles.component_map(CANDIDATE_ROOT)
+        self.owners = noodles.component_owner_map(CANDIDATE_ROOT)
+
+    def test_shipped_map_owns_only_files_more_than_one_component_admits(self) -> None:
+        for path in self.owners:
+            with self.subTest(path=path):
+                admitting = [
+                    name
+                    for name, globs in self.components.items()
+                    if any(fnmatch.fnmatchcase(path, glob) for glob in globs)
+                ]
+                self.assertGreater(len(admitting), 1, f"{path} needs no ownership entry: {admitting}")
+
+    def test_shipped_map_names_real_components_and_real_definitions(self) -> None:
+        for path, definitions in self.owners.items():
+            present = noodles.top_level_definitions((CANDIDATE_ROOT / path).read_text(encoding="utf-8"), path)
+            for name, owning in definitions.items():
+                with self.subTest(definition=f"{path}:{name}"):
+                    self.assertIn(name, present)
+                    self.assertTrue(set(owning) <= set(self.components), owning)
+
+    def test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure(self) -> None:
+        """ed3c/noodles#278: nothing else reds when this count grows, so AGENTS.md's "136 total, 18
+        owned, 118 unowned" would otherwise silently go stale. If this breaks because you legitimately
+        added or renamed a top-level definition, update the two counts here AND the sentence in
+        AGENTS.md that quotes them in the same commit. (It already caught one such drift, 132→136,
+        from landing-train traffic on main adding findings-register functions while this exact
+        reconcile was in flight - see GrandfatheredImportDebtTests for the same pattern.)"""
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        defs = noodles.top_level_definitions(source, "noodles.py")
+        owned = self.owners.get("noodles.py", {})
+        self.assertEqual(len(defs), 136)
+        self.assertEqual(len(owned), 18)
+
+    def test_absent_map_is_inert_rather_than_red(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertEqual(noodles.component_owner_map(Path(temp)), {})
+
+    def test_wrong_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / noodles.COMPONENT_OWNER_MAP_PATH
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"schema_version": 2, "owners": {"a.py": {"f": ["docs"]}}}), encoding="utf-8")
+            with self.assertRaisesRegex(noodles.GateError, "schema_version 1"):
+                noodles.component_owner_map(Path(temp))
+
+    def test_empty_owner_list_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / noodles.COMPONENT_OWNER_MAP_PATH
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"schema_version": 1, "owners": {"a.py": {"f": []}}}), encoding="utf-8")
+            with self.assertRaisesRegex(noodles.GateError, "a.py:f must list at least one"):
+                noodles.component_owner_map(Path(temp))
+
+
+class ComponentOwnerGateTests(unittest.TestCase):
+    """The ed3c/noodles#189 crossing, replayed against the real map and the real noodles.py."""
+
+    def setUp(self) -> None:
+        self.components = noodles.component_map(CANDIDATE_ROOT)
+        self.owners = noodles.component_owner_map(CANDIDATE_ROOT)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.candidate = Path(temp.name)
+        self.source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+
+    def plant(self, definition: str) -> None:
+        (self.candidate / "noodles.py").write_text(mutate_definition(self.source, definition), encoding="utf-8")
+
+    def errors(self, component: str, changed: list[str] | None = None) -> list[str]:
+        return noodles.component_owner_errors(
+            component, self.components, changed or ["noodles.py"], self.owners, CANDIDATE_ROOT, self.candidate
+        )
+
+    def test_planted_negative_verify_atom_touching_schedule_dispatch_fails_closed(self) -> None:
+        self.plant("schedule_publish")
+        errors = self.errors("verify")
+        self.assertEqual(len(errors), 1)
+        self.assertIn("noodles.py:schedule_publish", errors[0])
+        self.assertIn("owned by schedule", errors[0])
+        self.assertIn("declares 'verify'", errors[0])
+
+    def test_positive_control_same_change_under_the_owning_component_passes(self) -> None:
+        self.plant("schedule_publish")
+        self.assertEqual(self.errors("schedule"), [])
+
+    def test_positive_control_verify_owned_definition_under_a_verify_atom_passes(self) -> None:
+        self.plant("component_surface_errors")
+        self.assertEqual(self.errors("verify"), [])
+
+    def test_unowned_definition_is_not_judged_and_owned_neighbours_stay_silent(self) -> None:
+        self.plant("verify_pull_request")
+        for component in ("verify", "carrier", "schedule"):
+            with self.subTest(component=component):
+                self.assertEqual(self.errors(component), [])
+
+    def test_whole_repository_component_admits_every_definition(self) -> None:
+        self.plant("schedule_publish")
+        self.assertEqual(self.errors("contract"), [])
+
+    def test_file_without_an_ownership_entry_is_not_judged(self) -> None:
+        self.plant("schedule_publish")
+        self.assertEqual(self.errors("verify", ["feature_contract.py"]), [])
+
+    def test_file_absent_from_the_candidate_is_a_file_level_event_not_a_crossing(self) -> None:
+        self.assertEqual(self.errors("verify"), [])
+
+    def test_deleting_an_owned_definition_is_a_crossing(self) -> None:
+        node = next(item for item in ast.parse(self.source).body if getattr(item, "name", "") == "schedule_publish")
+        truncated = "\n".join(self.source.splitlines()[: node.lineno - 1]) + "\n"
+        (self.candidate / "noodles.py").write_text(truncated, encoding="utf-8")
+        errors = self.errors("verify")
+        self.assertTrue(any("noodles.py:schedule_publish" in error for error in errors), errors)
+
+
 class CompareReadbackTests(unittest.TestCase):
     def test_rename_contributes_both_paths(self) -> None:
         comparison = {
@@ -383,6 +512,23 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
         self.assertIn("feature_contract.py", diagnostic)
         self.assertIn("schedule_domain", diagnostic)
         self.assertIn("'verify'", diagnostic)
+
+    def test_same_file_crossing_fails_closed_naming_file_definition_and_components(self) -> None:
+        body = issue_body(component="verify", state="awaiting_land")
+        planted = mutate_definition((CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8"), "schedule_publish")
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify(body, ["noodles.py"], {"noodles.py": planted})
+        diagnostic = str(raised.exception)
+        self.assertIn("component-ownership gate failed", diagnostic)
+        self.assertIn("noodles.py:schedule_publish", diagnostic)
+        self.assertIn("owned by schedule", diagnostic)
+        self.assertIn("declares 'verify'", diagnostic)
+
+    def test_same_file_change_under_the_owning_component_receives_an_ownership_receipt(self) -> None:
+        body = issue_body(component="schedule", state="awaiting_land")
+        planted = mutate_definition((CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8"), "schedule_publish")
+        _, receipt = self.run_verify(body, ["noodles.py"], {"noodles.py": planted})
+        self.assertIn("component-ownership", receipt["gates"])
 
 
 if __name__ == "__main__":
