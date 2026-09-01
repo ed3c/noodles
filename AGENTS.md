@@ -104,6 +104,8 @@ Every repository mutation runs `./noodles acceptance verify`, which binds the ex
 
 Dependency waiting is never stored. `./noodles issue contract owner/repo#N` reads each declared predecessor's own provider state and derives schedulability from it, so a landed predecessor releases its dependents without anyone patching a mirrored marker. A failed predecessor read is never satisfied. `blocked` therefore means a real blocker and requires one `<!-- noodles-blocker: owner: reason -->` that is not dependency waiting.
 
+A finding that is not an atom therefore has no Issue: intake normalizes every open Issue into one or blocks it. Its durable home is `docs/findings/register.json` — append one `{id, date, severity, finding, receipts[], owner_component, status}` entry, and `.noodle/adapters/github sync` lists every open entry alongside ready work until someone promotes it to a real Issue and records `promoted_to`. Appending is the only admitted mutation; `LEARNING.FINDINGS_REGISTER.001` owns the shape gate, the reader, and the non-claims. Do not answer a disclosed-not-fixed finding with prose on a record you are about to close.
+
 Executor admission classifies the exact Issue before any claim, branch, checkout, or worktree exists.
 `issue_contract.CAPABILITY_TABLE` is the single bounded table — data, not a policy DSL: each `runtime`
 and `evidence` token names the exact lanes that can physically supply it, and the admitted lane set is

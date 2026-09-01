@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": 1,
+      "date": "2026-09-01",
+      "severity": "S2",
+      "finding": "The intake path normalizes every open issue into a repository-mutating atom contract or blocks it, so a non-actionable caveat or a disclosed-not-fixed finding cannot exist as an issue; across wave 9 every such item degraded into prose on a record that then closed, and three lanes independently rediscovered the same hole.",
+      "receipts": [
+        "noodles.py:intake_normalize - every open issue read by `.noodle/adapters/github sync` is PATCHed into the atom contract or blocked with an intake comment",
+        "ed3c/noodles#263 body - the wave-9 clause-compliance judge's rank-1 gap, S2, that filed this register"
+      ],
+      "owner_component": "schedule",
+      "status": "promoted",
+      "promoted_to": "ed3c/noodles#263",
+      "chain": "842e8d1ee3658f1f153e22d458f7bed016485615db5d5b4627ec20c20078e7a9"
+    },
+    {
+      "id": 2,
+      "date": "2026-09-01",
+      "severity": "S2",
+      "finding": "The one physical instance behind the staged-transition rule - PR ed3c/noodles#129 could not go green because trusted verify runs main's copy of a test over the candidate tree - is recorded only inside the bodies of ed3c/noodles#252 and ed3c/noodles#253; when those close, the rule in contracts/system-v1.md keeps its statement and loses its evidence.",
+      "receipts": [
+        "ed3c/noodles#252 body - PR ed3c/noodles#129 verify run 33366751879, job `Run trusted positive and planted-negative controls`, failure at .trusted/tests/test_noodles.py:298",
+        ".github/workflows/verify.yml - PYTHONPATH .trusted with NOODLES_CANDIDATE_ROOT .candidate is why main's copy judges the candidate",
+        "contracts/system-v1.md staged-transition paragraph - states the rule with no receipt attached"
+      ],
+      "owner_component": "docs",
+      "status": "promoted",
+      "promoted_to": "ed3c/noodles#274",
+      "chain": "189f7d9b89471f1c3cd22bde87a516eb6ee3104dbfa2080358ff0ec92342d2f8"
+    },
+    {
+      "id": 3,
+      "date": "2026-09-01",
+      "severity": "S2",
+      "finding": "`./noodles issue handoff` carries the journey-compilation gate but the merge-gating verify path never calls it, and real lanes reach awaiting_land by flipping the state marker directly, so the gate landed by ed3c/noodles#242 is enforced only on a route those lanes physically cannot take.",
+      "receipts": [
+        "noodles.py:execute_handoff is the only caller of feature_contract.compile_handoff_feature_map",
+        "noodles.py:verify_pull_request carries zero feature_contract references",
+        "merged PRs fix-46-worktree-admission, fix-99-exclusive-admission, fix-100-concurrency-invariants - none uses the ed3c-noodles-N-0-execute branch that noodles.execute_provenance_admission requires"
+      ],
+      "owner_component": "verify",
+      "status": "promoted",
+      "promoted_to": "ed3c/noodles#264",
+      "chain": "96aef24c0c341c41acffe52a32a5a958bb37be5b396badfc9cbd7b559cfdcd4c"
+    },
+    {
+      "id": 4,
+      "date": "2026-09-01",
+      "severity": "S2",
+      "finding": "Five open issues declare a `noodles-feature` id that feature_contract.resolve_feature refuses, and nothing on the landing route resolves the marker, so an unadmitted specialized-oracle id stays invisible until someone runs a route no lane takes.",
+      "receipts": [
+        "feature_contract.ADMITTED_FEATURES holds exactly verification-skill-oracle, metrics-cli-oracle, repo-infra-verify-oracle, landing-train-verify-aware-selection, land-time-receipt-anchor",
+        "ed3c/noodles#257 component-surface-import-edges, #260 codex-isolation-truncation, #263 findings-register, #264 handoff-route-truth, #268 component-surface-file-overlap - none of those five ids is admitted",
+        "noodles.py:verify_pull_request never calls feature_contract.resolve_feature; AGENTS.md states unknown feature ids fail at completion, which is a route wave lanes do not take"
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "63300725ff6f302ab7031c16021a842751f32331824930a16eb8fdf703941566"
+    }
+  ]
+}

@@ -538,6 +538,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
     errors.extend(validate_comment_tags(root, paths))
+    errors.extend(findings_register_errors(root, policy_root))
     schedule_receipt = root / ".noodle/schedule-cycle.json"
     if schedule_receipt.exists():
         try:
@@ -1046,6 +1047,102 @@ def component_surface_errors(component: str, components: dict[str, list[str]], c
     if offending:
         return [f"mutation outside admitted component {component!r}: {', '.join(offending)}"]
     return []
+FINDINGS_REGISTER_PATH = "docs/findings/register.json"
+FINDING_FIELDS = ("id", "date", "severity", "finding", "receipts", "owner_component", "status", "chain")
+FINDING_STATUSES = ("open", "promoted", "retired")
+FINDING_SEVERITIES = ("S1", "S2", "S3")
+FINDING_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def finding_chain(entry: Mapping[str, Any], previous: str) -> str:
+    """Commit one entry to every entry before it, so appending is the only mutation that survives.
+
+    Editing, reordering, or silently dropping an entry changes this value for that entry and for
+    every entry after it, which `findings_register_errors` recomputes from scratch."""
+    payload = {key: value for key, value in entry.items() if key != "chain"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(f"{previous}\n{canonical}".encode("utf-8")).hexdigest()
+
+
+def findings_register_errors(root: Path, policy_root: Path | None = None) -> list[str]:
+    # constraint: ed3c/noodles#263 - the register is N-class: an entry gates nothing and admits
+    # constraint: nothing. What is L here is the register's shape - a malformed entry and a
+    # constraint: silently removed entry both fail this recomputation, so the durable home cannot
+    # constraint: rot into prose. Non-claim: removing the *last* entry leaves a self-consistent
+    # constraint: chain; only the Git history of this file witnesses that, which is why
+    # constraint: policy/fitness.json also requires the path to exist at all.
+    path = root / FINDINGS_REGISTER_PATH
+    if not path.exists():
+        return [f"missing findings register: {FINDINGS_REGISTER_PATH}"]
+    try:
+        payload = load_json(path)
+        components = set(component_map(policy_root or root))
+    except GateError as exc:
+        return [f"{FINDINGS_REGISTER_PATH} unreadable: {exc}"]
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "entries"} or payload["schema_version"] != 1:
+        return [f"{FINDINGS_REGISTER_PATH} must contain exactly schema_version 1 and an entries array"]
+    entries = payload["entries"]
+    if not isinstance(entries, list) or not entries:
+        return [f"{FINDINGS_REGISTER_PATH} entries must be a non-empty array"]
+    previous = ""
+    for index, entry in enumerate(entries, start=1):
+        label = f"{FINDINGS_REGISTER_PATH} entry {index}"
+        if not isinstance(entry, dict):
+            return [f"{label} is not an object"]
+        expected_fields = set(FINDING_FIELDS) | ({"promoted_to"} if entry.get("status") == "promoted" else set())
+        if set(entry) != expected_fields:
+            return [
+                f"{label} field set is wrong: missing {sorted(expected_fields - set(entry))}, "
+                f"unexpected {sorted(set(entry) - expected_fields)}"
+            ]
+        if entry["id"] != index:
+            return [f"{label} declares id {entry['id']!r} at append position {index}; an entry was removed or reordered"]
+        if not isinstance(entry["date"], str) or not FINDING_DATE_RE.fullmatch(entry["date"]):
+            return [f"{label} date {entry['date']!r} is not an exact YYYY-MM-DD day"]
+        if entry["severity"] not in FINDING_SEVERITIES:
+            return [f"{label} severity {entry['severity']!r} is not one of {', '.join(FINDING_SEVERITIES)}"]
+        if not isinstance(entry["finding"], str) or not entry["finding"].strip():
+            return [f"{label} finding must be one non-empty statement"]
+        receipts = entry["receipts"]
+        if not isinstance(receipts, list) or not receipts or not all(isinstance(item, str) and item.strip() for item in receipts):
+            return [f"{label} receipts must be a non-empty list of non-empty receipt strings"]
+        if entry["owner_component"] not in components:
+            return [f"{label} owner_component {entry['owner_component']!r} is not in {COMPONENT_MAP_PATH}"]
+        if entry["status"] not in FINDING_STATUSES:
+            return [f"{label} status {entry['status']!r} is not one of {', '.join(FINDING_STATUSES)}"]
+        if entry["status"] == "promoted" and not SUBJECT_RE.fullmatch(str(entry["promoted_to"])):
+            return [f"{label} promoted_to {entry['promoted_to']!r} is not an exact owner/repo#N subject"]
+        expected_chain = finding_chain(entry, previous)
+        if entry["chain"] != expected_chain:
+            return [f"{label} chain {entry['chain']!r} != recomputed {expected_chain!r}; the register was mutated, not appended"]
+        previous = expected_chain
+    return []
+
+
+def open_findings(root: Path) -> list[dict[str, Any]]:
+    """Register entries whose disposition is still open - the register's whole reader contract."""
+    payload = load_json(root / FINDINGS_REGISTER_PATH)
+    return [entry for entry in payload["entries"] if entry.get("status") == "open"]
+
+
+def findings_backlog_items(root: Path) -> list[dict[str, Any]]:
+    # constraint: ed3c/noodles#263 - open findings ride the same surface agents already read for
+    # constraint: ready work, so the register has a reader by construction. `open` is not `ready`
+    # constraint: and the id is not an owner/repo#N subject, so the schedule skill's admission
+    # constraint: cannot turn one of these lines into an order.
+    return [
+        {
+            "id": f"finding-{entry['id']}",
+            "title": entry["finding"],
+            "status": entry["status"],
+            "kind": "finding",
+            "severity": entry["severity"],
+            "date": entry["date"],
+            "owner_component": entry["owner_component"],
+            "receipts": entry["receipts"],
+        }
+        for entry in open_findings(root)
+    ]
 def pinned_entries(root: Path) -> set[str]:
     """Identity path of every pinned unit in this tree's `policy/*.lock.json` files.
 
@@ -2078,6 +2175,7 @@ def adapter_sync() -> int:
                     "reasons": contract["reasons"],
                 }
             )
+    output.extend(findings_backlog_items(repo_root()))
     for item in output:
         print(json.dumps(item, separators=(",", ":")))
     return 0

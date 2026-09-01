@@ -14,6 +14,8 @@ Read the backlog adapter output. Each valid item has an exact ID `owner/repo#N`,
 
 Read `./noodles issue contract owner/repo#N` for the typed goal, physical acceptance, and non-claims of an item you intend to schedule. Never invent a `gh` command and never re-derive dependency waiting by hand.
 
+The same output also carries every open entry of `docs/findings/register.json` as a `"kind":"finding"` line with id `finding-<n>`. Those are read-only context: a disclosed-not-fixed finding has no Issue because intake would normalize it into an atom or block it. Never schedule one - its id is not an `owner/repo#N` subject and its status is `open`, not `ready`. Promoting a finding into a real Issue is an atom's work, never a scheduling decision.
+
 ## Admission
 
 Schedule an item only when all are true:
