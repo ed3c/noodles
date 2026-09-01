@@ -219,6 +219,67 @@ class SupervisedGenerationTests(ControlCheckoutFixture):
         self.assertEqual(outcome["reason"], "wedge")
         self.assertLess(outcome["seconds"], 30.0)
 
+    def test_declared_quota_wait_survives_the_ordinary_wedge_deadline_but_silence_alone_never_does(self) -> None:
+        """ed3c/noodles#291 - both directions: the 13:20 generation died with no stderr because a
+        provider-ordered sleep was indistinguishable from a hang. Declaring the wait is the whole
+        difference, so a child that declares nothing must still be killed on the same clock."""
+        declared = self.child(
+            "import time\n"
+            "print('NOODLES_GH_QUOTA_WAIT: gh api issues deferred before issuing; core remaining=0 "
+            "floor=25; recoverable-wait 8s until 2026-09-01T09:00:00Z', flush=True)\n"
+            "time.sleep(6)\n"
+        )
+        silent = self.child("import time\nprint('up', flush=True)\ntime.sleep(6)")
+
+        waited = noodles.run_supervised_generation(self.control, declared, wedge_seconds=2.0, rotate_after_seconds=120.0)
+        killed = noodles.run_supervised_generation(self.control, silent, wedge_seconds=2.0, rotate_after_seconds=120.0)
+
+        self.assertEqual(waited["reason"], "exited")
+        self.assertEqual(waited["declared_quota_wait"], 8.0)
+        self.assertGreater(waited["seconds"], 4.0)
+        self.assertEqual(killed["reason"], "wedge")
+        self.assertEqual(killed["declared_quota_wait"], 0.0)
+        self.assertLess(killed["seconds"], waited["seconds"])
+
+    def test_cycle_status_separates_a_quota_wait_from_a_failure_and_from_a_clean_exit(self) -> None:
+        def refuse() -> object:
+            self.fail("a declared quota wait carries its own reset; no live bucket read is admitted")
+
+        declared = {"returncode": 1, "reason": "exited", "tail": "", "declared_quota_wait": 240.0}
+        legacy = {"returncode": 1, "reason": "exited", "tail": "daemon died: primary rate limit", "declared_quota_wait": 0.0}
+        broken = {"returncode": 2, "reason": "exited", "tail": "traceback", "declared_quota_wait": 0.0}
+        clean = {"returncode": 0, "reason": "exited", "tail": "clean stop", "declared_quota_wait": 0.0}
+
+        self.assertEqual(noodles.cycle_status(declared, refuse, 180.0), ("quota_wait", 240.0))
+        self.assertEqual(
+            noodles.cycle_status(legacy, lambda: {"resources": {"core": {"remaining": 0, "reset": 1_000_300}}}, 180.0)[0],
+            "quota_wait",
+        )
+        self.assertEqual(noodles.cycle_status(broken, refuse, 180.0), ("failed", 180.0))
+        self.assertEqual(noodles.cycle_status(clean, refuse, 180.0), ("ok", 0.0))
+        self.assertEqual(sorted(noodles.CYCLE_STATUS_MEANINGS), ["failed", "ok", "quota_wait"])
+
+    def test_supervise_receipt_records_the_quota_wait_status_and_backs_off_until_reset(self) -> None:
+        slept: list[float] = []
+        receipts = noodles.supervise(
+            self.control,
+            "http://127.0.0.1:3210",
+            generations=1,
+            child_argv=self.child(
+                "print('NOODLES_GH_QUOTA_WAIT: gh api issues deferred before issuing; core remaining=0 "
+                "floor=25; recoverable-wait 240s until 2026-09-01T09:00:00Z', flush=True)\n"
+                "raise SystemExit(75)\n"
+            ),
+            sleep_fn=slept.append,
+            rate_limit_fn=lambda: self.fail("a declared quota wait must not spend a call reading the bucket"),
+        )
+
+        self.assertEqual((receipts[0]["status"], receipts[0]["cooldown"]), ("quota_wait", 240.0))
+        self.assertEqual(receipts[0]["meaning"], noodles.CYCLE_STATUS_MEANINGS["quota_wait"])
+        self.assertEqual(slept, [240.0])
+        ledger = (self.control / noodles.SUPERVISE_LOG_RELATIVE).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(ledger[-1])["status"], "quota_wait")
+
     def test_chatty_generation_is_bounded_by_the_rotation_deadline(self) -> None:
         outcome = noodles.run_supervised_generation(
             self.control,

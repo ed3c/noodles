@@ -1,9 +1,10 @@
-"""Physical controls for the repository-owned gh pacing carrier (ed3c/noodles#169).
+"""Physical controls for the repository-owned gh pacing carrier (ed3c/noodles#169, ed3c/noodles#291).
 
 Every assertion drives the tracked `.agents/bin/gh` with a fake gh binary: no live API call
 happens here. The planted negatives are a decoy `gh` earlier on the parent PATH, a zero-gap
-burst whose total wall time is measurably not spread, an untracked carrier that fails `./noodles verify`, and a
-mutation whose secondary-limit 403 must never be auto-retried.
+burst whose total wall time is measurably not spread, an untracked carrier that fails `./noodles verify`, a
+mutation whose secondary-limit 403 must never be auto-retried, and a 403 carrying no rate-limit
+headers that must stay hard while a depleted-bucket 403 becomes a recoverable wait.
 """
 from __future__ import annotations
 
@@ -51,6 +52,29 @@ PATH_PROBE_CODEX = (
     "json.dump({'path': os.environ.get('PATH', ''), 'which_gh': shutil.which('gh')},\n"
     "          open(os.environ['FAKE_CODEX_PROBE'], 'w', encoding='utf-8'))\n"
 )
+HEADER_403_GH = (
+    "import os, sys\n"
+    "open(os.environ['FAKE_GH_LOG'], 'a', encoding='utf-8').write('x')\n"
+    "sys.stdout.write('HTTP/2.0 403 Forbidden\\n')\n"
+    "sys.stdout.write(f\"x-ratelimit-remaining: {os.environ['FAKE_GH_REMAINING']}\\n\")\n"
+    "sys.stdout.write(f\"x-ratelimit-reset: {os.environ['FAKE_GH_RESET']}\\n\")\n"
+    "sys.stderr.write('gh: refused (HTTP 403)\\n')\n"
+    "raise SystemExit(1)\n"
+)
+BARE_403_GH = (
+    "import os, sys\n"
+    "open(os.environ['FAKE_GH_LOG'], 'a', encoding='utf-8').write('x')\n"
+    "sys.stderr.write('gh: Resource not accessible by integration (HTTP 403)\\n')\n"
+    "raise SystemExit(1)\n"
+)
+HEADER_OK_GH = (
+    "import os, sys\n"
+    "open(os.environ['FAKE_GH_LOG'], 'a', encoding='utf-8').write('x')\n"
+    "sys.stdout.write('HTTP/2.0 200 OK\\n')\n"
+    "sys.stdout.write(f\"x-ratelimit-remaining: {os.environ['FAKE_GH_REMAINING']}\\n\")\n"
+    "sys.stdout.write(f\"x-ratelimit-reset: {os.environ['FAKE_GH_RESET']}\\n\")\n"
+    "sys.stdout.write('\\n{}\\n')\n"
+)
 BURST_CALLS = 3
 BURST_INTERVAL = 1.5
 # constraint: total burst wall time is monotone in pacing - spawn jitter can only lengthen it, never
@@ -90,7 +114,12 @@ class GhPacingCarrierTests(unittest.TestCase):
         env["PATH"] = leading_path(fake_bin)
         env["FAKE_GH_LOG"] = str(base / "gh-calls.log")
         env["NOODLES_GH_PACE_STATE"] = str(base / "pace.state")
+        env["NOODLES_GH_BUDGET_STATE"] = str(base / "budget.json")
         env["NOODLES_GH_MIN_INTERVAL"] = "0"
+        # constraint: the budget is keyed to a credential identity, so both invocations of a
+        # constraint: two-call control must observe the same one or the deferral is not comparable.
+        env["GH_TOKEN"] = "ghs_planted_budget_identity"
+        env.pop("GITHUB_TOKEN", None)
         return env
 
     def test_carrier_passes_argv_stdout_stderr_and_exit_code_byte_faithfully(self) -> None:
@@ -187,6 +216,89 @@ class GhPacingCarrierTests(unittest.TestCase):
             [],
         ):
             self.assertFalse(carrier.is_read_only(argv), argv)
+
+    def budget_env(self, base: Path, body: str, *, remaining: int, reset_offset: int) -> dict[str, str]:
+        env = self.carrier_env(base, body)
+        env["FAKE_GH_REMAINING"] = str(remaining)
+        env["FAKE_GH_RESET"] = str(int(time.time()) + reset_offset)
+        return env
+
+    def calls(self, env: dict[str, str]) -> int:
+        log = Path(env["FAKE_GH_LOG"])
+        return len(log.read_text(encoding="utf-8")) if log.exists() else 0
+
+    def test_depleted_bucket_403_becomes_a_recoverable_wait_and_the_next_call_is_never_issued(self) -> None:
+        """ed3c/noodles#291 - the doomed second call is the one the exhausted daemon kept paying for."""
+        base = self.scratch()
+        env = self.budget_env(base, HEADER_403_GH, remaining=0, reset_offset=900)
+        argv = [str(GH_CARRIER), "api", "repos/ed3c/noodles/issues?state=open"]
+
+        first = subprocess.run(argv, env=env, capture_output=True, check=False)
+
+        self.assertEqual(first.returncode, 75)
+        self.assertIn(b"NOODLES_GH_QUOTA_WAIT", first.stderr)
+        self.assertIn(b"recoverable-wait", first.stderr)
+        self.assertIn(time.strftime("%Y-%m-%dT", time.gmtime(int(env["FAKE_GH_RESET"]))).encode(), first.stderr)
+        self.assertIn(b"gh: refused (HTTP 403)", first.stderr)
+        self.assertEqual(self.calls(env), 1)
+        budget = json.loads(Path(env["NOODLES_GH_BUDGET_STATE"]).read_text(encoding="utf-8"))
+        self.assertEqual((budget["remaining"], budget["reset"]), (0, int(env["FAKE_GH_RESET"])))
+
+        second = subprocess.run(argv, env=env, capture_output=True, check=False)
+
+        self.assertEqual(second.returncode, 75)
+        self.assertIn(b"deferred before issuing", second.stderr)
+        self.assertEqual(self.calls(env), 1)
+
+    def test_planted_negative_403_without_rate_limit_headers_stays_hard_and_defers_nothing(self) -> None:
+        base = self.scratch()
+        env = self.carrier_env(base, BARE_403_GH)
+        argv = [str(GH_CARRIER), "api", "repos/ed3c/noodles/issues?state=open"]
+
+        first = subprocess.run(argv, env=env, capture_output=True, check=False)
+        second = subprocess.run(argv, env=env, capture_output=True, check=False)
+
+        self.assertEqual((first.returncode, second.returncode), (1, 1))
+        self.assertNotIn(b"NOODLES_GH_QUOTA_WAIT", first.stderr)
+        self.assertIn(b"HTTP 403", first.stderr)
+        self.assertFalse(Path(env["NOODLES_GH_BUDGET_STATE"]).exists())
+        self.assertEqual(self.calls(env), 2)
+
+    def test_positive_control_floor_clear_budget_issues_every_call(self) -> None:
+        base = self.scratch()
+        env = self.budget_env(base, HEADER_OK_GH, remaining=4900, reset_offset=900)
+        argv = [str(GH_CARRIER), "api", "repos/ed3c/noodles"]
+
+        for _ in range(2):
+            result = subprocess.run(argv, env=env, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0)
+            self.assertNotIn(b"NOODLES_GH_QUOTA_WAIT", result.stderr)
+        self.assertEqual(self.calls(env), 2)
+        self.assertEqual(
+            json.loads(Path(env["NOODLES_GH_BUDGET_STATE"]).read_text(encoding="utf-8"))["remaining"], 4900
+        )
+
+    def test_a_balance_observed_under_another_credential_never_defers_this_one(self) -> None:
+        base = self.scratch()
+        env = self.budget_env(base, HEADER_OK_GH, remaining=4900, reset_offset=900)
+        Path(env["NOODLES_GH_BUDGET_STATE"]).write_text(
+            json.dumps({"identity": "someone-else", "remaining": 0, "reset": int(time.time()) + 900}),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run([str(GH_CARRIER), "api", "repos/ed3c/noodles"], env=env, capture_output=True, check=False)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.calls(env), 1)
+
+    def test_budget_arithmetic_reads_only_header_lines_and_only_below_the_floor(self) -> None:
+        carrier = load_carrier_module()
+        self.assertEqual(carrier.observed_budget("x-ratelimit-remaining: 7\nX-RateLimit-Reset: 99\n"), (7, 99))
+        self.assertIsNone(carrier.observed_budget('{"x-ratelimit-remaining": 0, "x-ratelimit-reset": 99}'))
+        self.assertIsNone(carrier.observed_budget("x-ratelimit-remaining: 7\n"))
+        self.assertEqual(carrier.quota_wait_seconds(5000, 1_000_300.0, 1_000_000.0), 0.0)
+        self.assertEqual(carrier.quota_wait_seconds(0, 1_000_300.0, 1_000_000.0), 360.0)
+        self.assertEqual(carrier.quota_wait_seconds(0, 900_000.0, 1_000_000.0), 0.0)
 
     def test_cook_path_ordering_puts_the_carrier_ahead_of_a_planted_decoy_gh(self) -> None:
         base = self.scratch()

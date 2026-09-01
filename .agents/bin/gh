@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Serialize every gh invocation on one repository-owned state file, hold a minimum inter-call gap, and honor Retry-After once for read-only secondary-limit 403s."""
+"""Serialize every gh invocation on one repository-owned state file, hold a minimum inter-call gap, honor Retry-After once for read-only secondary-limit 403s, and defer instead of issuing a call this identity's rate-limit balance says is already doomed."""
 
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -13,14 +16,25 @@ from pathlib import Path
 
 
 PACE_STATE = ".noodle/gh-pace.state"
+BUDGET_STATE = ".noodle/gh-budget.json"
 DEFAULT_MIN_INTERVAL = 1.0
 MAX_RETRY_AFTER_SECONDS = 120.0
+DEFAULT_QUOTA_FLOOR = 25
+QUOTA_RESET_MARGIN_SECONDS = 60.0
+# constraint: ed3c/noodles#291 - EX_TEMPFAIL, so a depleted bucket leaves the shared exit as a
+# constraint: recoverable wait carrying its own reset instant instead of a system-hard failure.
+QUOTA_WAIT_EXIT = 75
+QUOTA_WAIT_PREFIX = "NOODLES_GH_QUOTA_WAIT"
 READ_ONLY_VERBS = frozenset({"checks", "diff", "list", "status", "view"})
 API_WRITE_PREFIXES = ("-f", "-F", "--field", "--raw-field", "--input")
 API_WRITE_TARGET = "graphql"
 READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 HTTP_403 = re.compile(r"\b403\b")
 RETRY_AFTER = re.compile(r"retry-after\s*[:=]?\s*(\d+)", re.IGNORECASE)
+# constraint: header lines only. The anchors refuse a JSON body field of the same name, so a
+# constraint: response that merely mentions the budget can never be read as the budget itself.
+RATE_REMAINING = re.compile(r"(?im)^[ \t]*x-ratelimit-remaining[ \t]*:[ \t]*(\d+)[ \t]*\r?$")
+RATE_RESET = re.compile(r"(?im)^[ \t]*x-ratelimit-reset[ \t]*:[ \t]*(\d+)[ \t]*\r?$")
 
 
 def fail(message: str) -> None:
@@ -92,6 +106,83 @@ def retry_after_delay(argv: list[str], result: subprocess.CompletedProcess[bytes
     return min(float(match.group(1)), MAX_RETRY_AFTER_SECONDS)
 
 
+def token_identity() -> str:
+    """Which bucket a recorded balance belongs to, without ever writing the credential down."""
+    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16] if token else "anon"
+
+
+def budget_state_path(root: Path) -> Path:
+    return Path(os.environ.get("NOODLES_GH_BUDGET_STATE") or (root / BUDGET_STATE))
+
+
+def quota_floor() -> int:
+    raw = os.environ.get("NOODLES_GH_QUOTA_FLOOR")
+    if raw is None or not raw.strip():
+        return DEFAULT_QUOTA_FLOOR
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        fail("NOODLES_GH_QUOTA_FLOOR must be an integer count of remaining core calls")
+
+
+def read_budget(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_budget(path: Path, remaining: int, reset: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"identity": token_identity(), "remaining": remaining, "reset": reset, "observed_at": int(time.time())}
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def observed_budget(text: str) -> tuple[int, int] | None:
+    """The rate-limit balance this proxied response stated in its own headers, or nothing."""
+    remaining = RATE_REMAINING.search(text)
+    reset = RATE_RESET.search(text)
+    if remaining is None or reset is None:
+        return None
+    return int(remaining.group(1)), int(reset.group(1))
+
+
+def quota_wait_seconds(remaining: int, reset: float, now: float) -> float:
+    # constraint: a bucket at or below the floor cannot serve the next call, so the honest answer is
+    # constraint: the distance to its own reset, never zero and never a hard failure.
+    if remaining > quota_floor():
+        return 0.0
+    wait = reset - now + QUOTA_RESET_MARGIN_SECONDS
+    return wait if wait > 0 else 0.0
+
+
+def recorded_wait(budget: dict[str, object], now: float) -> tuple[float, int, float]:
+    """Seconds this identity must wait before its next call, with the balance that decided it."""
+    if budget.get("identity") != token_identity():
+        # constraint: a balance observed under another credential says nothing about this one; an
+        # constraint: unknown bucket is issued, never guessed.
+        return 0.0, -1, 0.0
+    try:
+        remaining = int(budget["remaining"])
+        reset = float(budget["reset"])
+    except (KeyError, TypeError, ValueError):
+        return 0.0, -1, 0.0
+    return quota_wait_seconds(remaining, reset, now), remaining, reset
+
+
+def quota_diagnostic(argv: list[str], remaining: int, reset: float, wait: float, deferred: bool) -> str:
+    instant = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(reset))
+    verb = "deferred before issuing" if deferred else "recoverable-wait after a quota 403"
+    return (
+        f"{QUOTA_WAIT_PREFIX}: gh {shlex.join(argv)} {verb}; core remaining={remaining} "
+        f"floor={quota_floor()}; recoverable-wait {int(wait)}s until {instant}"
+    )
+
+
 def pace(root: Path) -> None:
     try:
         interval = float(os.environ.get("NOODLES_GH_MIN_INTERVAL") or DEFAULT_MIN_INTERVAL)
@@ -116,26 +207,48 @@ def pace(root: Path) -> None:
         handle.flush()
 
 
+def emit(result: subprocess.CompletedProcess[bytes]) -> None:
+    sys.stdout.buffer.write(result.stdout)
+    sys.stdout.buffer.flush()
+    sys.stderr.buffer.write(result.stderr)
+    sys.stderr.buffer.flush()
+
+
 def main() -> int:
     argv = sys.argv[1:]
     root = repo_root()
+    state = budget_state_path(root)
+    wait, remaining, reset = recorded_wait(read_budget(state), time.time())
+    if wait > 0:
+        # constraint: ed3c/noodles#291 - the only place that can see the balance is the exit every
+        # constraint: caller already crosses; issuing here would spend a call that cannot succeed.
+        print(quota_diagnostic(argv, remaining, reset, wait, deferred=True), file=sys.stderr)
+        return QUOTA_WAIT_EXIT
     binary = real_gh(Path(__file__).resolve())
     retried = False
     while True:
         pace(root)
         # ponytail: output is buffered so a retried attempt cannot emit twice; interactive gh loses its TTY output shape - call the real binary for that.
         result = subprocess.run([binary, *argv], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        observed = observed_budget((result.stdout + result.stderr).decode("utf-8", "replace"))
+        if observed is not None:
+            write_budget(state, *observed)
         if retried:
             break
+        if result.returncode != 0 and observed is not None and HTTP_403.search((result.stdout + result.stderr).decode("utf-8", "replace")):
+            quota_wait = quota_wait_seconds(observed[0], float(observed[1]), time.time())
+            if quota_wait > 0:
+                # constraint: a quota 403 is a wait, not a defect: it is never retried here and never
+                # constraint: handed up as a system-hard failure. Its own reset instant is the backoff.
+                emit(result)
+                print(quota_diagnostic(argv, observed[0], float(observed[1]), quota_wait, deferred=False), file=sys.stderr)
+                return QUOTA_WAIT_EXIT
         delay = retry_after_delay(argv, result)
         if delay <= 0:
             break
         retried = True
         time.sleep(delay)
-    sys.stdout.buffer.write(result.stdout)
-    sys.stdout.buffer.flush()
-    sys.stderr.buffer.write(result.stderr)
-    sys.stderr.buffer.flush()
+    emit(result)
     return result.returncode
 
 

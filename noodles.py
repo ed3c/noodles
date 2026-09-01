@@ -104,6 +104,15 @@ SECONDARY_BURST_COOLDOWN_SECONDS = 180.0
 RATE_LIMIT_COOLDOWN_CEILING_SECONDS = 4000.0
 RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS = 600.0
 RATE_LIMIT_RESET_MARGIN_SECONDS = 60.0
+# constraint: ed3c/noodles#291 - the carrier is the only component that sees the balance, so it
+# constraint: declares the wait in one exact line and every deadline above it reads that line
+# constraint: rather than re-deriving a wait nobody else can observe.
+DECLARED_QUOTA_WAIT_RE = re.compile(r"NOODLES_GH_QUOTA_WAIT:[^\n]*?recoverable-wait[ \t]+(\d+)s")
+CYCLE_STATUS_MEANINGS = {
+    "ok": "the generation exited zero and the bucket never refused it",
+    "quota_wait": "the generation stopped on a declared provider quota wait; recoverable, backoff runs until the bucket's own reset",
+    "failed": "the generation exited non-zero for a reason the provider budget does not explain",
+}
 TOKEN_COMMAND_ENV = "NOODLES_TOKEN_COMMAND"
 GH_CARRIER_RELATIVE = ".agents/bin/gh"
 COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -749,6 +758,9 @@ def preflight(root: Path) -> dict[str, Any]:
 
 
 def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, token: str | None = None) -> Any:
+    # constraint: ed3c/noodles#291 - headers are requested on every machine call so the rate-limit
+    # constraint: balance reaches the carrier, which is the only component positioned to act on it.
+    # constraint: Callers still receive the body alone; nothing above this line changes shape.
     _headers, body = github_protection.gh_api_response(
         run,
         GateError,
@@ -756,6 +768,7 @@ def gh_api(endpoint: str, *, method: str = "GET", payload: Any | None = None, to
         method=method,
         payload=payload,
         token=token,
+        include_headers=True,
     )
     return body
 
@@ -2629,6 +2642,28 @@ def rate_limit_cooldown(payload: Any, now: float) -> float:
     return wait if 0 < wait < RATE_LIMIT_COOLDOWN_CEILING_SECONDS else RATE_LIMIT_COOLDOWN_FALLBACK_SECONDS
 
 
+def cycle_status(
+    receipt: Mapping[str, Any],
+    read_rate_limit: Callable[[], Any],
+    backoff_seconds: float,
+) -> tuple[str, float]:
+    """Classify one supervised cycle and name the wait it earns.
+
+    ed3c/noodles#291 - a depleted bucket is a schedulable wait, not a defect. A generation that
+    stopped on the provider's own budget gets its own status and backs off until that budget's
+    reset; only a generation the budget does not explain is a failure."""
+    if receipt["returncode"] == 0 and receipt["reason"] == "exited":
+        return "ok", 0.0
+    declared = float(receipt.get("declared_quota_wait") or 0.0)
+    if declared > 0:
+        return "quota_wait", declared
+    if receipt["returncode"] != 0 and RATE_LIMIT_TAIL_RE.search(receipt["tail"]):
+        return "quota_wait", rate_limit_cooldown(read_rate_limit(), time.time())
+    if receipt["returncode"] != 0 and receipt["reason"] == "exited":
+        return "failed", backoff_seconds
+    return "failed", 0.0
+
+
 def rotation_env(base: Mapping[str, str], token_command: str) -> dict[str, str]:
     env = dict(base)
     env.setdefault("NOODLE_NO_BROWSER", "1")
@@ -2662,6 +2697,8 @@ def run_supervised_generation(
     started = last_output = now_fn()
     tail: collections.deque[str] = collections.deque(maxlen=SUPERVISE_TAIL_LINES)
     reason = "exited"
+    quota_wait_until = 0.0
+    declared_quota_wait = 0.0
     while process.poll() is None:
         ready, _, _ = select.select([process.stdout], [], [], SUPERVISE_POLL_SECONDS)
         now = now_fn()
@@ -2669,7 +2706,10 @@ def run_supervised_generation(
         if now - started >= rotate_after_seconds:
             reason = "rotation"
             break
-        if now - last_output >= wedge_seconds:
+        # constraint: ed3c/noodles#291 - a child that declared a quota wait is silent because the
+        # constraint: provider told it to be. Killing it at the ordinary deadline is how the 13:20
+        # constraint: generation died with no stderr; a child that declared nothing is still killed.
+        if now - last_output >= wedge_seconds and now >= quota_wait_until:
             reason = "wedge"
             break
         if not ready:
@@ -2678,6 +2718,10 @@ def run_supervised_generation(
         if line:
             tail.append(line.rstrip("\n"))
             last_output = now
+            declared = DECLARED_QUOTA_WAIT_RE.search(line)
+            if declared is not None:
+                declared_quota_wait = float(declared.group(1))
+                quota_wait_until = now + declared_quota_wait
             continue
         try:
             process.wait(timeout=SUPERVISE_TERMINATE_GRACE)
@@ -2699,11 +2743,14 @@ def run_supervised_generation(
     except (BlockingIOError, OSError, ValueError):
         pass
     process.stdout.close()
+    joined = "\n".join(tail)
+    trailing = DECLARED_QUOTA_WAIT_RE.findall(joined)
     return {
         "reason": reason,
         "returncode": int(process.returncode if process.returncode is not None else -1),
         "seconds": round(now_fn() - started, 3),
-        "tail": "\n".join(tail),
+        "tail": joined,
+        "declared_quota_wait": max([declared_quota_wait, *(float(value) for value in trailing)] or [0.0]),
     }
 
 
@@ -2740,6 +2787,8 @@ def supervise(
             env = rotation_env(os.environ, os.environ.get(TOKEN_COMMAND_ENV, ""))
         except GateError as exc:
             receipt["error"] = str(exc)
+            receipt["status"] = "failed"
+            receipt["meaning"] = CYCLE_STATUS_MEANINGS["failed"]
             receipt["cooldown"] = backoff_seconds
             receipts.append(receipt)
             append_supervise_log(root, receipt)
@@ -2748,11 +2797,9 @@ def supervise(
         receipt.update(run_supervised_generation(
             root, argv, wedge_seconds=wedge_seconds, rotate_after_seconds=rotate_after_seconds, env=env
         ))
-        cooldown = 0.0
-        if receipt["returncode"] != 0 and RATE_LIMIT_TAIL_RE.search(receipt["tail"]):
-            cooldown = rate_limit_cooldown(read_rate_limit(), time.time())
-        elif receipt["returncode"] != 0 and receipt["reason"] == "exited":
-            cooldown = backoff_seconds
+        status, cooldown = cycle_status(receipt, read_rate_limit, backoff_seconds)
+        receipt["status"] = status
+        receipt["meaning"] = CYCLE_STATUS_MEANINGS[status]
         receipt["cooldown"] = cooldown
         receipts.append(receipt)
         append_supervise_log(root, receipt)

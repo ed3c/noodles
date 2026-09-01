@@ -352,6 +352,12 @@ Provider burst tolerance is a structural property of the repository, never a pro
 
 Pacing reduces but cannot eliminate secondary limiting, because other consumers share the same installation and user buckets; fail-closed handling of a residual `403` is unchanged.
 
+### PROVIDER.BUDGET_FAIL_SOFT.001
+
+A depleted provider quota is a schedulable wait, not a defect, and the only component positioned to see the balance is the one exit every machine call already crosses. The tracked `.agents/bin/gh` carrier MUST record the `x-ratelimit-remaining` / `x-ratelimit-reset` balance stated by the responses it proxies, keyed to the credential identity that observed it, and MUST defer — emitting the `NOODLES_GH_QUOTA_WAIT` diagnostic naming the reset instant and exiting `75` (EX_TEMPFAIL) — instead of issuing a call the recorded balance says is already doomed. A `403` whose own headers show the bucket at or below the floor is reclassified as that same recoverable wait and is never auto-retried; a `403` carrying no rate-limit headers keeps the unchanged `PROVIDER.CALL_PACING.001` behaviour, including fail-closed for every mutation. Above the carrier, the supervised runner MUST read the declared wait rather than re-deriving one it cannot observe: a generation that declared a quota wait is not terminated at the ordinary wedge deadline while that wait holds, and its cycle receipt carries `status: quota_wait` with backoff derived from the bucket's own reset, distinct from `status: failed`. Identity is never rotated to evade a limit: no App→user token switching and no identity fallback. Admission boundary: `tests/test_gh_pacing.py` over the tracked carrier (planted depleted-quota `403` with reset header, planted non-quota `403` that must stay hard, planted floor-clear positive control, planted deferral asserted against the fake `gh` call log) and `tests/test_supervised_ceremony.py` over `noodles.cycle_status` and `noodles.run_supervised_generation` (declared-wait survival and no-declaration wedge kill, both directions).
+
+Budget awareness claims only what was observed: a first call into a bucket whose balance this identity has never seen is issued, not guessed, and the recorded balance of one credential never speaks for another.
+
 ## 14. Non-claims and placement rules
 
 - Passing baseline tests does not prove undeclared product/runtime behavior.
