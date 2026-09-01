@@ -27,7 +27,11 @@ ANSWERED_SECTION = (
 )
 
 
-def issue_body(*, section: str = "", component: str = "contract") -> str:
+# constraint: ed3c/noodles#278 - these fixtures declared `contract` for convenience, which is exactly
+# constraint: the whole-repository bypass contract_component_bypass_errors now refuses: their single
+# constraint: changed file (policy/providers.lock.json) already fits every ordinary component. The
+# constraint: introduction gate under test is unrelated to that choice, so they declare an ordinary one.
+def issue_body(*, section: str = "", component: str = "carrier") -> str:
     return (
         "<!-- noodles-role: repository-mutating-atom -->\n"
         "<!-- noodles-target: ed3c/noodles -->\n"

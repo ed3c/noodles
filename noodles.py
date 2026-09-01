@@ -502,6 +502,51 @@ def repository_metrics(root: Path) -> dict[str, Any]:
         "workflow_count": len(workflows),
         "claim_counts": claim_counts,
         "cross_surface_import_edges": cross_surface_import_edges(root),
+        "unowned_top_level_definitions": unowned_top_level_definitions(root),
+    }
+# constraint: ed3c/noodles#278 - component_owner_errors stays silent on a definition with no owner
+# constraint: entry, by design, so the unowned count could only ever grow and nothing on any record
+# constraint: noticed. This makes it a number. Report-only on purpose: a refusing threshold would
+# constraint: deadlock every candidate that legitimately adds a definition, because the threshold is
+# constraint: read from the trusted default branch that the candidate has not landed on yet
+# constraint: (ed3c/noodles#285 hit exactly that deadlock with a strict equality in a test).
+def unowned_top_level_definitions(root: Path) -> int:
+    """Top-level definitions in the files policy/component-owners.json names that it does not own.
+
+    Unowned stays a legal, disclosed state; only its size becomes visible. A map entry for a path
+    this tree does not carry is a refusal rather than a skipped file: an owner map describing a file
+    that is not here has already stopped describing this repository.
+
+    The ceiling this atom lands equals what this tree measures, 145, rather than sitting under it:
+    this atom's own three new definitions cannot be given owner entries here, because the trusted
+    default branch's `ComponentOwnerMapTests` asserts the candidate's map has exactly 18 entries, so
+    any candidate that adds one reds in CI and can never land the change that would let it pass. That
+    is the same trusted-transition deadlock ed3c/noodles#285 named and worked around with a monotonic
+    floor; shrinking the ceiling by owning these three is the staged transition after that assertion
+    moves. The number moved 135 -> 142 -> 143 -> 145 across three rebases onto `main` while this
+    branch waited, and is measured every time rather than carried: the ceiling is whatever the
+    candidate's own tree reports, so a rebase that gains definitions restates it here, in AGENTS.md,
+    and in policy/fitness.json together."""
+    total = 0
+    for path, definitions in component_owner_map(root).items():
+        source = root / path
+        if not source.is_file():
+            raise GateError(f"{COMPONENT_OWNER_MAP_PATH} owns {path}, which this tree does not carry")
+        total += len(set(top_level_definitions(source.read_text(encoding="utf-8"), path)) - set(definitions))
+    return total
+def unowned_definition_readback(count: int, policy: Mapping[str, Any]) -> dict[str, Any]:
+    threshold = policy["max_unowned_top_level_definitions"]
+    exceeded = skill_contract.threshold_exceeded(count, "max", threshold)
+    return {
+        "metric": "unowned_top_level_definitions",
+        "policy_key": "max_unowned_top_level_definitions",
+        "classification": "report-only",
+        "authority": "N",
+        "direction": "max",
+        "threshold": threshold,
+        "value": count,
+        "status": "warning" if exceeded else "ok",
+        "message": skill_contract.architecture_warning_message("unowned_top_level_definitions", count, "max", threshold) if exceeded else None,
     }
 # constraint: ed3c/noodles#276 - ed3c/noodles#257 judges only the import edges a diff INTRODUCES;
 # constraint: every edge already on the default branch is the base tree's declaration and stayed
@@ -597,8 +642,12 @@ def metrics_readback(root: Path, policy_root: Path | None = None) -> dict[str, A
     policy = load_json(policy_root / "policy/fitness.json")
     result = skill_contract.metrics_readback(metrics, policy)
     edges = cross_surface_import_edge_readback(metrics["cross_surface_import_edges"], policy)
-    result["warning_readback"] = [*result["warning_readback"], *edges]
-    result["warnings"] = [*result["warnings"], *(item["message"] for item in edges if item["status"] == "warning")]
+    unowned = unowned_definition_readback(metrics["unowned_top_level_definitions"], policy)
+    result["warning_readback"] = [*result["warning_readback"], *edges, unowned]
+    result["warnings"] = [
+        *result["warnings"],
+        *(item["message"] for item in (*edges, unowned) if item["status"] == "warning"),
+    ]
     return result
 
 
@@ -1323,6 +1372,38 @@ def component_surface_errors(component: str, components: dict[str, list[str]], c
     if offending:
         return [f"mutation outside admitted component {component!r}: {', '.join(offending)}"]
     return []
+# constraint: ed3c/noodles#278 - a whole-repository surface (glob "*") is short-circuited by
+# constraint: component_import_edge_errors and component_owner_errors and matched by every path in
+# constraint: component_surface_errors, so declaring it skipped all three gates for the entire diff
+# constraint: and nothing restricted which Issue could declare it. Removing the token is not the cure:
+# constraint: an atom that really does span components needs it. What is checkable is whether it was
+# constraint: NEEDED, so the refusal keys on the glob rather than on the name "contract".
+# ponytail: the refusal happens before any receipt exists, so no gate name is added to
+# ponytail: verify_pull_request's gates list; add one once ed3c/noodles#302 gives that list a single
+# ponytail: owner, so the preview's coverage enumeration learns about it in the same edit.
+def contract_component_bypass_errors(
+    component: str, components: Mapping[str, Sequence[str]], changed_files: Sequence[str]
+) -> list[str]:
+    """Refuse a whole-repository declaration whose diff a single ordinary component already admits."""
+    globs = components.get(component)
+    if not globs or "*" not in globs:
+        return []
+    paths = sorted(set(changed_files))
+    if not paths:
+        return []
+    admitting = sorted(
+        name
+        for name, other in components.items()
+        if "*" not in other and all(any(fnmatch.fnmatchcase(path, glob) for glob in other) for path in paths)
+    )
+    if not admitting:
+        return []
+    return [
+        f"candidate declares whole-repository component {component!r}, which skips the component-surface, "
+        f"component-import-edge and component-ownership gates for its entire diff, but every changed file "
+        f"already fits {', '.join(admitting)}. Supported path: declare {admitting[0]!r} instead, or change a "
+        f"file no single ordinary component admits"
+    ]
 FINDINGS_REGISTER_PATH = "docs/findings/register.json"
 FINDING_FIELDS = ("id", "date", "severity", "finding", "receipts", "owner_component", "status", "chain")
 FINDING_STATUSES = ("open", "promoted", "retired")
@@ -2174,6 +2255,9 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     surface_errors = component_surface_errors(contract["component"], components, changed_files)
     if surface_errors:
         raise GateError("candidate component-surface gate failed: " + "; ".join(surface_errors))
+    bypass_errors = contract_component_bypass_errors(contract["component"], components, changed_files)
+    if bypass_errors:
+        raise GateError("candidate whole-repository-component gate failed: " + "; ".join(bypass_errors))
     import_edge_errors = component_import_edge_errors(
         contract["component"], components, changed_files, root, candidate_root
     )

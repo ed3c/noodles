@@ -458,7 +458,10 @@ class VerifyPullRequestGhaGateTests(unittest.TestCase):
         self.assertIn("non-hosted PR body must be exactly one", str(raised.exception))
 
     def test_planted_negative_a_boundary_escape_fails_the_trusted_verify(self) -> None:
-        body = issue_body(state="awaiting_land", boundary="docs", component="contract")
+        # constraint: ed3c/noodles#278 - `carrier`, not `contract`: both changed paths fit one ordinary
+        # constraint: component, so the whole-repository declaration is the bypass now refused before
+        # constraint: this gate can run. The write-boundary escape under test is unaffected by it.
+        body = issue_body(state="awaiting_land", boundary="docs", component="carrier")
         with self.assertRaises(noodles.GateError) as raised:
             self.run_verify(body, ["docs/notes.md", "noodles.py"])
         self.assertIn("gha_write_boundary_escape", str(raised.exception))
