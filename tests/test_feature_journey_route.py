@@ -13,6 +13,7 @@ once that surface is really changed.
 """
 from __future__ import annotations
 
+import ast
 import json
 import tempfile
 import unittest
@@ -159,6 +160,144 @@ class HandoffRouteIsNotTheLandingRouteTests(unittest.TestCase):
         self.assertNotIn("compile_handoff_feature_map", handoff)
         verify = source.split(f"def {'verify_pull_request'}(", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("compile_handoff_feature_map", verify)
+
+
+# constraint: ed3c/noodles#275 - the disposition of `./noodles issue handoff`, and the reason it is a
+# constraint: gate rather than a sentence. ed3c/noodles#264 moved the journey-compilation gate off
+# constraint: this route, which left the verb looking free to delete. It is not free: the route is the
+# constraint: only entrypoint to the only production caller of the admission carrying invariant I2.
+# constraint: What reds here is exactly the shape that made #264 land as a half - a declared route
+# constraint: whose live caller chain has quietly gone missing, with no recorded owner.
+HANDOFF_ROUTE = "./noodles issue handoff"
+HANDOFF_CUSTODY_KEYS = (
+    "recorded_by", "disposition", "route", "admission", "live_caller", "module", "declared_at", "held_by",
+)
+
+
+def top_level_definitions(source: str) -> set[str]:
+    return {
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def handoff_custody_errors(proof: dict, source: str, readme: str) -> list[str]:
+    """One predicate for both controls: the recorded custody, the live caller chain it names, and the
+    declaring line, judged against the candidate's own bytes.
+
+    Three separate readers would each pass over a shape the others never exercise, which is how a
+    route ends up declared with no live caller in the first place."""
+    invariants = {entry.get("id"): entry for entry in proof.get("invariants", []) if isinstance(entry, dict)}
+    custody = (invariants.get("I2") or {}).get("custody")
+    if not isinstance(custody, dict):
+        return ["policy/concurrency-proof.json invariant I2 records no custody for its admission"]
+    errors = [f"I2 custody names no {key}" for key in HANDOFF_CUSTODY_KEYS if not str(custody.get(key) or "").strip()]
+    if errors:
+        return errors
+    definitions = top_level_definitions(source)
+    admission = str(custody["admission"])
+    caller = str(custody["live_caller"])
+    for role, name in (("admission", admission), ("live_caller", caller)):
+        if name not in definitions:
+            errors.append(f"I2 custody {role} {name!r} is not a top-level definition of {custody['module']}")
+    if errors:
+        return errors
+    if admission not in source.split(f"def {caller}(", 1)[1].split("\ndef ", 1)[0]:
+        errors.append(f"I2 custody live_caller {caller!r} does not reach {admission!r}")
+    dispatch = f'args.issue_action == "{str(custody["route"]).split()[-1]}"'
+    if dispatch not in source:
+        errors.append(f"I2 custody route {custody['route']!r} has no CLI dispatch ({dispatch})")
+    elif caller not in source.split(dispatch, 1)[1].split("\n            if ", 1)[0]:
+        errors.append(f"I2 custody route {custody['route']!r} does not dispatch to {caller!r}")
+    declaring = [line for line in readme.splitlines() if line.startswith(HANDOFF_ROUTE)]
+    if len(declaring) != 1:
+        errors.append(
+            f"{custody['declared_at']} carries {len(declaring)} declaring lines for {HANDOFF_ROUTE!r}; expected 1"
+        )
+    elif "Noodle-cook route" not in declaring[0]:
+        errors.append(
+            f"{custody['declared_at']} declaring line does not name the route that owns the verb: {declaring[0]!r}"
+        )
+    return errors
+
+
+class HandoffVerbCustodyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # constraint: ed3c/noodles#275 - the lock's path is read through the module that already
+        # constraint: imports it rather than by importing skill_contract here or restating the
+        # constraint: literal. A direct import adds one standing cross-surface edge to `carrier` and
+        # constraint: `docs`, and those counts are the ratchet ed3c/noodles#276 filed: the honest
+        # constraint: response to a ratchet is not to add the edge, not to raise the number.
+        proof_path = noodles.skill_contract.CONCURRENCY_PROOF_PATH
+        self.proof = json.loads((CANDIDATE_ROOT / proof_path).read_text(encoding="utf-8"))
+        self.source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        self.readme = (CANDIDATE_ROOT / "README.md").read_text(encoding="utf-8")
+
+    def custody(self, proof: dict) -> dict:
+        return next(entry for entry in proof["invariants"] if entry["id"] == "I2")["custody"]
+
+    def test_positive_control_the_route_is_kept_with_a_recorded_live_caller(self) -> None:
+        self.assertEqual(handoff_custody_errors(self.proof, self.source, self.readme), [])
+
+    def test_planted_negative_the_pre_atom_state_no_recorded_custody_is_refused(self) -> None:
+        # constraint: ed3c/noodles#275 - the exact shape this atom disposes of: I2 recorded, its
+        # constraint: controls named, and nothing saying which live caller carries it.
+        planted = json.loads(json.dumps(self.proof))
+        del next(entry for entry in planted["invariants"] if entry["id"] == "I2")["custody"]
+        self.assertEqual(
+            handoff_custody_errors(planted, self.source, self.readme),
+            ["policy/concurrency-proof.json invariant I2 records no custody for its admission"],
+        )
+
+    def test_planted_negative_custody_naming_an_absent_caller_is_refused(self) -> None:
+        planted = json.loads(json.dumps(self.proof))
+        self.custody(planted)["live_caller"] = "execute_handoff_retired"
+        errors = handoff_custody_errors(planted, self.source, self.readme)
+        self.assertTrue(any("is not a top-level definition" in error for error in errors), errors)
+
+    def test_planted_negative_a_caller_that_no_longer_reaches_the_admission_is_refused(self) -> None:
+        admission = self.custody(self.proof)["admission"]
+        gutted = self.source.replace(f"    provenance = {admission}(", "    provenance = dict(", 1)
+        self.assertNotEqual(gutted, self.source)
+        errors = handoff_custody_errors(self.proof, gutted, self.readme)
+        self.assertTrue(any("does not reach" in error for error in errors), errors)
+
+    def test_planted_negative_a_retired_cli_dispatch_is_refused(self) -> None:
+        retired = self.source.replace('args.issue_action == "handoff"', 'args.issue_action == "retired"', 1)
+        self.assertNotEqual(retired, self.source)
+        errors = handoff_custody_errors(self.proof, retired, self.readme)
+        self.assertTrue(any("has no CLI dispatch" in error for error in errors), errors)
+
+    def test_planted_negative_a_dispatch_that_stops_calling_the_caller_is_refused(self) -> None:
+        caller = self.custody(self.proof)["live_caller"]
+        detached = self.source.replace(f"print(json.dumps({caller}(root, args.subject", "print(json.dumps(dict(root, args.subject", 1)
+        self.assertNotEqual(detached, self.source)
+        errors = handoff_custody_errors(self.proof, detached, self.readme)
+        self.assertTrue(any("does not dispatch to" in error for error in errors), errors)
+
+    def test_planted_negative_a_dropped_declaring_line_is_refused(self) -> None:
+        declaring = next(line for line in self.readme.splitlines() if line.startswith(HANDOFF_ROUTE))
+        errors = handoff_custody_errors(self.proof, self.source, self.readme.replace(declaring + "\n", "", 1))
+        self.assertTrue(any("declaring lines" in error for error in errors), errors)
+
+    def test_planted_negative_the_stale_declaring_line_is_refused(self) -> None:
+        # constraint: ed3c/noodles#275 - the exact line this atom replaced. It described the verb as
+        # constraint: if it were the awaiting_land writer, which is the stale reading #264 disclosed.
+        declaring = next(line for line in self.readme.splitlines() if line.startswith(HANDOFF_ROUTE))
+        stale = f"{HANDOFF_ROUTE} REPO#N --pr N  # exact head/body + awaiting_land + blocking current-session handoff"
+        errors = handoff_custody_errors(self.proof, self.source, self.readme.replace(declaring, stale, 1))
+        self.assertTrue(any("does not name the route that owns the verb" in error for error in errors), errors)
+
+    def test_i2_still_names_the_planted_negatives_keeping_the_verb_keeps(self) -> None:
+        # constraint: ed3c/noodles#275 - that each named control really exists in the suite is already
+        # constraint: gated by skill_contract.validate_concurrency_proof under `./noodles verify`;
+        # constraint: re-resolving them here would be a second reader of the same fact. What this
+        # constraint: adds is only the count, so retiring the verb cannot quietly thin I2's controls
+        # constraint: on the way past. Ceiling inherited from the lock: existence, never assertion.
+        entry = next(item for item in self.proof["invariants"] if item["id"] == "I2")
+        self.assertEqual(len(entry["planted_negatives"]), 5)
+        self.assertTrue(all(name.startswith("tests.test_execute_provenance.") for name in entry["planted_negatives"]))
 
 
 if __name__ == "__main__":
