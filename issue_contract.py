@@ -379,6 +379,17 @@ def body_digest(body: str) -> str:
     return hashlib.sha256((body or "").encode("utf-8")).hexdigest()
 
 
+def required_section_reasons(body_sections: dict[str, str]) -> list[str]:
+    # constraint: ed3c/noodles#279 monitor reconcile - the exact reason string is read by
+    # constraint: derive_schedulability and by noodles.backlog_completeness_report; one
+    # constraint: owner here means an edit to the wording cannot silently diverge between them.
+    return [
+        f"issue body has no '## {name.replace('_', ' ')}' section"
+        for name in REQUIRED_SECTIONS
+        if not (body_sections.get(name) or "").strip()
+    ]
+
+
 def derive_schedulability(
     contract: dict[str, Any],
     provider_state: str,
@@ -397,9 +408,7 @@ def derive_schedulability(
     blocker = contract.get("blocker")
     if blocker:
         reasons.append(f"blocker owned by {blocker['owner']}: {blocker['reason']}")
-    for name in REQUIRED_SECTIONS:
-        if not (body_sections.get(name) or "").strip():
-            reasons.append(f"issue body has no '## {name.replace('_', ' ')}' section")
+    reasons.extend(required_section_reasons(body_sections))
     reasons.extend(completeness_reasons(contract, body_sections, known_requirements))
     if contract.get("dependencies") is None:
         reasons.append(f"issue declares no noodles-depends-on marker; use {NO_DEPENDENCIES!r} for no dependencies")

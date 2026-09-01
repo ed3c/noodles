@@ -1060,6 +1060,15 @@ class BacklogCompletenessReadbackTests(unittest.TestCase):
         self.assertEqual(planted["ready"][0]["reasons"], ["issue body has no '## claim' section"])
         self.assertTrue(self.report(issue_body())["complete"])
 
+    def test_reasons_come_from_the_shared_required_section_reasons_call(self) -> None:
+        # constraint: ed3c/noodles#279 monitor reconcile - derive_schedulability and this report
+        # constraint: must both call issue_contract.required_section_reasons rather than each
+        # constraint: carrying their own copy of the reason string, so editing the wording in one
+        # constraint: place cannot silently diverge from the other.
+        body = issue_body(claim="")
+        reported = self.report(body)["ready"][0]["reasons"]
+        self.assertEqual(reported, issue_contract.required_section_reasons(issue_contract.sections(body)))
+
     def test_an_unparseable_ready_body_is_reported_rather_than_silently_dropped(self) -> None:
         # constraint: ed3c/noodles#279 - exactly the ed3c/noodles#278 defect class. A body that
         # constraint: schedule_snapshot drops on GateError leaves no trace in any frontier readback,

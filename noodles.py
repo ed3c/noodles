@@ -332,8 +332,8 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
     """ed3c/noodles#279 - read-only completeness readback over exact open provider bodies.
 
     Consumes `gh issue list --state open --json number,body` and reports, per Issue whose state
-    marker is `ready`, the reasons `issue_contract.completeness_reasons` and the
-    `issue_contract.REQUIRED_SECTIONS` check give - the same two checks `derive_schedulability`
+    marker is `ready`, the reasons `issue_contract.completeness_reasons` and
+    `issue_contract.required_section_reasons` give - the same two checks `derive_schedulability`
     calls, never a second implementation of either. It reads no provider state of its own and
     writes nothing, so the report is reproducible from any captured backlog and leaves no residue.
 
@@ -360,11 +360,7 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
         if contract["state"] != "ready":
             continue
         body_sections = issue_contract.sections(body)
-        reasons = [
-            f"issue body has no '## {name.replace('_', ' ')}' section"
-            for name in issue_contract.REQUIRED_SECTIONS
-            if not (body_sections.get(name) or "").strip()
-        ]
+        reasons = issue_contract.required_section_reasons(body_sections)
         reasons.extend(issue_contract.completeness_reasons(contract, body_sections, known_requirements))
         ready.append({**entry, "reasons": reasons})
     incomplete = [entry["number"] for entry in ready if entry["reasons"]]
