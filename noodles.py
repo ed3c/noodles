@@ -1150,8 +1150,14 @@ def python_import_targets(source: str, label: str) -> set[str]:
 
     Ceiling: `from . import x` is not resolved - this repository has no relative import and a flat
     module layout, so an unresolved relative edge would be inside its own package directory anyway.
-    Unparsable source is a refusal, never an empty edge set: a file whose imports cannot be read is
-    not a file that imports nothing."""
+    A second, unrelated ceiling: this only walks `ast.Import`/`ast.ImportFrom` nodes, so a module
+    loaded at runtime through `importlib` is invisible to it regardless of where the loaded path
+    lives. Two real instances exist today - `tests/support.py`'s `spec_from_file_location` loading
+    `noodles.py`, and `tests/test_gh_pacing.py`'s `SourceFileLoader` loading the `gh` fixture binary -
+    and neither has produced a false negative because both loaded targets already sit inside every
+    component's own globs; nothing here would catch a future `importlib` load that crossed a real
+    boundary. Unparsable source is a refusal, never an empty edge set: a file whose imports cannot be
+    read is not a file that imports nothing."""
     targets: set[str] = set()
     for node in ast.walk(parse_python(source, label)):
         if isinstance(node, ast.Import):
@@ -1172,6 +1178,9 @@ def repo_module_target(dotted: str, *roots: Path) -> str | None:
 # constraint: about what those files start coupling to, so a declared surface stayed honest-looking
 # constraint: while the diff imported another component's module. Only edges this diff introduces are
 # constraint: judged; an edge already on the base tree is the base tree's declaration, not this one's.
+# constraint: a component whose surface is the whole repository ("contract", glob "*") is bounded by
+# constraint: nothing this function can check, same as component_owner_errors below; both special-case
+# constraint: it explicitly rather than relying on fnmatch("*") matching everything by coincidence.
 def component_import_edge_errors(
     component: str,
     components: dict[str, list[str]],
@@ -1180,7 +1189,7 @@ def component_import_edge_errors(
     candidate_root: Path,
 ) -> list[str]:
     globs = components.get(component)
-    if not globs:
+    if not globs or "*" in globs:
         return []
     errors: list[str] = []
     for path in sorted(set(changed_files)):

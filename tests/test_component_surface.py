@@ -4,6 +4,7 @@ component's admitted surface. Planted positive and negative fixtures run against
 candidate component map so scope creep becomes a mechanical FAIL, not a prompt-layer plea."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import tempfile
 import unittest
@@ -234,6 +235,40 @@ class ImportTargetReadbackTests(unittest.TestCase):
                 (CANDIDATE_ROOT / "runtime_contract.py").read_text(encoding="utf-8"), "runtime_contract.py"
             ),
         )
+
+
+class GrandfatheredImportDebtTests(unittest.TestCase):
+    """ed3c/noodles#276: pre-existing cross-surface edges are grandfathered by
+    component_import_edge_errors's own base-diff rule and are unmeasured by any gate. The counts
+    below are quoted, not derived, in AGENTS.md and in #276's issue body; this recomputes them
+    against the live tree with the gate's own resolver so drift breaks a test instead of only ever
+    breaking a stale sentence nobody re-runs. A red here means: fix the drift (declare the coupling
+    or file its disposition), or the count genuinely changed - either way, update this dict AND the
+    two AGENTS.md paragraphs AND #276/#278 in the same commit."""
+
+    DISCLOSED_STANDING_EDGE_COUNTS = {"carrier": 38, "docs": 88, "schedule": 40, "verify": 33}
+
+    def test_standing_cross_surface_edge_counts_match_the_agents_md_disclosure(self) -> None:
+        components = noodles.component_map(CANDIDATE_ROOT)
+        counts: dict[str, int] = {}
+        for name, globs in components.items():
+            if globs == ["*"]:
+                continue
+            edges: set[str] = set()
+            for path in sorted(
+                p.relative_to(CANDIDATE_ROOT).as_posix()
+                for p in CANDIDATE_ROOT.rglob("*.py")
+                if ".git" not in p.parts
+            ):
+                if not any(fnmatch.fnmatchcase(path, glob) for glob in globs):
+                    continue
+                source = (CANDIDATE_ROOT / path).read_text(encoding="utf-8")
+                for dotted in sorted(noodles.python_import_targets(source, path)):
+                    target = noodles.repo_module_target(dotted, CANDIDATE_ROOT)
+                    if target and target != path and not any(fnmatch.fnmatchcase(target, glob) for glob in globs):
+                        edges.add(f"{path} -> {target}")
+            counts[name] = len(edges)
+        self.assertEqual(counts, self.DISCLOSED_STANDING_EDGE_COUNTS)
 
 
 class CompareReadbackTests(unittest.TestCase):
