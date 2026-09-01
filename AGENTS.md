@@ -9,7 +9,7 @@
 3. Load external engineering knowledge through pinned provider paths.
 4. Route the task with pstack; read only the nearest relevant contract and test.
 5. Implement the smallest independently useful atom in the Noodle worktree.
-6. Follow the canonical execute sequence in `.agents/skills/execute/SKILL.md`; this file never restates its step order. `./noodles issue handoff` is the sole writer of `awaiting_land` and it validates an already-open PR head/body, so the PR necessarily precedes that state.
+6. Follow the canonical execute sequence in `.agents/skills/execute/SKILL.md`; this file never restates its step order. Several writers can set `awaiting_land` — `./noodles issue handoff` on the Noodle-cook route among them — and reaching it grants nothing: `./noodles github verify-pr` is the gate that recompiles component surface and declared feature journeys from provider truth, and it is the only path to a landing receipt.
 7. Let trusted GitHub workflows verify the exact head, merge with that head SHA, read back the merge event, then close the exact Issue.
 8. Let `./noodles reconcile` fast-forward local `main` and release Noodle's supervised containment point after provider readback.
 

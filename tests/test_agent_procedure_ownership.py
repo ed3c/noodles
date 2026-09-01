@@ -15,7 +15,10 @@ import unittest
 import noodles
 from tests.support import CANDIDATE_ROOT
 
-HANDOFF_OWNER = "`./noodles issue handoff`"
+# constraint: ed3c/noodles#264 - the owner an `awaiting_land` line must name is the gate that admits
+# constraint: a landing, not a writer of the marker. Several writers can set it and none of them is
+# constraint: authenticated, so naming one of them "the sole writer" was itself the drift.
+LAND_GATE_OWNER = "`./noodles github verify-pr`"
 EXECUTE_SKILL = ".agents/skills/execute/SKILL.md"
 PROVIDER_LOCK = "policy/providers.lock.json"
 BASH_FENCE = "```bash"
@@ -42,10 +45,10 @@ def procedure_ownership_errors(
     errors: list[str] = []
 
     for number, line in enumerate(agents.splitlines(), 1):
-        if "awaiting_land" in line and not line.lstrip().startswith("<!--") and HANDOFF_OWNER not in line:
+        if "awaiting_land" in line and not line.lstrip().startswith("<!--") and LAND_GATE_OWNER not in line:
             errors.append(
-                f"AGENTS.md:{number} states an `awaiting_land` procedure without naming its sole writer "
-                f"{HANDOFF_OWNER}; the execute Skill owns the step order"
+                f"AGENTS.md:{number} states an `awaiting_land` procedure without naming the gate that "
+                f"actually admits a landing, {LAND_GATE_OWNER}; the execute Skill owns the step order"
             )
     if EXECUTE_SKILL not in agents:
         errors.append(f"AGENTS.md must point at {EXECUTE_SKILL} instead of restating the execute sequence")
@@ -113,7 +116,7 @@ class AgentProcedureOwnershipTests(unittest.TestCase):
             1,
         )
         self.assertNotEqual(planted, self.agents)
-        self.assertTrue(any("sole writer" in error for error in self.errors(agents=planted)))
+        self.assertTrue(any("actually admits a landing" in error for error in self.errors(agents=planted)))
 
     def test_second_call_order_block_in_agents_is_rejected(self) -> None:
         planted = self.agents + "\n```bash\n./noodles verify\n./noodles start\n```\n"

@@ -58,6 +58,20 @@
       "owner_component": "verify",
       "status": "open",
       "chain": "63300725ff6f302ab7031c16021a842751f32331824930a16eb8fdf703941566"
+    },
+    {
+      "id": 5,
+      "date": "2026-09-01",
+      "severity": "S2",
+      "finding": "ed3c/noodles#264 makes an unadmitted `noodles-feature` id a land-time refusal, so the five open issues carrying one (#257, #260, #263, #264, #268) are refused by the trusted verify gate once that atom is on the default branch; the diagnostic names the cure but nothing applies it for them.",
+      "receipts": [
+        "noodles.py:verify_pull_request - `candidate feature-journey gate failed: ... Supported path: ... or drop the noodles-feature marker from <subject>`",
+        "tests/test_feature_journey_route.py::test_planted_negative_unadmitted_feature_id_is_refused_naming_the_supported_path",
+        "register entry 4 - the same five ids, recorded before this atom made them load-bearing"
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "f22c7dc41c09f4701feef54acfae377b2b72d69b21c3c1e44480401e3a73f15d"
     }
   ]
 }

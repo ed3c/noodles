@@ -254,19 +254,20 @@ class FeatureEvidenceHandoffTests(unittest.TestCase):
         self.assertEqual(receipt["feature"], FEATURE.feature_id)
         self.assertEqual(receipt["feature_code_surface_sha256"], code_surface_digest(self.root))
         self.assertEqual(receipt["base"], "main")
-        self.assertEqual(receipt["feature_changed_node"], FEATURE.code_surface)
-        self.assertEqual(receipt["feature_journeys"], list(FEATURE.journeys))
-        self.assertEqual(receipt["feature_transitions"], list(FEATURE.transitions))
 
-    def test_changed_code_with_unmapped_journey_fails_closed_before_awaiting_land(self) -> None:
+    def test_handoff_no_longer_carries_the_journey_gate_that_the_land_route_owns(self) -> None:
+        # constraint: ed3c/noodles#264 - an unmapped journey is not this route's refusal any more.
+        # constraint: This route cannot be reached by the lanes that actually land, so a gate here is
+        # constraint: enforced only where it is not needed; tests/test_feature_journey_route.py owns
+        # constraint: the refusal at the confluence every candidate does cross.
         write_acceptance_evidence(self.root, self.head, FEATURE)
         with mock.patch.object(noodles, "merge_base_changed_files", return_value=["issue_contract.py"]), \
              mock.patch.dict(os.environ, {"NOODLE_SESSION_ID": self.session_id}, clear=False), \
              mock.patch.object(noodles, "issue_read", return_value={"body": ISSUE_BODY}), \
              mock.patch.object(noodles, "issue_set_state") as set_state:
-            with self.assertRaisesRegex(noodles.GateError, "unmapped journey"):
-                noodles.execute_handoff(self.root, SUBJECT, 44, self.pr)
-        set_state.assert_not_called()
+            receipt = noodles.execute_handoff(self.root, SUBJECT, 44, self.pr)
+        set_state.assert_called_once_with(SUBJECT, "awaiting_land")
+        self.assertNotIn("feature_changed_node", receipt)
 
     def test_marker_free_issue_uses_mandatory_baseline_without_specialized_oracle(self) -> None:
         marker_free_body = ISSUE_BODY.replace(ISSUE_FEATURE_MARKER, "")
