@@ -855,8 +855,17 @@ class RepositoryGateTests(unittest.TestCase):
                 self.assertTrue(result["ok"], result.get("errors"))
                 self.assertEqual(result.get("errors"), [])
                 self.assertEqual(result.get("warnings"), [warning])
-                self.assertEqual(len(result.get("warning_readback", [])), len(skill_contract.REPORT_ONLY_FITNESS_LIMITS))
-                warning_entries = [item for item in result["warning_readback"] if item["status"] == "warning"]
+                # constraint: ed3c/noodles#276 - the per-component cross-surface entries share this
+                # constraint: readback, so the fitness table's own entries are selected by name here
+                # constraint: rather than by total length; both families still have to be complete.
+                readback = result.get("warning_readback", [])
+                fitness_entries = [item for item in readback if item["metric"] in skill_contract.REPORT_ONLY_FITNESS_LIMITS]
+                self.assertEqual(len(fitness_entries), len(skill_contract.REPORT_ONLY_FITNESS_LIMITS))
+                self.assertEqual(
+                    {item["metric"] for item in readback if item["metric"].startswith("cross_surface_import_edges[")},
+                    {f"cross_surface_import_edges[{name}]" for name in result["metrics"]["cross_surface_import_edges"]},
+                )
+                warning_entries = [item for item in readback if item["status"] == "warning"]
                 self.assertEqual(
                     warning_entries,
                     [{
@@ -872,7 +881,7 @@ class RepositoryGateTests(unittest.TestCase):
                     }],
                 )
                 self.assertEqual(
-                    {item["metric"] for item in result["warning_readback"] if item["status"] == "ok"},
+                    {item["metric"] for item in fitness_entries if item["status"] == "ok"},
                     set(skill_contract.REPORT_ONLY_FITNESS_LIMITS) - {metric_key},
                 )
                 self.assertEqual(result["metrics"][metric_key], planted_value)

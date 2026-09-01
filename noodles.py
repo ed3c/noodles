@@ -501,14 +501,105 @@ def repository_metrics(root: Path) -> dict[str, Any]:
         "enabled_external_providers": enabled_providers,
         "workflow_count": len(workflows),
         "claim_counts": claim_counts,
+        "cross_surface_import_edges": cross_surface_import_edges(root),
     }
+# constraint: ed3c/noodles#276 - ed3c/noodles#257 judges only the import edges a diff INTRODUCES;
+# constraint: every edge already on the default branch is the base tree's declaration and stayed
+# constraint: unmeasured on any record. This makes the standing debt a number the ratchet in
+# constraint: policy/fitness.json can only let shrink. It is a metric, never a refusal: #257 owns
+# constraint: introduced edges and keeps owning them.
+# constraint: ed3c/noodles#276 disposition of every production-to-production edge this counts. All of
+# constraint: them stay cross-surface for a written reason rather than being declared away.
+# constraint: (1) Most leave noodles.py, which schedule, verify and carrier admit at once: its real
+# constraint: boundary is per-definition in policy/component-owners.json (ed3c/noodles#268), not the
+# constraint: file glob. Declaring every module it imports inside all three components would collapse
+# constraint: their globs toward "*" and delete the boundary the surface gate exists to enforce.
+# constraint: (2) repair_contract.py -> runtime_contract.py waits on ed3c/noodles#272, which owns where
+# constraint: repair_contract.py belongs; declaring runtime_contract.py inside verify to clear one edge
+# constraint: would pre-empt that atom's decision.
+# constraint: (3) retrieval_contract.py -> evidence_ledger.py is carrier's own coupling, and
+# constraint: evidence_ledger.py is owned by no component but `contract` - as is trusted_preview.py,
+# constraint: which belongs to verify. Both should be declared, and neither is declared HERE: the
+# constraint: trusted default branch's GrandfatheredImportDebtTests pins the exact counts recomputed
+# constraint: from the CANDIDATE's own map, so a candidate that widens a glob reds in CI and can never
+# constraint: land the widening. That is ENFORCEMENT.LADDER_MIGRATION.001's staged transition, measured
+# constraint: at the trusted boundary before this atom was pushed: this atom lands the ceiling that
+# constraint: makes the debt visible, and the follow-on atom declares both modules while moving the
+# constraint: pinned counts and this ceiling (carrier 38 -> 35, verify 33 -> 31) in one commit. The
+# constraint: ceiling only ever shrinks, so ordering it second loses nothing.
+def cross_surface_import_edges(root: Path) -> dict[str, int]:
+    """Per component, how many repo-local import edges leave the surface that component declares.
+
+    An edge is one (importing tracked `.py` file the component's globs admit) -> (repo module its
+    globs do not admit) pair. A component whose surface is the whole repository (`contract`, glob
+    `"*"`) is bounded by nothing measurable and is omitted rather than reported as zero.
+
+    Ceiling: this inherits `python_import_targets`' own - `importlib` loads are invisible - and it is
+    non-transitive by design: an edge is counted where it is written, not where it ends up."""
+    paths = sorted(path for _, path in tracked_entries(root) if path.endswith(".py"))
+    targets: dict[str, list[str]] = {}
+    for path in paths:
+        resolved = set()
+        for dotted in python_import_targets((root / path).read_text(encoding="utf-8"), path):
+            target = repo_module_target(dotted, root)
+            if target and target != path:
+                resolved.add(target)
+        targets[path] = sorted(resolved)
+    counts: dict[str, int] = {}
+    for name, globs in component_map(root).items():
+        if "*" in globs:
+            continue
+        counts[name] = sum(
+            1
+            for path in paths
+            if any(fnmatch.fnmatchcase(path, glob) for glob in globs)
+            for target in targets[path]
+            if not any(fnmatch.fnmatchcase(target, glob) for glob in globs)
+        )
+    return counts
+def cross_surface_import_edge_readback(counts: Mapping[str, int], policy: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """One report-only entry per component, each naming that component in its own warning.
+
+    A counted component with no declared ceiling, and a declared ceiling for a component that no
+    longer exists, are separate named warnings rather than silent omissions: adding a component to
+    policy/components.json must force a decision about how much debt it is allowed to carry."""
+    thresholds = policy.get("max_cross_surface_import_edges") or {}
+    readback: list[dict[str, Any]] = []
+    for component in sorted(set(counts) | set(thresholds)):
+        metric = f"cross_surface_import_edges[{component}]"
+        value, threshold = counts.get(component), thresholds.get(component)
+        if threshold is None:
+            message = f"architecture warning {metric}={value} has no ceiling in policy max_cross_surface_import_edges"
+        elif value is None:
+            message = f"architecture warning max_cross_surface_import_edges names {component!r}, which policy/components.json does not declare"
+        elif skill_contract.threshold_exceeded(value, "max", threshold):
+            message = skill_contract.architecture_warning_message(metric, value, "max", threshold)
+        else:
+            message = None
+        readback.append(
+            {
+                "metric": metric,
+                "policy_key": "max_cross_surface_import_edges",
+                "classification": "report-only",
+                "authority": "N",
+                "direction": "max",
+                "threshold": threshold,
+                "value": value,
+                "status": "warning" if message else "ok",
+                "message": message,
+            }
+        )
+    return readback
 def metrics_readback(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
-    return skill_contract.metrics_readback(
-        repository_metrics(root),
-        load_json(policy_root / "policy/fitness.json"),
-    )
+    metrics = repository_metrics(root)
+    policy = load_json(policy_root / "policy/fitness.json")
+    result = skill_contract.metrics_readback(metrics, policy)
+    edges = cross_surface_import_edge_readback(metrics["cross_surface_import_edges"], policy)
+    result["warning_readback"] = [*result["warning_readback"], *edges]
+    result["warnings"] = [*result["warnings"], *(item["message"] for item in edges if item["status"] == "warning")]
+    return result
 
 
 def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:

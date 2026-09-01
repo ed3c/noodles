@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 import noodles
-from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, load_ready_backlog_fixtures
+from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, initialize_repo, load_ready_backlog_fixtures
 
 HEAD_SHA = "a" * 40
 SUBJECT = "ed3c/noodles#900007"
@@ -284,18 +284,27 @@ def standing_cross_surface_edges(root: Path) -> dict[str, set[str]]:
 
 class GrandfatheredImportDebtTests(unittest.TestCase):
     """ed3c/noodles#276: pre-existing cross-surface edges are grandfathered by
-    component_import_edge_errors's own base-diff rule and are unmeasured by any gate. The counts are
-    quoted in AGENTS.md and in #276's issue body; this recomputes them against the live tree with
-    the gate's own resolver so drift breaks a test instead of only ever breaking a stale sentence
-    nobody re-runs. A red here means: fix the drift (declare the coupling or file its disposition),
-    or the count genuinely changed - either way, update the AGENTS.md sentence in the same commit.
+    component_import_edge_errors's own base-diff rule. They are now measured - `repository_metrics`
+    reports them and policy/fitness.json ratchets them report-only - but still never refused; #257
+    owns introduced edges and keeps owning them. This recomputes them against the live tree with the
+    gate's own resolver so drift breaks a test instead of only ever breaking a stale sentence nobody
+    re-runs. A red here means: fix the drift (declare the coupling or file its disposition), or the
+    count genuinely changed - either way, update the AGENTS.md disclosure sentence AND
+    policy/fitness.json in the same commit.
 
     ed3c/noodles#306: that instruction was unfollowable while the expected counts were a literal in
     *this* file. `pull_request_target` runs the default branch's copy of this module against the
     candidate's tree, so a candidate that legitimately moved an edge computed new counts, was
     compared against a literal only `main` could hold, and could never merge to update it - the same
     deadlock #285 already cured for the sibling ratchet below. Both halves of the comparison now come
-    from the candidate: the measurement from its tree, the disclosure from its AGENTS.md."""
+    from the candidate: the measurement from its tree, the disclosure from its AGENTS.md. #276's
+    metric and ratchet read the same candidate-side disclosure for exactly that reason."""
+
+    # constraint: ed3c/noodles#276 - the disposition of a production-to-production edge is either
+    # constraint: "noodles.py is admitted by three components at once", or one of these two named
+    # constraint: exceptions. Declaring the second away by widening carrier's globs is the staged
+    # constraint: transition, not this atom.
+    NAMED_EXCEPTIONS = {("repair_contract.py", "runtime_contract.py"), ("retrieval_contract.py", "evidence_ledger.py")}
 
     def test_standing_cross_surface_edge_counts_match_the_agents_md_disclosure(self) -> None:
         counts = {name: len(edges) for name, edges in standing_cross_surface_edges(CANDIDATE_ROOT).items()}
@@ -350,6 +359,99 @@ class GrandfatheredImportDebtTests(unittest.TestCase):
             self.assertEqual(standing_cross_surface_edges(root)["docs"], set())
             (root / "tests" / "test_x.py").write_text("import noodles\n", encoding="utf-8")
             self.assertEqual(standing_cross_surface_edges(root)["docs"], {"tests/test_x.py -> noodles.py"})
+
+    def test_positive_control_the_metric_reproduces_that_independent_recomputation(self) -> None:
+        """The shipped metric walks tracked entries; the recomputation above walks the filesystem.
+        Equality is what makes the reported number the same number the disclosure is about."""
+        self.assertEqual(noodles.cross_surface_import_edges(CANDIDATE_ROOT), disclosed_standing_edge_counts(CANDIDATE_ROOT))
+
+    def test_direct_readback_verify_json_reports_the_per_component_count(self) -> None:
+        result = noodles.verify_repository(CANDIDATE_ROOT)
+        disclosed = disclosed_standing_edge_counts(CANDIDATE_ROOT)
+
+        self.assertTrue(disclosed, "AGENTS.md discloses no standing cross-surface edge counts to read")
+        self.assertEqual(result["metrics"]["cross_surface_import_edges"], disclosed)
+        reported = {item["metric"]: item for item in result["warning_readback"]}
+        for component, count in disclosed.items():
+            with self.subTest(component=component):
+                entry = reported[f"cross_surface_import_edges[{component}]"]
+                self.assertEqual((entry["value"], entry["status"], entry["authority"]), (count, "ok", "N"))
+
+    def test_every_remaining_production_edge_carries_a_written_disposition(self) -> None:
+        """ed3c/noodles#276 shape 2. Every one of them leaves noodles.py - which three components
+        admit at once and whose real boundary is policy/component-owners.json - or is one of the two
+        NAMED_EXCEPTIONS, whose written reasons live beside cross_surface_import_edges. A NEW
+        production-to-production edge of any other shape has no disposition and reds here."""
+        components = noodles.component_map(CANDIDATE_ROOT)
+        undispositioned: list[str] = []
+        for name, globs in components.items():
+            if globs == ["*"]:
+                continue
+            for path in sorted(p for _, p in noodles.tracked_entries(CANDIDATE_ROOT) if p.endswith(".py")):
+                if path.startswith("tests/") or not any(fnmatch.fnmatchcase(path, glob) for glob in globs):
+                    continue
+                for dotted in sorted(noodles.python_import_targets((CANDIDATE_ROOT / path).read_text(encoding="utf-8"), path)):
+                    target = noodles.repo_module_target(dotted, CANDIDATE_ROOT)
+                    if not target or target == path or any(fnmatch.fnmatchcase(target, glob) for glob in globs):
+                        continue
+                    if path != "noodles.py" and (path, target) not in self.NAMED_EXCEPTIONS:
+                        undispositioned.append(f"{name}: {path} -> {target}")
+        self.assertEqual(undispositioned, [])
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        self.assertIn("ed3c/noodles#272", source)
+        self.assertIn("policy/component-owners.json (ed3c/noodles#268)", source)
+        for path, target in self.NAMED_EXCEPTIONS:
+            with self.subTest(edge=f"{path} -> {target}"):
+                self.assertIn(f"{path} -> {target}", source)
+
+
+class CrossSurfaceImportDebtRatchetTests(unittest.TestCase):
+    """ed3c/noodles#276: the ratchet is report-only, so its whole job is to be a number that reds a
+    warning when it grows. A synthetic tree keeps that assertion independent of the live counts."""
+
+    def planted_tree(self, extra_import: str = "") -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-import-debt-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        (root / "policy/components.json").write_text(
+            json.dumps({"schema_version": 1, "components": {"alpha": ["alpha.py"], "beta": ["beta.py"], "contract": ["*"]}}),
+            encoding="utf-8",
+        )
+        (root / "alpha.py").write_text(f"import json\n{extra_import}", encoding="utf-8")
+        (root / "beta.py").write_text("import os\n", encoding="utf-8")
+        initialize_repo(root)
+        return root
+
+    def test_a_planted_cross_surface_edge_raises_exactly_the_importing_components_count(self) -> None:
+        before = noodles.cross_surface_import_edges(self.planted_tree())
+        after = noodles.cross_surface_import_edges(self.planted_tree("import beta\n"))
+
+        self.assertEqual(before, {"alpha": 0, "beta": 0})
+        self.assertEqual(after, {"alpha": 1, "beta": 0})
+
+    def test_planted_negative_a_threshold_below_the_count_warns_naming_that_component(self) -> None:
+        readback = noodles.cross_surface_import_edge_readback({"alpha": 1, "beta": 0}, {"max_cross_surface_import_edges": {"alpha": 0, "beta": 0}})
+        warnings = [item for item in readback if item["status"] == "warning"]
+
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["message"], "architecture warning cross_surface_import_edges[alpha]=1 exceeds 0")
+        self.assertEqual(warnings[0]["classification"], "report-only")
+
+    def test_planted_negative_a_component_with_no_declared_ceiling_is_named_not_skipped(self) -> None:
+        readback = noodles.cross_surface_import_edge_readback({"gamma": 4}, {"max_cross_surface_import_edges": {}})
+
+        self.assertEqual(readback[0]["status"], "warning")
+        self.assertIn("cross_surface_import_edges[gamma]=4 has no ceiling", readback[0]["message"])
+
+    def test_planted_negative_a_ceiling_for_an_absent_component_is_named_not_skipped(self) -> None:
+        readback = noodles.cross_surface_import_edge_readback({}, {"max_cross_surface_import_edges": {"retired": 3}})
+
+        self.assertEqual(readback[0]["status"], "warning")
+        self.assertIn("names 'retired', which policy/components.json does not declare", readback[0]["message"])
+
+    def test_a_whole_repository_surface_is_omitted_rather_than_reported_as_zero_debt(self) -> None:
+        self.assertNotIn("contract", noodles.cross_surface_import_edges(self.planted_tree("import beta\n")))
 
 
 def mutate_definition(source: str, name: str) -> str:
