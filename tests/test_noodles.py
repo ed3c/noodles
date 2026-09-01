@@ -582,8 +582,14 @@ class RepositoryGateTests(unittest.TestCase):
              mock.patch("sys.stdout", stdout):
             self.assertEqual(noodles.adapter_sync(), 0)
         readback = [json.loads(line) for line in stdout.getvalue().splitlines()]
-        self.assertEqual([item["status"] for item in readback], ["ready", "ready", "blocked"])
-        self.assertIn("expected one noodles-subject marker, found 2", readback[2]["diagnostic"])
+        issue_lines = [item for item in readback if item.get("kind") != "finding"]
+        self.assertEqual([item["status"] for item in issue_lines], ["ready", "ready", "blocked"])
+        self.assertIn("expected one noodles-subject marker, found 2", issue_lines[2]["diagnostic"])
+        # constraint: ed3c/noodles#263 - open register findings ride this same backlog surface, so
+        # constraint: the reader exists by construction; they follow the issues and never precede them.
+        finding_lines = [item for item in readback if item.get("kind") == "finding"]
+        self.assertEqual(finding_lines, readback[len(issue_lines):])
+        self.assertEqual(finding_lines, noodles.findings_backlog_items(noodles.repo_root()))
 
     def test_acceptance_enforcement_hierarchy_has_no_issue_number_bypass(self) -> None:
         agents = (CANDIDATE_ROOT / "AGENTS.md").read_text()

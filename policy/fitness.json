@@ -44,6 +44,7 @@
     "README.md",
     "codex_isolation.py",
     "contracts/system-v1.md",
+    "docs/findings/register.json",
     "feature_contract.py",
     "migrations/skills-shared/ledger.json",
     "noodles",

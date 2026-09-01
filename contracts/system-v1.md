@@ -228,6 +228,16 @@ Planted controls in `tests/test_disposition_contract.py` hold the boundary: `ed3
 
 The check reads receipt shape, never whether the trade-off is wise. Legibility becomes mechanical; the judgment stays with the closer, and this gate grants no L or R authority over that judgment.
 
+### LEARNING.FINDINGS_REGISTER.001
+
+A disclosed-not-fixed finding MUST have a durable home with a reader. It cannot have one as an Issue: `ISSUE_CONTRACT.INTAKE_NORMALIZATION.001` normalizes every open Issue into a repository-mutating atom or blocks it, so a non-actionable caveat is mechanically refused - one wave-9 lane tried and was refused, and across that wave every disclosed-not-fixed item degraded into prose on a record that then closed.
+
+`docs/findings/register.json` is that home: an append-only array of `{id, date, severity, finding, receipts[], owner_component, status: open|promoted|retired}` plus `promoted_to` on a promoted entry. Appending is the only admitted mutation. Each entry carries a `chain` digest over its own canonical bytes and the previous entry's chain, so editing, reordering, or silently dropping an entry breaks the recomputation for that entry and every entry after it.
+
+The register has a reader by construction: `noodles.findings_backlog_items` appends every open entry to the same `.noodle/adapters/github sync` output agents already read for ready work. Those lines are read-only context - `open` is not `ready` and `finding-<id>` is not an `owner/repo#N` subject - so the schedule Skill's admission cannot turn one into an order.
+
+Authority: the register is N-class. An entry gates nothing, admits nothing, and blocks no candidate. What is L is the register's *shape*: `noodles.findings_register_errors`, called by `verify_repository` and therefore by both `./noodles verify` and the trusted verify path, with planted malformed-entry and removed-entry controls in `tests/test_findings_register.py`. Non-claims: removing the *last* entry leaves a self-consistent chain and is witnessed only by this file's Git history, which is why `policy/fitness.json` additionally requires the path to exist; `promoted_to` is checked for subject shape only, never against provider truth; and no gate reads an entry's text, so a wrong finding stays wrong until a reader disputes it.
+
 ## 9. Concurrency model
 
 ### CONCURRENCY.INDEPENDENCE.001
