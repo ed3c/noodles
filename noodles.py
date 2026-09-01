@@ -137,7 +137,10 @@ RETRIEVAL_FIELDS = (
 )
 # constraint: grepai 0.30.0 populates vectors only from its watcher; `init` is the one-shot half.
 RETRIEVAL_INDEX_DAEMON_VERB = "watch"
-LOCAL_EMBEDDER_PROVIDERS = frozenset({"ollama", "lmstudio"})
+# constraint: one entry, because one provider is pinned in policy/retrieval.lock.json. A second name
+# constraint: nothing pins is an admitted provider with no caller and no digest - the set widens when
+# constraint: a lock entry arrives, not before.
+LOCAL_EMBEDDER_PROVIDERS = frozenset({"ollama"})
 RETRIEVAL_NON_CLAIMS = (
     "Every candidate is a hypothesis: the receipt marks each one unconfirmed until a cook verifies it against current bytes.",
     "A zero-candidate result is a miss in this index at this commit, never proof that the code is absent.",
@@ -4352,8 +4355,17 @@ def ensure_retrieval_backend(index_root: Path, pin: Mapping[str, Any]) -> dict[s
     return {"initialized": True, "config": str(marker)}
 
 
-def write_intent_receipt(path: Path, receipt: dict[str, Any]) -> dict[str, Any]:
+def write_intent_receipt(path: Path, receipt: dict[str, Any], pin: Mapping[str, Any]) -> dict[str, Any]:
+    """The one exit every intent receipt leaves through, so admission is bound to emission.
+
+    ed3c/noodles#295 monitor reconcile: `admit_intent_receipt` had no production call site, so the
+    admitted state was constructed only by tests and the verb could emit a receipt no reader would
+    accept. Binding the admitter here rather than at the CLI means a second caller cannot forget it,
+    and a receipt that would not admit is never written: the four non-candidates states carry their
+    own diagnostic and are exempt, because they are refusals, not answers."""
     receipt["receipt_path"] = str(path)
+    if receipt["state"] == RETRIEVAL_CANDIDATES:
+        admit_intent_receipt(receipt, pin)
     write_json(path, receipt)
     return receipt
 
@@ -4422,20 +4434,20 @@ def code_intel_intent(root: Path, checkout_receipt: str, query: str) -> dict[str
     except GateError as failure:
         receipt["state"] = RETRIEVAL_BACKEND_UNAVAILABLE
         receipt["diagnostic"] = f"{failure} (pinned in {retrieval_contract.LOCK_PATH} as {pin['command']} {pin['version']})"
-        return write_intent_receipt(intent_path, receipt)
+        return write_intent_receipt(intent_path, receipt, pin)
     receipt["backend"]["initialisation"] = ensure_retrieval_backend(workspace, pin)
     try:
         receipt["index"] = retrieval_index_admission(workspace, clone, str(checkout["commit"]))
     except GateError as failure:
         receipt["state"] = RETRIEVAL_INDEX_MISMATCH if "index-mismatch" in str(failure) else RETRIEVAL_INDEX_ABSENT
         receipt["diagnostic"] = f"{failure}; vector population is owned by {pin['index_owner']!r}"
-        return write_intent_receipt(intent_path, receipt)
+        return write_intent_receipt(intent_path, receipt, pin)
     search = retrieval_contract.pinned_search(pin, receipt["index"]["index_root"], error_cls=GateError)
     candidates = retrieval_contract.parse_candidates(search(query), error_cls=GateError)
     readbacks = [retrieval_contract.readback_candidate(clone, candidate, error_cls=GateError) for candidate in candidates]
     receipt["candidates"] = [{**item, "confirmed": False} for item in readbacks]
     receipt["state"] = RETRIEVAL_CANDIDATES if readbacks else RETRIEVAL_NO_MATCH
-    return write_intent_receipt(intent_path, receipt)
+    return write_intent_receipt(intent_path, receipt, pin)
 
 
 def admit_intent_receipt(receipt: Any, pin: Mapping[str, Any]) -> dict[str, Any]:

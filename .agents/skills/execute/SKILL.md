@@ -32,14 +32,7 @@ This skill operates inside the Noodle-created isolated worktree.
 
 - `./noodles ceremony checkout --repository <r> --source <path> --commit <sha>` — clone at the exact commit and build the pinned index in one step. Not optional: `./noodles verify` refuses a cross-repository cycle receipt that names no `code_intel_checkout`.
 - `./noodles ceremony lookup --checkout-receipt <path> --module <m> --name <n>` — one exact symbol against that index. `symbol-not-found`, `reader-unavailable`, and `index-mismatch` are three distinct receipt states; none of them means the symbol is absent.
-
-Route by question shape, not by habit:
-
-- intent-shaped ("where is the code that does X") -> `./noodles ceremony intent --checkout-receipt <path> --query "<question>"`; the answer is a ranked candidate list, every entry marked unconfirmed.
-- exact-symbol-shaped ("where is `verify_feature` defined") -> `./noodles ceremony lookup`.
-- confirmation -> always against current bytes, never against a rank: read the file, or resolve the symbol through the navigation slice.
-
-The decision boundary for tool choice stays owned by the admitted method registry; these are pointers, not a method.
+- `./noodles ceremony intent --checkout-receipt <path> --query "<question>"` — "where is the code that does X". Every candidate is written unconfirmed; confirm against current bytes, never against a rank.
 
 ## Routing contract
 

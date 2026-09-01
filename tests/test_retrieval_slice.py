@@ -205,6 +205,33 @@ class IntentReceiptAdmissionTests(unittest.TestCase):
                 with self.assertRaises(noodles.GateError):
                     noodles.admit_intent_receipt(planted, PIN)
 
+    def test_the_emitter_admits_before_it_writes_so_no_caller_can_forget(self) -> None:
+        """ed3c/noodles#295 monitor reconcile: the admitter used to have zero production call sites,
+        so a candidates receipt no reader would accept could still be emitted and left on disk. Every
+        emission path goes through `write_intent_receipt`, so the binding lives there."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
+            path = Path(name) / "intent.json"
+            written = noodles.write_intent_receipt(path, copy.deepcopy(intent_receipt()), PIN)
+            self.assertEqual(written["receipt_path"], str(path))
+            self.assertTrue(path.exists())
+
+            path = Path(name) / "planted.json"
+            planted = copy.deepcopy(intent_receipt())
+            planted["candidates"][0].update(confirmed=True)
+            with self.assertRaises(noodles.GateError):
+                noodles.write_intent_receipt(path, planted, PIN)
+            self.assertFalse(path.exists(), "an inadmissible candidates receipt must not reach disk")
+
+    def test_a_refusal_state_is_written_with_its_diagnostic_rather_than_admitted(self) -> None:
+        """The four non-candidates states are refusals, not answers: they carry a diagnostic instead
+        of candidates, and the emitter must still record them."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
+            path = Path(name) / "absent.json"
+            receipt = intent_receipt(state=noodles.RETRIEVAL_INDEX_ABSENT, candidates=[], diagnostic="no index")
+            written = noodles.write_intent_receipt(path, receipt, PIN)
+            self.assertEqual(written["state"], noodles.RETRIEVAL_INDEX_ABSENT)
+            self.assertTrue(path.exists())
+
 
 class IntentSurfaceTests(unittest.TestCase):
     def test_the_cli_exposes_the_intent_verb(self) -> None:
