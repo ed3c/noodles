@@ -72,6 +72,49 @@
       "owner_component": "verify",
       "status": "open",
       "chain": "f22c7dc41c09f4701feef54acfae377b2b72d69b21c3c1e44480401e3a73f15d"
+    },
+    {
+      "id": 6,
+      "date": "2026-09-01",
+      "severity": "S3",
+      "finding": "ed3c/noodles#272 routed `repair_contract.find_open_pr_for_subject` through `noodles.matching_open_pull_requests`, which makes that function's own `constraint:` comment (\"repair_contract.find_open_pr_for_subject does not route through this exit yet\") false; the atom declares component `verify` and `policy/component-owners.json` gives `matching_open_pull_requests` to `schedule`, so `component_owner_errors` refuses the candidate that would correct the comment. Any future `schedule`-declared atom touching that definition should delete those four lines.",
+      "receipts": [
+        "noodles.py:matching_open_pull_requests - the four stale `# constraint:` lines naming ed3c/noodles#272",
+        "policy/component-owners.json - `\"matching_open_pull_requests\": [\"schedule\"]`",
+        "noodles.py:component_owner_errors - refuses a changed definition owned by an undeclared component",
+        "tests/test_repair.py::RepairOpenPrCorrelationTests - the routing the comment now contradicts"
+      ],
+      "owner_component": "schedule",
+      "status": "open",
+      "chain": "fa969216fd0829295448203c39c20ce0c9af7a9a3db4e7e83bb59b409bb1c8bc"
+    },
+    {
+      "id": 7,
+      "date": "2026-09-01",
+      "severity": "S3",
+      "finding": "`tests/test_component_surface.py::ComponentOwnerMapTests.test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure` pins `assertEqual(len(owned), 18)` on `policy/component-owners.json`, so no candidate can add an owner entry: trusted verify and `./noodles verify --trusted-preview` run the default-branch copy of that test against the candidate's data, exactly the deadlock ed3c/noodles#285 widened out of the sibling assertion in the same method (`assertGreaterEqual(len(defs), 139)`). Reproduced while ed3c/noodles#272 tried to declare `claimed_boundary_widening`'s owner and had to drop the entry instead. Cure is the same one-word widening to a monotonic floor, which still catches a deleted owner entry.",
+      "receipts": [
+        "tests/test_component_surface.py:330 - `self.assertEqual(len(owned), 18)`",
+        "tests/test_component_surface.py:318-325 - the ed3c/noodles#285 docstring naming this exact deadlock for the sibling assertion",
+        "reproduce: add one entry to policy/component-owners.json, then PYTHONPATH=. python3 -m unittest tests.test_component_surface -> `AssertionError: 19 != 18`"
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "72737a406f9f6838e1d5c474b19e6e32482da7e4a8d930fa9c311c561933dddc"
+    },
+    {
+      "id": 8,
+      "date": "2026-09-01",
+      "severity": "S3",
+      "finding": "`tests/test_schedule_contract.py::ScheduleContractTests.run_carrier` defaults `root=CANDIDATE_ROOT` and runs `.agents/bin/codex` with `cwd=CANDIDATE_ROOT`, so the carrier's own `isolated_home.mkdir(parents=True, exist_ok=True)` writes `.noodle/codex-isolation/{home,codex-home}` into the live checkout - `.noodle/` runtime state written by a test outside its own temporary directory, the exact class every atom's acceptance clause forbids. `.gitignore:3` keeps it out of any commit, so no candidate has ever been rejected for it and nothing reds. Cure: pass a `copy_tracked` root, which `mutated_copy` in the same class already builds.",
+      "receipts": [
+        "tests/test_schedule_contract.py:77 - `def run_carrier(self, argv, root: Path = CANDIDATE_ROOT)`, invoked at line 92 with `cwd=root`",
+        ".agents/bin/codex:137-138 - `isolated_home.mkdir(parents=True, exist_ok=True)`",
+        "reproduce: rm -rf .noodle/codex-isolation && PYTHONPATH=. python3 -m unittest tests.test_schedule_contract && ls .noodle -> `codex-isolation` reappears"
+      ],
+      "owner_component": "schedule",
+      "status": "open",
+      "chain": "f0926c59c44c05c7438ec247d87c5eb57bfbed9c9e5cc851900aa7a1e8a29002"
     }
   ]
 }

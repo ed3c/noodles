@@ -94,11 +94,11 @@ class ClaimProvider:
         }
 
     def api(self, endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
-        # constraint: two callers hit this endpoint with different shapes - schedule_publish's
-        # constraint: paginated noodles.matching_open_pull_requests (?...&page=1) and repair's
-        # constraint: unpaginated repair_contract.find_open_pr_for_subject (ed3c/noodles#272) -
-        # constraint: so match on the shared prefix rather than one exact string.
-        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100" or endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page=1":
+        # constraint: ed3c/noodles#272 - both callers now hit the one paginated shape, because
+        # constraint: repair_contract.find_open_pr_for_subject reads through the same shared exit
+        # constraint: (noodles.matching_open_pull_requests) schedule_publish's refusal already
+        # constraint: used; an unpaginated second correlation no longer exists to answer for.
+        if endpoint == f"repos/{REPOSITORY}/pulls?state=open&per_page=100&page=1":
             return [self.pr()] if self.pr_open else []
         if endpoint == f"repos/{REPOSITORY}/issues/33":
             if method == "PATCH":

@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from claim_contract import sweep_dead_claims
 from disposition_contract import sweep_closure_dispositions
-from repair_contract import REPAIR_MAX_ATTEMPTS, repair_pending_reviews, repair_review
+from repair_contract import REPAIR_MAX_ATTEMPTS, find_open_pr_for_subject, repair_pending_reviews, repair_review
 from runtime_contract import (
     blocking_handoff_readback,
     control_checkout_admission as runtime_control_checkout_admission,
