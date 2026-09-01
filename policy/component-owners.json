@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "owners": {
+    "noodles.py": {
+      "active_execute_claims": ["schedule"],
+      "claim_execute_branch": ["schedule"],
+      "component_import_edge_errors": ["verify"],
+      "component_introduction_errors": ["verify"],
+      "component_introduction_missing_answers": ["verify"],
+      "component_map": ["verify"],
+      "component_owner_errors": ["verify"],
+      "component_owner_map": ["verify"],
+      "component_surface_errors": ["verify"],
+      "emit_local_handoff": ["schedule"],
+      "local_handoff_body": ["schedule"],
+      "matching_branch_refs": ["schedule"],
+      "matching_open_pull_requests": ["schedule"],
+      "open_issues": ["schedule"],
+      "schedule_claim_outcome": ["schedule"],
+      "schedule_publish": ["schedule"],
+      "schedule_snapshot": ["schedule"],
+      "subject_open_pull_requests": ["schedule"]
+    }
+  }
+}

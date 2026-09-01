@@ -88,6 +88,7 @@ MARKER_PATTERNS = {
 }
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
 COMPONENT_MAP_PATH = "policy/components.json"
+COMPONENT_OWNER_MAP_PATH = "policy/component-owners.json"
 SUPERVISE_LOG_RELATIVE = ".noodle/supervise.log"
 SUPERVISE_TAIL_LINES = 40
 SUPERVISE_POLL_SECONDS = 1.0
@@ -1207,6 +1208,80 @@ def component_import_edge_errors(
                     f"{path} newly imports {dotted} ({target}), outside admitted component {component!r}"
                 )
     return errors
+def component_owner_map(policy_root: Path) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Per-definition ownership for files that more than one component's globs admit at once.
+
+    Absent on a tree that predates the map, which is the only shape that lets the map land at all:
+    the gate reads it from the trusted default-branch checkout, so the candidate that introduces it
+    is judged by a trusted tree that does not have it yet. Present-but-malformed is a refusal."""
+    path = policy_root / COMPONENT_OWNER_MAP_PATH
+    if not path.exists():
+        return {}
+    payload = load_json(path)
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "owners"} or payload["schema_version"] != 1:
+        raise GateError(f"{COMPONENT_OWNER_MAP_PATH} must contain exactly schema_version 1 and an owners object")
+    raw_owners = payload["owners"]
+    if not isinstance(raw_owners, dict) or not raw_owners:
+        raise GateError(f"{COMPONENT_OWNER_MAP_PATH} owners must be a non-empty object of path -> definition ownership")
+    owners: dict[str, dict[str, tuple[str, ...]]] = {}
+    for path_key, definitions in raw_owners.items():
+        if not isinstance(definitions, dict) or not definitions:
+            raise GateError(f"{COMPONENT_OWNER_MAP_PATH} entry {path_key!r} must map definition names to owning components")
+        entry: dict[str, tuple[str, ...]] = {}
+        for name, names in definitions.items():
+            if (
+                not isinstance(names, list)
+                or not names
+                or not all(isinstance(item, str) and COMPONENT_NAME_RE.fullmatch(item) for item in names)
+            ):
+                raise GateError(
+                    f"{COMPONENT_OWNER_MAP_PATH} definition {path_key}:{name} must list at least one lowercase component token"
+                )
+            entry[str(name)] = tuple(names)
+        owners[str(path_key)] = entry
+    return owners
+def top_level_definitions(source: str, label: str) -> dict[str, str]:
+    """Exact source text of every top-level function and class, keyed by its name."""
+    lines = source.splitlines()
+    definitions: dict[str, str] = {}
+    for node in parse_python(source, label).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            start = min([node.lineno, *(decorator.lineno for decorator in node.decorator_list)])
+            definitions[node.name] = "\n".join(lines[start - 1 : node.end_lineno])
+    return definitions
+# constraint: ed3c/noodles#268 - noodles.py is admitted by schedule, verify and carrier at once, so
+# constraint: the file glob cannot object to a verify-declared atom rewriting schedule dispatch: the
+# constraint: file matched every component before the atom existed. Ownership is hand-kept per
+# constraint: definition; a definition with no entry is unowned and this check stays silent on it.
+def component_owner_errors(
+    component: str,
+    components: dict[str, list[str]],
+    changed_files: Sequence[str],
+    owners: Mapping[str, Mapping[str, Sequence[str]]],
+    base_root: Path,
+    candidate_root: Path,
+) -> list[str]:
+    globs = components.get(component)
+    if not globs or "*" in globs:
+        return []
+    errors: list[str] = []
+    for path in sorted(set(changed_files) & set(owners)):
+        before, after = base_root / path, candidate_root / path
+        if not after.is_file():
+            # constraint: a file the candidate no longer carries is a file-level event, not a
+            # constraint: definition-level crossing; policy/fitness.json required_paths owns whether
+            # constraint: it may go missing at all. Deleting a definition inside a kept file is a
+            # constraint: crossing and is judged below.
+            continue
+        before_definitions = top_level_definitions(before.read_text(encoding="utf-8"), path) if before.is_file() else {}
+        after_definitions = top_level_definitions(after.read_text(encoding="utf-8"), path)
+        for name in sorted(set(before_definitions) | set(after_definitions)):
+            owning = tuple(owners[path].get(name) or ())
+            if owning and component not in owning and before_definitions.get(name) != after_definitions.get(name):
+                errors.append(
+                    f"{path}:{name} is owned by {', '.join(owning)} but this candidate declares {component!r}"
+                )
+    return errors
 def pinned_entries(root: Path) -> set[str]:
     """Identity path of every pinned unit in this tree's `policy/*.lock.json` files.
 
@@ -1631,6 +1706,11 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     )
     if import_edge_errors:
         raise GateError("candidate component-import-edge gate failed: " + "; ".join(import_edge_errors))
+    owner_errors = component_owner_errors(
+        contract["component"], components, changed_files, component_owner_map(root), root, candidate_root
+    )
+    if owner_errors:
+        raise GateError("candidate component-ownership gate failed: " + "; ".join(owner_errors))
     introductions = introduced_components(root, candidate_root)
     introduction_errors = component_introduction_errors(introductions, issue.get("body") or "")
     if introduction_errors:
@@ -1670,7 +1750,7 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "feature_changed_node": feature_map["changed_node"] if feature_map else None,
         "feature_transitions": feature_map["transitions"] if feature_map else None,
         "feature_journeys": feature_map["journeys"] if feature_map else None,
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-import-edges", "component-introduction", "feature-journey", "evidence-publication"],
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-import-edges", "component-ownership", "component-introduction", "feature-journey", "evidence-publication"],
     }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,
