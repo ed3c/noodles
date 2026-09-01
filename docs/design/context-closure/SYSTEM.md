@@ -43,7 +43,6 @@ This table describes tree `40bf4bc6f1215c36307b5c7c5628fc51ce932d46`. It does no
 | `repair_contract.py` | Re-entry after a trusted failure | Exact repair atom | Issue, PR, head, session, worktree, and attempt receipt | Repair loop | `SRC-BASELINE`, `SRC-SYSTEM`; `L_REFERENCE`, `N` |
 | `claim_contract.py` | Dead-claim detection, adoption, and release | Exact claim-lifecycle atom | Issue state, open PR, ledger session age, head, salvage ref, and release receipt | Claim lifecycle | `SRC-BASELINE`, `SRC-SYSTEM`; `L_REFERENCE`, `N` |
 | `policy/*.json` | Machine-readable policy and pins | Nearest owning policy atom | Executable consumer and planted drift | Gate configuration | `SRC-BASELINE`; `L_REFERENCE`, `N` |
-| `migrations/skills-shared/ledger.json` | Evidence-bounded migration disposition | Exact migration atom | Schema and evidence pointer | Candidate history | `SRC-BASELINE`, `SRC-AGENTS`; `REPOSITORY_FACT`, `N` |
 | `tests/` | Positive, planted-negative, non-case, and regression controls | Nearest owning atom | Exit code, fixture, and direct readback | Local falsification | `SRC-BASELINE`, `SRC-SYSTEM`; `L_REFERENCE`, `N` |
 | Candidate worktree | One exact repository mutation | Execute Agent inside Noodle-owned isolation | Head, tree, diff, and residue | Candidate subject | `SRC-ORDER-117`, `SRC-AGENTS`; `OWNER_REQUIREMENT`, `N` |
 
