@@ -465,9 +465,49 @@ class CandidateWiringTests(unittest.TestCase):
         node = self.functions[function]
         return {call.func.id for call in ast.walk(node) if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)}
 
+    def reachable_names(self, function: str) -> set[str]:
+        # constraint: ed3c/noodles#311 - reachability, not one exact call site. The invariant is that
+        # constraint: the trusted verify routes the hosted lane through the task gate and the apply
+        # constraint: gate; a candidate that puts one of them behind a new named gate still satisfies
+        # constraint: it. Pinned to direct calls, this assertion refused every such candidate from
+        # constraint: the default branch - a trusted-transition deadlock, not an invariant.
+        reached: set[str] = set()
+        frontier = [function]
+        while frontier:
+            for name in self.called_names(frontier.pop()):
+                if name in reached:
+                    continue
+                reached.add(name)
+                if name in self.functions:
+                    frontier.append(name)
+        return reached
+
+    def candidate_constant(self, name: str) -> list[str]:
+        # constraint: ed3c/noodles#311 - the constant is read out of the CANDIDATE's own bytes, not
+        # constraint: imported from the trusted module. Under pull_request_target the trusted module
+        # constraint: is the default branch's, so importing it made this class assert the default
+        # constraint: branch against the candidate's directory: a candidate that adds a workflow file
+        # constraint: could never pass, and one that removed a path from the constant would pass.
+        for node in self.tree.body:
+            targets = getattr(node, "targets", [])
+            if isinstance(node, ast.Assign) and any(isinstance(item, ast.Name) and item.id == name for item in targets):
+                return [str(value) for value in ast.literal_eval(node.value)]
+        raise AssertionError(f"the candidate's noodles.py declares no top-level {name}")
+
     def test_trusted_verify_routes_through_the_hosted_lane_gate(self) -> None:
         self.assertIn("gha_pull_request_admission", self.called_names("verify_pull_request"))
-        self.assertLessEqual({"gha_execution_task", "gha_apply_admission"}, self.called_names("gha_pull_request_admission"))
+        self.assertLessEqual(
+            {"gha_execution_task", "gha_apply_admission"},
+            self.reachable_names("gha_pull_request_admission"),
+        )
+
+    def test_planted_negative_an_unrouted_hosted_lane_gate_is_still_caught(self) -> None:
+        # constraint: ed3c/noodles#311 - reachability is the weaker claim, so it needs its own
+        # constraint: negative: a candidate that stops routing through a gate entirely must still
+        # constraint: red, or the widening would have replaced an invariant with nothing.
+        for name in ("gha_execution_task", "gha_apply_admission"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, self.reachable_names("post_receipt_anchor"))
 
     def test_schedule_publish_derives_the_task_identity_before_it_claims_a_branch(self) -> None:
         body = self.functions["schedule_publish"].body
@@ -476,12 +516,22 @@ class CandidateWiringTests(unittest.TestCase):
         self.assertLess(source.index("gha_task_identity"), source.index("claim_execute_branch"))
 
     def test_the_named_trusted_workflow_paths_are_the_candidate_trusted_workflows(self) -> None:
-        for path in noodles.GHA_TRUSTED_WORKFLOW_PATHS:
+        # constraint: ed3c/noodles#311 - every tracked file under .github/workflows must be in the
+        # constraint: candidate's own trusted set, and the comparison is over the directory rather
+        # constraint: than a *.yml glob: a gh-aw workflow's human-authored source is a .md file, and
+        # constraint: a glob that could not see it would let a new workflow source enter the
+        # constraint: directory writable by the very lane it configures.
+        declared = self.candidate_constant("GHA_TRUSTED_WORKFLOW_PATHS")
+        for path in declared:
             with self.subTest(path=path):
                 self.assertTrue((CANDIDATE_ROOT / path).is_file())
         self.assertEqual(
-            sorted(noodles.GHA_TRUSTED_WORKFLOW_PATHS),
-            sorted(f".github/workflows/{path.name}" for path in (CANDIDATE_ROOT / ".github/workflows").glob("*.yml")),
+            sorted(declared),
+            sorted(
+                f".github/workflows/{path.name}"
+                for path in (CANDIDATE_ROOT / ".github/workflows").iterdir()
+                if path.is_file()
+            ),
         )
 
 
