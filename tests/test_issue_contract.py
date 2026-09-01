@@ -923,6 +923,40 @@ class BacklogConsumptionTests(unittest.TestCase):
         self.assertEqual(self.record(project)["resumed"], True)
         self.assertEqual(calls.count("graphql"), 1)
 
+    def test_a_resumed_cycle_refuses_to_overwrite_a_body_edited_since_the_snapshot(self) -> None:
+        """ed3c/noodles#292 monitor reconcile - a resumed cycle's finalists snapshot can be older
+        than the bucket death that interrupted it. It must never silently discard a human edit made
+        to the live body after that snapshot was taken; it must refuse the write instead."""
+        project = self.project()
+        snapshot_body = issue_body(depends_on=PREDECESSOR).replace(
+            "<!-- noodles-role: repository-mutating-atom -->\n", ""
+        )
+        live_body = snapshot_body + "\n<!-- a human edited this after the snapshot -->\n"
+        noodles.write_backlog_cycle(project, "ed3c/noodles", {
+            "repository": "ed3c/noodles",
+            "stage": "finalists",
+            "finalists": {
+                "issues": [{"number": 82, "title": "held", "body": snapshot_body, "html_url": "https://github.test/82"}],
+                "pull_requests": [],
+            },
+            "consecutive_empty": 0,
+            "derived_at": 900.0,
+        })
+
+        calls: list[tuple[str, str]] = []
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None) -> object:
+            calls.append((endpoint, method))
+            if endpoint == "repos/ed3c/noodles/issues/82" and method == "GET":
+                return {"number": 82, "body": live_body}
+            raise noodles.GateError(f"unexpected endpoint {endpoint} {method}")
+
+        items = self.cycle(project, fake, now=1_000.0)
+
+        self.assertEqual(items[0]["status"], "blocked")
+        self.assertIn("live body changed since derivation", items[0]["diagnostic"])
+        self.assertNotIn(("repos/ed3c/noodles/issues/82", "PATCH"), calls)
+
     IDLE_ISSUES = [
         {
             "number": 100 + index,

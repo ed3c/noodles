@@ -2389,13 +2389,22 @@ def intake_comment(subject: Subject, title: str, defects: Sequence[str]) -> str:
     )
 
 
-def intake_normalize(issue: dict[str, Any], repository: str) -> dict[str, Any]:
+def intake_normalize(issue: dict[str, Any], repository: str, *, verify_live: bool = False) -> dict[str, Any]:
     """Apply the intake repair to one open issue and read the write back; conforming issues are untouched."""
     subject = Subject(repository, int(issue.get("number") or 0))
     body = issue.get("body") or ""
     plan = intake_normalization(body, subject, str(issue.get("title") or subject.value))
     if plan is None:
         return issue
+    if verify_live:
+        # constraint: ed3c/noodles#292 - a resumed cycle's finalists snapshot can be older than the
+        # constraint: bucket death that interrupted it; refuse to overwrite a body a human has since
+        # constraint: edited rather than silently discarding the edit underneath the derived markers.
+        live = gh_api(f"repos/{repository}/issues/{subject.number}")
+        if not isinstance(live, dict) or (live.get("body") or "") != body:
+            raise GateError(
+                f"intake normalization snapshot is stale for {subject.value}: live body changed since derivation"
+            )
     updated = gh_api(
         f"repos/{repository}/issues/{subject.number}", method="PATCH", payload={"body": plan["body"]}
     )
@@ -2536,13 +2545,15 @@ def backlog_items(
     finalists: Mapping[str, Any],
     dependency_cache: dict[str, dict[str, Any]],
     known_requirements: frozenset[str],
+    *,
+    resumed: bool = False,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for issue in finalists.get("issues") or ():
         if "pull_request" in issue:
             continue
         try:
-            issue = intake_normalize(issue, repository)
+            issue = intake_normalize(issue, repository, verify_live=resumed)
             contract = issue_contract_payload(issue, None, dependency_cache, known_requirements)
         except GateError as exc:
             number = issue.get("number")
@@ -2607,7 +2618,7 @@ def sync_backlog(
             "resumed": False,
             "served": "derived",
         })
-    items = backlog_items(repository, finalists or {}, dependency_cache, known_requirements)
+    items = backlog_items(repository, finalists or {}, dependency_cache, known_requirements, resumed=resumed)
     empty = 0 if any(item.get("schedulable") for item in items) else empty_before + 1
     interval = backlog_backoff_seconds(empty)
     write_backlog_cycle(project, repository, {
