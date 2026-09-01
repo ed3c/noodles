@@ -122,7 +122,13 @@ class FeatureJourneyRouteGateTests(unittest.TestCase):
 
 
 class HandoffRouteIsNotTheLandingRouteTests(unittest.TestCase):
-    """The evidence the arm choice rests on, held as an executable readback."""
+    """The evidence the arm choice rests on. `landed` below is a transcribed historical fact (which
+    branch each wave-9 PR merged from), not a live readback - candidate-root-differs replay copies
+    tracked files with no `.git` directory, so this file cannot read git history at test time and
+    still run there. The transcription is checked against the real, live `noodles.execute_branch`.
+    To re-verify the transcription itself now, from the merged tree:
+      for n in 256 270 273; do gh pr view "$n" --json number,headRefName,mergedAt; done
+    """
 
     def test_the_wave_nine_lane_branches_are_not_admissible_execute_branches(self) -> None:
         landed = ("fix-46-worktree-admission", "fix-99-exclusive-admission", "fix-100-concurrency-invariants")
@@ -132,9 +138,13 @@ class HandoffRouteIsNotTheLandingRouteTests(unittest.TestCase):
                 self.assertNotEqual(branch, noodles.execute_branch("ed3c/noodles#99"))
                 self.assertNotEqual(branch, noodles.execute_branch("ed3c/noodles#100"))
 
-    def test_the_marker_writer_is_unconstrained_so_reaching_awaiting_land_grants_nothing(self) -> None:
+    def test_the_marker_writer_is_unconstrained_by_any_route_identity(self) -> None:
         # constraint: ed3c/noodles#264 - issue_set_state admits awaiting_land from any state and the
         # constraint: backlog adapter exposes it as a verb, which is why the gate cannot sit behind it.
+        # constraint: this test proves only the premise (any edit actor can set the marker); the
+        # constraint: class's other tests supply the "grants nothing" half by running that exact
+        # constraint: direct-flip body through run_verify, showing the gate never reads how or by
+        # constraint: whom awaiting_land was reached.
         self.assertIn("awaiting_land", noodles.ALLOWED_ISSUE_STATES)
         self.assertIn("edit = \".noodle/adapters/github edit\"", (CANDIDATE_ROOT / ".noodle.toml").read_text(encoding="utf-8"))
         self.assertIn("    issue_set_state(item_id, new_status)", (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8"))
