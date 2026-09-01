@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import contextlib
+import hashlib
 import io
 import tempfile
 import threading
@@ -703,6 +704,145 @@ class SchedulePublishTests(unittest.TestCase):
             for root in (self.root, second_root)
         ]
         self.assertEqual(sum(bool(orders) for orders in published), 1)
+
+
+# constraint: ed3c/noodles#290 - the live 2026-08-30 receipt, verbatim. `./noodles start` fail-closed on
+# constraint: it for two days: today's validate_cycle_receipt correctly refuses the pre-#191 vocabulary,
+# constraint: and nothing could ever regenerate it, because regeneration needs a schedule cycle and
+# constraint: start refuses to run one while the stale receipt exists. The operator broke that loop by
+# constraint: hand, archiving the bytes to .noodle/schedule-cycle.json.stale-vocab-20260830.
+LIVE_STALE_CYCLE_RECEIPT = """{
+  "claims": [
+    {
+      "status": "not_frontier",
+      "subject": "ed3c/noodles#187"
+    }
+  ],
+  "components": [],
+  "destination": "/Users/neon/noodles/.noodle/orders-next.json",
+  "frontier": [],
+  "max_useful_workers": 0,
+  "schema_version": 1
+}
+"""
+LIVE_STALE_CYCLE_RECEIPT_SHA256 = "e9fcb989ec5b745566d51e4d881d5d9c6265320a64b0dc65ec0cf47a1ffa325d"
+LIVE_STALE_CYCLE_RECEIPT_BYTES = 255
+
+
+def valid_cycle_receipt() -> dict:
+    status = "not_in_winners"
+    return {
+        "schema_version": 1,
+        "frontier": [],
+        "winners": [],
+        "components": [],
+        "max_useful_workers": 0,
+        "destination": "/tmp/orders-next.json",
+        "claims": [{
+            "subject": "ed3c/noodles#187",
+            "status": status,
+            "meaning": skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS[status],
+        }],
+    }
+
+
+def invalid_current_generation_receipt() -> dict:
+    # constraint: ed3c/noodles#290 - current schema_version, current shape, one status the machine
+    # constraint: never defined and never retired. This is the receipt retirement must NOT touch.
+    receipt = valid_cycle_receipt()
+    receipt["claims"][0]["status"] = "definitely_not_a_defined_status"
+    receipt["claims"][0]["meaning"] = ""
+    return receipt
+
+
+class StaleCycleReceiptRetirementTests(unittest.TestCase):
+    """ed3c/noodles#290 - a persisted receipt that outlived its status vocabulary wedged the host
+    permanently. Retirement is archive-aside with a receipt, never a silent delete and never a silent
+    accept, and it is scoped to receipts an earlier generation wrote."""
+
+    def candidate(self, body: str) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-stale-cycle-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        path = root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        return root
+
+    def receipt_path(self, root: Path) -> Path:
+        return root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
+
+    def archives(self, root: Path) -> list[Path]:
+        return sorted(self.receipt_path(root).parent.glob(f"*{noodles.STALE_CYCLE_RECEIPT_SUFFIX}*"))
+
+    def start(self, root: Path) -> None:
+        """Drive the real `start_unattended` with only its pre-verification collaborator stubbed and a
+        sentinel immediately after the gate, so what is asserted is start's own ordering."""
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+                mock.patch.object(noodles, "runtime_check", side_effect=RuntimeError("reached-runtime-check")):
+            noodles.start_unattended(root, "http://noodle.test", 0.25)
+
+    def test_live_grounding_receipt_is_byte_intact_and_pre_191_vocabulary(self) -> None:
+        payload = LIVE_STALE_CYCLE_RECEIPT.encode("utf-8")
+        self.assertEqual(len(payload), LIVE_STALE_CYCLE_RECEIPT_BYTES)
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), LIVE_STALE_CYCLE_RECEIPT_SHA256)
+        receipt = json.loads(LIVE_STALE_CYCLE_RECEIPT)
+        self.assertEqual([claim["status"] for claim in receipt["claims"]], ["not_frontier"])
+        self.assertNotIn("not_frontier", skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS)
+        self.assertIn("not_frontier", skill_contract.RETIRED_SCHEDULE_CLAIM_STATUSES)
+        self.assertNotIn("winners", receipt)
+        self.assertNotEqual(skill_contract.validate_cycle_receipt(receipt), [])
+
+    def test_stale_generation_receipt_is_retired_aside_and_start_proceeds(self) -> None:
+        root = self.candidate(LIVE_STALE_CYCLE_RECEIPT)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaisesRegex(RuntimeError, "reached-runtime-check"):
+                self.start(root)
+        self.assertFalse(self.receipt_path(root).exists())
+        archives = self.archives(root)
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].read_text(encoding="utf-8"), LIVE_STALE_CYCLE_RECEIPT)
+        emitted = json.loads(stderr.getvalue().strip())["stale_cycle_receipt_retired"]
+        self.assertEqual(emitted["sha256"], LIVE_STALE_CYCLE_RECEIPT_SHA256)
+        self.assertEqual(emitted["bytes"], LIVE_STALE_CYCLE_RECEIPT_BYTES)
+        self.assertEqual(emitted["archived_to"], str(archives[0]))
+        self.assertIn("not_frontier", emitted["reason"])
+        self.assertIn("retired vocabulary", emitted["reason"])
+        self.assertTrue(emitted["validator_errors"])
+
+    def test_planted_negative_invalid_current_generation_receipt_still_fails_closed(self) -> None:
+        root = self.candidate(json.dumps(invalid_current_generation_receipt(), indent=2))
+        before = self.receipt_path(root).read_bytes()
+        with self.assertRaises(noodles.GateError) as raised:
+            self.start(root)
+        self.assertIn("repository verification failed", str(raised.exception))
+        self.assertIn("definitely_not_a_defined_status", str(raised.exception))
+        self.assertEqual(self.receipt_path(root).read_bytes(), before)
+        self.assertEqual(self.archives(root), [])
+
+    def test_positive_control_a_valid_current_receipt_is_never_touched(self) -> None:
+        root = self.candidate(json.dumps(valid_cycle_receipt(), indent=2))
+        before = self.receipt_path(root).read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "reached-runtime-check"):
+            self.start(root)
+        self.assertEqual(self.receipt_path(root).read_bytes(), before)
+        self.assertEqual(self.archives(root), [])
+
+    def test_retirement_never_dates_a_receipt_by_shape_alone(self) -> None:
+        # constraint: ed3c/noodles#290 - every arm of the predicate, decided against the current
+        # constraint: definitions. Only a retired status name or an older schema_version dates a
+        # constraint: receipt; a broken shape does not, or retirement becomes laundering.
+        dated = skill_contract.earlier_generation_cycle_receipt
+        version = noodles.SCHEMA_VERSION
+        self.assertIsNone(dated(valid_cycle_receipt(), schema_version=version))
+        self.assertIsNone(dated(invalid_current_generation_receipt(), schema_version=version))
+        self.assertIsNone(dated({"schema_version": version, "winners": "not-an-array"}, schema_version=version))
+        self.assertIsNone(dated({"schema_version": version, "claims": [{"subject": "x"}]}, schema_version=version))
+        self.assertIsNone(dated("not-an-object", schema_version=version))
+        self.assertIn("predates", dated({"schema_version": version - 1}, schema_version=version) or "")
+        self.assertIn("not_frontier", dated(json.loads(LIVE_STALE_CYCLE_RECEIPT), schema_version=version) or "")
 
 
 if __name__ == "__main__":

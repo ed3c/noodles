@@ -675,7 +675,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
     errors.extend(validate_comment_tags(root, paths))
     errors.extend(findings_register_errors(root, policy_root))
-    schedule_receipt = root / ".noodle/schedule-cycle.json"
+    schedule_receipt = root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
     if schedule_receipt.exists():
         try:
             published = load_json(schedule_receipt)
@@ -2990,6 +2990,61 @@ def adapter_main(argv: Sequence[str] | None = None) -> int:
     raise GateError(f"invalid adapter invocation: {args}")
 
 
+STALE_CYCLE_RECEIPT_SUFFIX = ".stale-generation-"
+
+
+def retire_earlier_generation_cycle_receipt(root: Path) -> dict[str, Any] | None:
+    """ed3c/noodles#290 - separate an invalid current-generation cycle receipt from one written by an
+    earlier generation, and retire only the second.
+
+    The persisted receipt is host state that outlives the vocabulary that produced it, and start-time
+    verification refuses an invalid one. That is correct for a current-generation receipt and a
+    permanent wedge for an earlier-generation one: regeneration needs a schedule cycle, and `start`
+    refuses to run one while the stale receipt exists. Nothing in the host could ever break that loop,
+    so a status-vocabulary or schema change poisoned the host forever (live 2026-08-30 instance:
+    `.noodle/schedule-cycle.json.stale-vocab-20260830`, archived aside by hand).
+
+    Retirement is archive-aside, never delete: the file is renamed to a timestamped sibling with its
+    bytes untouched and a diagnostic naming what it was, why it was dated, and what the validator
+    said. `start` then proceeds and the cycle regenerates the receipt through its own producer. A
+    receipt that is valid, unreadable, or invalid without being dated is left exactly where it is, so
+    the fail-closed path is unchanged and retirement can never become laundering."""
+    path = root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
+    if not path.is_file():
+        return None
+    payload = path.read_bytes()
+    try:
+        receipt = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # constraint: an unreadable receipt is not a dated one - verify_repository owns that
+        # constraint: diagnostic ("schedule cycle receipt unreadable") and must keep failing closed.
+        return None
+    errors = skill_contract.validate_cycle_receipt(receipt)
+    if not errors:
+        return None
+    reason = skill_contract.earlier_generation_cycle_receipt(receipt, schema_version=SCHEMA_VERSION)
+    if reason is None:
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    archive = path.with_name(f"{path.name}{STALE_CYCLE_RECEIPT_SUFFIX}{stamp}")
+    if archive.exists():
+        raise GateError(f"cannot retire {path}: archive target {archive} already exists")
+    path.rename(archive)
+    retirement = {
+        "retired": str(path),
+        "archived_to": str(archive),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "reason": reason,
+        "validator_errors": errors,
+    }
+    print(
+        json.dumps({"stale_cycle_receipt_retired": retirement}, separators=(",", ":"), sort_keys=True),
+        file=sys.stderr,
+    )
+    return retirement
+
+
 def start_unattended(
     root: Path,
     control_url: str,
@@ -2997,6 +3052,9 @@ def start_unattended(
     admission_timeout: float = daemon_lease.DEFAULT_ADMISSION_TIMEOUT,
 ) -> int:
     control_checkout_admission(root)
+    # constraint: ed3c/noodles#290 - before the gate that would otherwise wedge on it forever, and
+    # constraint: only for a receipt an earlier generation wrote; everything else still fails closed.
+    retire_earlier_generation_cycle_receipt(root)
     verified = verify_repository(root)
     if not verified["ok"]:
         raise GateError("repository verification failed: " + "; ".join(verified["errors"]))
@@ -4125,7 +4183,7 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
     receipt_errors = skill_contract.validate_cycle_receipt(brief)
     if receipt_errors:
         raise GateError("schedule cycle receipt rejected: " + "; ".join(receipt_errors))
-    write_json(root / ".noodle/schedule-cycle.json", brief)
+    write_json(root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH, brief)
     return brief
 
 

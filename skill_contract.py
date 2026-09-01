@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# constraint: ed3c/noodles#290 - one owner for the persisted cycle receipt's path. The producer, the
+# constraint: start-time gate, the summary reader, and the earlier-generation retirement must name
+# constraint: the same file, or a retirement archives a receipt the gate is not reading.
+SCHEDULE_CYCLE_RECEIPT_PATH = ".noodle/schedule-cycle.json"
 CONCURRENCY_PROOF_PATH = "policy/concurrency-proof.json"
 CONCURRENCY_PROOF_INVARIANTS = ("I1", "I2", "I3", "I4")
 AGENT_DOCUMENT = "AGENTS.md"
@@ -809,6 +813,48 @@ def validate_cycle_receipt(receipt: Any) -> list[str]:
     return errors
 
 
+# constraint: ed3c/noodles#290 - statuses this repository published and has since renamed. The reason
+# constraint: is what makes a retirement falsifiable: only a status named here dates a receipt, so an
+# constraint: undefined status absent from this table stays a defect of a current-generation receipt
+# constraint: and can never be laundered into "written by an earlier generation".
+RETIRED_SCHEDULE_CLAIM_STATUSES = {
+    "not_frontier": (
+        "pre-ed3c/noodles#191 name for the winner-set miss now published as 'not_in_winners'"
+    ),
+}
+
+
+def earlier_generation_cycle_receipt(receipt: Any, *, schema_version: int) -> str | None:
+    """ed3c/noodles#290 - name what dates this receipt to an earlier generation, or None.
+
+    Two arms, both decided against the current definitions rather than against the receipt's own
+    shape: a `schema_version` below the current one, or a claim status this repository retired by
+    name. Deliberately narrow - a malformed `winners`, a missing `meaning`, or any other invalid
+    shape is also what a broken current-generation receipt looks like, and widening to those would
+    make retirement a laundry for exactly the receipts that must keep failing closed.
+
+    Non-claim: naming a receipt earlier-generation says the vocabulary it used is retired. It says
+    nothing about whether the generation that wrote it was correct."""
+    if not isinstance(receipt, dict):
+        return None
+    declared = receipt.get("schema_version")
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared < schema_version:
+        return f"schema_version {declared} predates the current {schema_version}"
+    raw_claims = receipt.get("claims")
+    claims = raw_claims if isinstance(raw_claims, list) else []
+    dated = sorted({
+        str(claim.get("status"))
+        for claim in claims
+        if isinstance(claim, dict) and str(claim.get("status")) in RETIRED_SCHEDULE_CLAIM_STATUSES
+    })
+    if not dated:
+        return None
+    return "; ".join(
+        f"claim status {status!r} is retired vocabulary: {RETIRED_SCHEDULE_CLAIM_STATUSES[status]}"
+        for status in dated
+    )
+
+
 def cycle_summary_lines(receipt: dict[str, Any]) -> list[str]:
     lines = [
         f"frontier: {json.dumps(receipt['frontier'], separators=(',', ':'))}",
@@ -834,7 +880,7 @@ def validate_cycle_summary(receipt: Any, summary: str) -> list[str]:
 
 
 def _summary_command(root: Path, summary_path: Path) -> int:
-    receipt_path = root / ".noodle/schedule-cycle.json"
+    receipt_path = root / SCHEDULE_CYCLE_RECEIPT_PATH
     try:
         receipt = _read_json(receipt_path, "schedule cycle receipt")
         summary = summary_path.read_text(encoding="utf-8")
