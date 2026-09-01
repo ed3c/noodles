@@ -38,7 +38,7 @@ def git(root: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
 
 class VerifiedBatchTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="noodles-verified-batch-")
+        self.temp = tempfile.TemporaryDirectory(prefix="noodles-verified-batch-", ignore_cleanup_errors=True)
         self.root = Path(self.temp.name) / "origin"
         self.root.mkdir()
         git(self.root, "init", "-q")

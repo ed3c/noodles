@@ -32,7 +32,7 @@ PERMISSION_PROFILE_ARGS = [
 
 class CodexIsolationTests(unittest.TestCase):
     def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-isolation-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-isolation-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
@@ -209,7 +209,7 @@ class NoodleResidueObserverTests(unittest.TestCase):
     that reds on everything and gets turned off."""
 
     def tracked_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-residue-observer-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-residue-observer-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
@@ -248,7 +248,7 @@ class NoodleResidueObserverTests(unittest.TestCase):
         self.assertEqual(codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError), [])
 
     def test_the_observer_fails_closed_where_there_is_no_repository_to_observe(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-residue-nonrepo-") as temp:
+        with tempfile.TemporaryDirectory(prefix="noodles-residue-nonrepo-", ignore_cleanup_errors=True) as temp:
             with self.assertRaisesRegex(RuntimeError, "residue observer could not read git status"):
                 codex_isolation.noodle_runtime_residue(Path(temp), error_cls=RuntimeError)
 

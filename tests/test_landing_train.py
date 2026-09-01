@@ -354,7 +354,7 @@ class LandingRaceTests(unittest.TestCase):
         return RaceLandApi(self.BASE, pulls, issues)
 
     def land(self, api: RaceLandApi, pr_number: int, issue_number: int, head_sha: str) -> dict:
-        with tempfile.TemporaryDirectory(prefix="noodles-landing-race-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-landing-race-", ignore_cleanup_errors=True) as name:
             work = Path(name)
             event_path = work / "event.json"
             receipt_path = work / "receipt.json"
@@ -442,7 +442,7 @@ class LandingRaceTests(unittest.TestCase):
 
 class LandingTrainRebaseTests(unittest.TestCase):
     def test_planted_control_sibling_behind_new_main_is_rebased_and_pushed_with_lease(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             pulls = [pr_fixture(2, 500, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -463,7 +463,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertEqual(sorted(tree), ["a.txt", "b.txt", "c.txt"])
 
     def test_planted_conflict_control_fails_back_naming_paths_and_never_pushes(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=True)
             pulls = [pr_fixture(3, 501, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -484,7 +484,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertIn("never auto-resolves", payload["body"])
 
     def test_planted_negative_absent_push_token_fails_closed_before_touching_the_remote(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             pulls = [pr_fixture(8, 502, fixture["head"], "candidate", "2026-08-30T00:00:00Z")]
@@ -499,7 +499,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
             self.assertEqual(posts, [])
 
     def test_head_drift_between_selection_and_fetch_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-test-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-test-", ignore_cleanup_errors=True) as temp_name:
             base = Path(temp_name)
             fixture = seed_train_remote(base, conflict=False)
             with self.assertRaisesRegex(noodles.GateError, "landing train head drifted"):
@@ -510,7 +510,7 @@ class LandingTrainRebaseTests(unittest.TestCase):
 
 class LandingTrainBoundaryTests(unittest.TestCase):
     def workflow_boundary(self, mutate) -> tuple[list[str], dict]:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-boundary-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-boundary-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             workflow_dir = root / ".github/workflows"
             workflow_dir.mkdir(parents=True)
@@ -646,7 +646,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             return noodles.landing_train(ENGINE_ROOT, remote_url=fixture["origin"], closed_subject=closed_subject)
 
     def test_chain_control_a_declared_dependent_is_nudged_once_onto_the_closing_merge(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             self.assertEqual(measured_behind(fixture["origin"], fixture["successor"]), 1)
             result = self.nudge(fixture, {"successor": (21, 621, self.CLOSED)}, closed_subject=self.CLOSED)
@@ -666,7 +666,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual(result["action"], "idle")
 
     def test_planted_negative_a_red_head_declaring_another_predecessor_is_left_parked(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             result = self.nudge(fixture, {"successor": (21, 621, "ed3c/noodles#999")}, closed_subject=self.CLOSED)
             self.assertEqual(result["nudged"], [])
@@ -674,7 +674,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual(remote_head(fixture["origin"], "successor"), fixture["successor"])
 
     def test_planted_negative_a_dependency_free_red_head_is_left_parked(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             result = self.nudge(fixture, {"successor": (21, 621, "none")}, closed_subject=self.CLOSED)
             self.assertEqual(result["nudged"], [])
@@ -682,7 +682,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual(remote_head(fixture["origin"], "successor"), fixture["successor"])
 
     def test_cardinality_two_declared_dependents_get_one_nudge_each_and_a_replay_gets_none(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["first", "second"])
             refs = {"first": (21, 621, self.CLOSED), "second": (22, 622, self.CLOSED)}
             result = self.nudge(fixture, refs, closed_subject=self.CLOSED)
@@ -699,7 +699,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual({ref: remote_head(fixture["origin"], ref) for ref in refs}, fresh)
 
     def test_a_nudged_head_that_fails_verify_again_is_not_nudged_again_by_the_same_closure(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             refs = {"successor": (21, 621, self.CLOSED)}
             first = self.nudge(fixture, refs, closed_subject=self.CLOSED)
@@ -715,7 +715,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
         # constraint: the closure identity crosses one process boundary, so both directions of that
         # constraint: crossing are held here: a receipt naming a subject reaches landing_train as that
         # constraint: exact subject, and a receipt naming none is a FATAL, never a silent no-nudge train.
-        with tempfile.TemporaryDirectory(prefix="noodles-train-cli-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-cli-", ignore_cleanup_errors=True) as temp_name:
             receipt = Path(temp_name) / "noodles-receipt.json"
             receipt.write_text(json.dumps({"issue_subject": self.CLOSED}), encoding="utf-8")
             environment = {"NOODLES_LAND_RECEIPT": str(receipt)}
@@ -738,7 +738,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
         # constraint: ordinarily selectable. The listing that feeds the selection still names its pre-nudge
         # constraint: head, so without the withhold the same run rebases it twice and the second attempt
         # constraint: fails the whole train closed on head drift.
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             result = self.nudge(fixture, {"successor": (21, 621, self.CLOSED)}, closed_subject=self.CLOSED, red=False)
             self.assertEqual([nudge["action"] for nudge in result["nudged"]], ["rebased"])
@@ -746,7 +746,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual(remote_head(fixture["origin"], "successor"), result["nudged"][0]["new_head"])
 
     def test_a_closure_with_no_declared_dependent_costs_exactly_one_listing_and_nothing_else(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-", ignore_cleanup_errors=True) as temp_name:
             fixture = seed_dependency_chain(Path(temp_name), ["successor"])
             refs = {"successor": (21, 621, "none")}
             without: list[str] = []

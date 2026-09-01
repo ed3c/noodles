@@ -332,7 +332,7 @@ class TrustedLiteralGuardTests(unittest.TestCase):
     assertion does not."""
 
     def fixture(self, module: str, ledger: dict[str, Any]) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-trusted-literal-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-trusted-literal-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         (root / "tests").mkdir()
@@ -508,7 +508,7 @@ class ConvertedValueDeadlockTests(unittest.TestCase):
     }
 
     def tree(self, lock: dict[str, Any]) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-runtime-lock-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-runtime-lock-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         (root / "policy").mkdir()

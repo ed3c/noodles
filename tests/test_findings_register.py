@@ -24,7 +24,7 @@ class PlantedRegister:
     """A tree carrying only the two files the gate reads, so a planted defect is the only variable."""
 
     def __init__(self, case: unittest.TestCase) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-findings-register-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-findings-register-", ignore_cleanup_errors=True)
         case.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         (self.root / "policy").mkdir()
@@ -141,8 +141,11 @@ class FindingsRegisterShapeTests(unittest.TestCase):
     def test_planted_negative_wrong_envelope_and_missing_file_are_refused(self) -> None:
         self.assertIn("schema_version 1", self.planted.errors({"schema_version": 2, "entries": []})[0])
         self.assertIn("non-empty array", self.planted.errors({"schema_version": 1, "entries": []})[0])
-        empty = Path(tempfile.mkdtemp(prefix="noodles-findings-absent-"))
-        self.addCleanup(shutil.rmtree, empty)
+        # constraint: ed3c/noodles#319 - one constructor for temporary trees under tests/, and it
+        # constraint: tolerates a failed cleanup, so no fixture can red a run from its teardown.
+        temp = tempfile.TemporaryDirectory(prefix="noodles-findings-absent-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        empty = Path(temp.name)
         self.assertIn("missing findings register", noodles.findings_register_errors(empty)[0])
 
 

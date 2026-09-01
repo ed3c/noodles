@@ -199,7 +199,7 @@ class RouteBundlePlantedNegativeTests(unittest.TestCase):
 
 class ExecuteRoutingPointerTests(unittest.TestCase):
     def route_files(self, routing: str) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-route-pointer-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-route-pointer-", ignore_cleanup_errors=True) as name:
             root = Path(name)
             playbooks = root / "poteto-mode/playbooks"
             playbooks.mkdir(parents=True)
@@ -250,7 +250,7 @@ class VerifyGateBundleBindingTests(unittest.TestCase):
         (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
     def test_verify_gate_passes_on_the_committed_skill(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-", ignore_cleanup_errors=True) as name:
             root = Path(name)
             self.skill_root(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
             self.assertEqual(runtime_contract.validate_execute_route_bundle_contract(root), [])
@@ -259,7 +259,7 @@ class VerifyGateBundleBindingTests(unittest.TestCase):
         content = EXECUTE_SKILL.read_text(encoding="utf-8")
         stripped = content.replace(runtime_contract.EXECUTE_ROUTE_BUNDLE_PHRASE, "Load whatever seems relevant.")
         self.assertNotEqual(stripped, content)
-        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-", ignore_cleanup_errors=True) as name:
             root = Path(name)
             self.skill_root(root, stripped)
             errors = runtime_contract.validate_execute_route_bundle_contract(root)
@@ -275,7 +275,7 @@ class VerifyGateBundleBindingTests(unittest.TestCase):
             runtime_contract.EXECUTE_ROUTE_TRAVERSALS["cli-control"][0],
             runtime_contract.EXECUTE_ROUTE_TRAVERSALS["pre-commit-cleanup"][1],
         )
-        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-") as name:
+        with tempfile.TemporaryDirectory(prefix="noodles-verify-gate-", ignore_cleanup_errors=True) as name:
             root = Path(name)
             self.skill_root(root, EXECUTE_SKILL.read_text(encoding="utf-8"))
             with mock.patch.dict(runtime_contract.EXECUTE_ROUTE_TRAVERSALS, swapped):

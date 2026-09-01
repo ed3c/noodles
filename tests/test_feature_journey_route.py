@@ -51,7 +51,7 @@ def issue_body(*, feature: str | None = FEATURE.feature_id, state: str = "awaiti
 
 class FeatureJourneyRouteGateTests(unittest.TestCase):
     def run_verify(self, body: str, changed_files: list[str]) -> tuple[object, mock.MagicMock]:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         event_path = base / "event.json"
@@ -319,7 +319,7 @@ class JourneyGatePreviewTests(unittest.TestCase):
     in this class touches the provider: a stale marker reds before any push exists."""
 
     def preview_repo(self, *, changed: str = feature_contract.VERIFICATION_SKILL_FEATURE.code_surface, widen_candidate: bool = False) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-journey-preview-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-journey-preview-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         root.mkdir(parents=True)

@@ -79,12 +79,12 @@ class ComponentMapTests(unittest.TestCase):
                 self.assertTrue(all(isinstance(glob, str) and glob for glob in globs))
 
     def test_missing_map_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             with self.assertRaisesRegex(noodles.GateError, "cannot read JSON"):
                 noodles.component_map(Path(temp))
 
     def test_wrong_schema_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             path = Path(temp) / noodles.COMPONENT_MAP_PATH
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({"schema_version": 2, "components": {"docs": ["*"]}}), encoding="utf-8")
@@ -92,7 +92,7 @@ class ComponentMapTests(unittest.TestCase):
                 noodles.component_map(Path(temp))
 
     def test_empty_globs_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             path = Path(temp) / noodles.COMPONENT_MAP_PATH
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({"schema_version": 1, "components": {"docs": []}}), encoding="utf-8")
@@ -205,7 +205,7 @@ class ComponentImportEdgeGateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.components = noodles.component_map(CANDIDATE_ROOT)
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name) / "base"
         self.candidate = Path(temp.name) / "candidate"
@@ -393,13 +393,13 @@ class GrandfatheredImportDebtTests(unittest.TestCase):
             text,
             count=1,
         )
-        with tempfile.TemporaryDirectory() as name:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
             root = Path(name)
             (root / "AGENTS.md").write_text(stale, encoding="utf-8")
             self.assertEqual(disclosed_standing_edge_counts(root)["carrier"], live["carrier"] + 1)
 
     def test_a_tree_with_no_disclosure_sentence_reads_as_absent_not_as_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as name:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
             root = Path(name)
             (root / "AGENTS.md").write_text("no disclosure here\n", encoding="utf-8")
             self.assertEqual(disclosed_standing_edge_counts(root), {})
@@ -407,7 +407,7 @@ class GrandfatheredImportDebtTests(unittest.TestCase):
     def test_an_undeclared_new_cross_surface_edge_moves_the_measured_count(self) -> None:
         """The property #276 disclosed: an added import that leaves its component's globs shows up in
         the measurement, so a candidate carrying one and not disclosing it reds above."""
-        with tempfile.TemporaryDirectory() as name:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
             root = Path(name)
             (root / "policy").mkdir()
             (root / "policy" / "components.json").write_text(
@@ -471,7 +471,7 @@ class CrossSurfaceImportDebtRatchetTests(unittest.TestCase):
     warning when it grows. A synthetic tree keeps that assertion independent of the live counts."""
 
     def planted_tree(self, extra_import: str = "") -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-import-debt-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-import-debt-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         (root / "policy").mkdir(parents=True)
@@ -574,7 +574,7 @@ class ComponentOwnerMapTests(unittest.TestCase):
         self.assertEqual(len(owned), 18)
 
     def test_absent_map_is_inert_rather_than_red(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             self.assertEqual(noodles.component_owner_map(Path(temp)), {})
 
 
@@ -585,7 +585,7 @@ class UnownedDefinitionRatchetTests(unittest.TestCase):
     trusted default branch deadlocks every candidate that legitimately adds a definition."""
 
     def owned_tree(self, source: str, owners: dict[str, list[str]]) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-unowned-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-unowned-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         (root / "policy").mkdir(parents=True)
@@ -637,7 +637,7 @@ class UnownedDefinitionRatchetTests(unittest.TestCase):
         self.assertEqual((entry["status"], entry["policy_key"]), ("ok", "max_unowned_top_level_definitions"))
 
     def test_wrong_schema_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             path = Path(temp) / noodles.COMPONENT_OWNER_MAP_PATH
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({"schema_version": 2, "owners": {"a.py": {"f": ["docs"]}}}), encoding="utf-8")
@@ -645,7 +645,7 @@ class UnownedDefinitionRatchetTests(unittest.TestCase):
                 noodles.component_owner_map(Path(temp))
 
     def test_empty_owner_list_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             path = Path(temp) / noodles.COMPONENT_OWNER_MAP_PATH
             path.parent.mkdir(parents=True)
             path.write_text(json.dumps({"schema_version": 1, "owners": {"a.py": {"f": []}}}), encoding="utf-8")
@@ -659,7 +659,7 @@ class ComponentOwnerGateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.components = noodles.component_map(CANDIDATE_ROOT)
         self.owners = noodles.component_owner_map(CANDIDATE_ROOT)
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         self.candidate = Path(temp.name)
         self.source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
@@ -745,7 +745,7 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
     def run_verify(
         self, body: str, changed_files: list[str], candidate_files: dict[str, str] | None = None
     ) -> tuple[Path, object]:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         for relative, text in (candidate_files or {}).items():

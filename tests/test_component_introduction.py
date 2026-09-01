@@ -70,13 +70,13 @@ class PinnedEntryIdentityTests(unittest.TestCase):
         self.assertIn("runtime.lock.json.runtime.platforms.darwin_arm64", entries)
 
     def test_tree_without_policy_locks_has_no_pinned_units(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             self.assertEqual(noodles.pinned_entries(Path(temp)), set())
 
 
 class IntroductionDetectorTests(unittest.TestCase):
     def build(self, locks: dict[str, object], modules: tuple[str, ...] = ()) -> Path:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         return lock_tree(Path(temp.name), locks, modules)
 
@@ -179,7 +179,7 @@ class VerifyPullRequestIntroductionGateTests(unittest.TestCase):
     """The trusted verify path compares the candidate tree with the trusted default-branch tree."""
 
     def run_verify(self, body: str, candidate_root: Path) -> dict[str, object]:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         event_path = base / "event.json"
@@ -213,7 +213,7 @@ class VerifyPullRequestIntroductionGateTests(unittest.TestCase):
             return noodles.verify_pull_request(CANDIDATE_ROOT, event_path, candidate_root, base / "receipt.json")
 
     def dependency_adding_candidate(self) -> Path:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         candidate = Path(temp.name) / "candidate"
         shutil.copytree(CANDIDATE_ROOT / "policy", candidate / "policy")
@@ -238,7 +238,7 @@ class VerifyPullRequestIntroductionGateTests(unittest.TestCase):
         self.assertIn("component-introduction", receipt["gates"])
 
     def test_version_bumping_candidate_passes_without_the_section(self) -> None:
-        temp = tempfile.TemporaryDirectory()
+        temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         candidate = Path(temp.name) / "candidate"
         shutil.copytree(CANDIDATE_ROOT / "policy", candidate / "policy")

@@ -55,7 +55,7 @@ class RepoInfraFeatureVerifierTests(unittest.TestCase):
     own report."""
 
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-repo-infra-feature-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-repo-infra-feature-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)

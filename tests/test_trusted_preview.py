@@ -32,7 +32,7 @@ class TrustedPreviewTests(unittest.TestCase):
 
         The workflow is copied verbatim from this repository, so the preview reads the real trusted
         env contract and the real trusted command rather than a hand-written stand-in."""
-        temp = tempfile.TemporaryDirectory(prefix="noodles-trusted-preview-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-trusted-preview-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         (root / ".github/workflows").mkdir(parents=True)

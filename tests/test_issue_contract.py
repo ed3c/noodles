@@ -92,7 +92,7 @@ def predecessor_body(state: str = "landed") -> str:
 
 class ReadyBacklogFixtureGateTests(unittest.TestCase):
     def tightened_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-tightening-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-tightening-", ignore_cleanup_errors=True)
         root = Path(temp.name) / "candidate"
         copy_tracked(CANDIDATE_ROOT, root)
         parser_path = root / "noodles.py"
@@ -986,7 +986,7 @@ class BacklogConsumptionTests(unittest.TestCase):
         return fake, calls
 
     def project(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-backlog-cycle-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-backlog-cycle-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         project = Path(temp.name)
         (project / ".noodle").mkdir()
