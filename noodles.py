@@ -328,6 +328,51 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     }
 
 
+def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """ed3c/noodles#279 - read-only completeness readback over exact open provider bodies.
+
+    Consumes `gh issue list --state open --json number,body` and reports, per Issue whose state
+    marker is `ready`, the reasons `issue_contract.completeness_reasons` and
+    `issue_contract.required_section_reasons` give - the same two checks `derive_schedulability`
+    calls, never a second implementation of either. It reads no provider state of its own and
+    writes nothing, so the report is reproducible from any captured backlog and leaves no residue.
+
+    An Issue whose contract does not parse is reported too, because `schedule_snapshot` drops it
+    silently: unparseable-and-ready is the harder half of the same starvation. Its declared state
+    is read with `one_marker` alone; an absent or ambiguous state marker fails closed into the
+    report rather than being filtered out of it."""
+    known_requirements = system_requirement_ids()
+    ready: list[dict[str, Any]] = []
+    unparseable: list[dict[str, Any]] = []
+    for issue in sorted(issues, key=lambda item: int(item["number"])):
+        body = issue.get("body") or ""
+        entry = {"number": int(issue["number"]), "body_sha256": issue_contract.body_digest(body)}
+        try:
+            contract = parse_issue_contract(body)
+        except GateError as exc:
+            try:
+                declared_state = one_marker(body, "state", required=False)
+            except GateError:
+                declared_state = None
+            if declared_state in (None, "ready"):
+                unparseable.append({**entry, "declared_state": declared_state, "error": str(exc)})
+            continue
+        if contract["state"] != "ready":
+            continue
+        body_sections = issue_contract.sections(body)
+        reasons = issue_contract.required_section_reasons(body_sections)
+        reasons.extend(issue_contract.completeness_reasons(contract, body_sections, known_requirements))
+        ready.append({**entry, "reasons": reasons})
+    incomplete = [entry["number"] for entry in ready if entry["reasons"]]
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "ready": ready,
+        "unparseable": unparseable,
+        "incomplete": incomplete,
+        "complete": not incomplete and not unparseable,
+    }
+
+
 def replace_marker(body: str, name: str, value: str) -> str:
     pattern = MARKER_PATTERNS[name]
     replacement = f"<!-- noodles-{name.replace('_', '-')}: {value} -->"
@@ -3158,6 +3203,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue_handoff = issue_sub.add_parser("handoff")
     issue_handoff.add_argument("subject")
     issue_handoff.add_argument("--pr", type=int, required=True)
+    issue_sub.add_parser("completeness")
     feature = sub.add_parser("feature")
     feature.add_argument("action", choices=["verify"])
     feature.add_argument("feature_id")
@@ -3289,6 +3335,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.issue_action == "contract":
                 print(json.dumps(issue_contract_readback(args.subject), indent=2, sort_keys=True))
                 return 0
+            if args.issue_action == "completeness":
+                report = backlog_completeness_report(json.load(sys.stdin))
+                print(json.dumps(report, indent=2, sort_keys=True))
+                return 0 if report["complete"] else 1
             if args.issue_action == "handoff":
                 subject = parse_subject(args.subject)
                 pr = gh_api(f"repos/{subject.repo}/pulls/{args.pr}")
