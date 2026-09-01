@@ -169,7 +169,10 @@ class FeatureVerifierTests(unittest.TestCase):
         root = self.candidate_copy()
         cases = (
             (skill_contract.EXECUTE_PREFLIGHT_PHRASE, "step-0 preflight"),
-            (skill_contract.EXECUTE_VERIFICATION_ROUTE, "verification-skill fixture"),
+            # constraint: ed3c/noodles#84 - the route fixture is no longer proven by this exact
+            # constraint: sentence in skill_contract; runtime_contract resolves the bullet against
+            # constraint: EXECUTE_ROUTE_TRAVERSALS, so deleting it fails through that resolver.
+            (skill_contract.EXECUTE_VERIFICATION_ROUTE, "fixture bullet for route 'verification-skill-work'"),
             (skill_contract.EXECUTE_VERIFICATION_P_CLASS_PHRASE, "verification-skill P-class refusal"),
         )
         for phrase, label in cases:

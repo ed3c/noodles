@@ -91,7 +91,11 @@ class RepositoryGateTests(unittest.TestCase):
         shell_lines = shell_path.read_text().splitlines()
         shell_lines.insert(2, "# reminder: keep this fast")
         shell_path.write_text("\n".join(shell_lines) + "\n")
-        phrase = 'SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."'
+        # constraint: ed3c/noodles#84 - the probe needs any tracked assignment line, and the previous
+        # constraint: anchor was a prose phrase constant this atom retires. Re-anchoring here is the
+        # constraint: widening half of the staged transition: once main carries this line, the
+        # constraint: successor can delete SCHEDULE_OWNERSHIP_PHRASE without reddening trusted verify.
+        phrase = 'CONCURRENCY_PROOF_PATH = "policy/concurrency-proof.json"'
         py_path = root / "skill_contract.py"
         py_mutated = py_path.read_text().replace(phrase, f"# {phrase}", 1)
         py_path.write_text(py_mutated)
@@ -354,17 +358,151 @@ class RepositoryGateTests(unittest.TestCase):
                 self.assertFalse(result["ok"])
                 self.assertTrue(any(label in item for item in result["errors"]))
 
-    def test_schedule_skill_without_self_order_ownership_contract_is_rejected(self) -> None:
+    def test_schedule_ownership_and_active_order_survive_as_behavior_controls(self) -> None:
+        """ed3c/noodles#84 - the invariants the two removed sentences existed to enforce are that a
+        proposal never carries Noodle's transient `schedule` order and never re-emits an active
+        non-schedule order. Both are decided on the exact proposed bytes by the publish gate, so
+        rewording the Skill's prose is admitted while the gate still refuses both shapes."""
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
         path = root / ".agents/skills/schedule/SKILL.md"
         content = path.read_text()
-        ownership = "Noodle alone injects and owns the transient `schedule` order."
-        self.assertIn(ownership, content)
-        path.write_text(content.replace(ownership, "The scheduler may preserve its own order.", 1))
+        reworded = content.replace(
+            "Noodle alone injects and owns the transient `schedule` order.",
+            "Only Noodle may inject or own the transient `schedule` order.",
+            1,
+        ).replace("Do not re-emit any active non-schedule order.", "Leave every active non-schedule order out.", 1)
+        self.assertNotEqual(reworded, content)
+        path.write_text(reworded)
         result = self.verify(root)
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("self-order ownership" in item for item in result["errors"]))
+        self.assertTrue(result["ok"], result["errors"])
+
+        current = {"orders": [{"id": "ed3c/noodles#30", "status": "active", "stages": [{"task_key": "execute"}]}]}
+        for order_id, expected in (
+            ("schedule", "scheduler output must not contain Noodle-owned transient schedule order 'schedule'"),
+            (
+                "ed3c/noodles#30",
+                "scheduler output must omit active non-schedule order 'ed3c/noodles#30'; "
+                "Noodle preserves its exact order/stage fields",
+            ),
+        ):
+            with self.subTest(order=order_id):
+                proposed = {"orders": [{"id": order_id, "stages": [{"do": "execute", "model": EXECUTE_MODEL}]}]}
+                self.assertEqual(skill_contract.validate_schedule_output(current, proposed, TASK_PROFILES), [expected])
+
+    def test_schedule_publish_entrypoint_must_stay_a_runnable_block(self) -> None:
+        """ed3c/noodles#84 - the publish gate is proven by argv inside a fenced block, so a copy that
+        survives only in prose, in a comment, or in a second dead example no longer admits."""
+        command = " ".join(skill_contract.SCHEDULE_PUBLISH_ENTRYPOINT)
+        for label, mutate in (
+            ("moved into prose", lambda text: text.replace(f"```bash\n{command}\n```", f"Run {command} to publish.")),
+            ("moved into a comment", lambda text: text.replace(f"```bash\n{command}\n```", f"<!-- {command} -->")),
+            ("duplicated", lambda text: text.replace(f"```bash\n{command}\n```", f"```bash\n{command}\n{command}\n```")),
+        ):
+            with self.subTest(case=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / ".agents/skills/schedule/SKILL.md"
+                content = path.read_text()
+                mutated = mutate(content)
+                self.assertNotEqual(mutated, content)
+                self.assertIn(command, mutated)
+                path.write_text(mutated)
+                result = self.verify(root)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any("deterministic publish gate" in item for item in result["errors"]), result["errors"])
+
+    def test_execute_route_refusal_must_be_owned_by_the_route_fixture_section(self) -> None:
+        """ed3c/noodles#84 - the unknown-route refusal keeps ed3c/noodles#130's byte-identical
+        line-start prefix, and adds ownership: one document line, in the section that declares the
+        route fixtures. Historical bytes parked elsewhere no longer satisfy it."""
+        prefix = skill_contract.EXECUTE_UNSUPPORTED_PHRASE
+        source = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
+        rule = next(line for line in source.splitlines() if line.startswith(prefix))
+        for label, mutate in (
+            ("moved into a comment", lambda text: text.replace(rule, f"<!-- {rule} -->", 1)),
+            ("moved into a dead example", lambda text: text.replace(rule, f"```text\n{rule}\n```", 1)),
+            ("moved into an unrelated section", lambda text: text.replace(rule, "", 1).replace("## Authority\n", f"## Authority\n\n{rule}\n", 1)),
+            ("duplicated", lambda text: text.replace(rule, f"{rule}\n{rule}", 1)),
+        ):
+            with self.subTest(case=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / ".agents/skills/execute/SKILL.md"
+                content = path.read_text()
+                mutated = mutate(content)
+                self.assertNotEqual(mutated, content)
+                self.assertIn(prefix, mutated)
+                path.write_text(mutated)
+                result = self.verify(root)
+                self.assertFalse(result["ok"])
+                self.assertTrue(any("unsupported route refusal" in item for item in result["errors"]), result["errors"])
+
+    def test_agent_guarantee_classes_are_structural_not_exact_prose(self) -> None:
+        """ed3c/noodles#84 - replaces the removed `required_agent_phrases` grep. The invariant is
+        that AGENTS.md owns exactly one guarantee-class table defining P/L/R/N once each; wording is
+        free, and the same bytes parked in a fence, a comment, or a duplicate table are not
+        ownership."""
+        code = "\n".join(
+            line
+            for line in (CANDIDATE_ROOT / "noodles.py").read_text().splitlines()
+            if not line.strip().startswith("#")
+        )
+        self.assertNotIn("required_agent_phrases", code)
+        lines = (CANDIDATE_ROOT / "AGENTS.md").read_text().splitlines()
+        row = next(line for line in lines if line.startswith("| P-01 |"))
+        start = end = lines.index(row)
+        while start and lines[start - 1].startswith("|"):
+            start -= 1
+        while end + 1 < len(lines) and lines[end + 1].startswith("|"):
+            end += 1
+        table = "\n".join(lines[start : end + 1])
+        cases = (
+            ("reworded class", lambda text: text.replace("P — probabilistic guidance", "P – model-side guidance", 1), True),
+            ("row deleted", lambda text: text.replace(f"{row}\n", "", 1), False),
+            ("authority emptied", lambda text: text.replace(row, row[: row.rindex("|", 0, row.rindex("|"))] + "|  |", 1), False),
+            ("table fenced", lambda text: text.replace(table, f"```text\n{table}\n```", 1), False),
+            ("table duplicated", lambda text: text.replace(table, f"{table}\n\nSecond owner:\n\n{table}", 1), False),
+        )
+        for label, mutate, admitted in cases:
+            with self.subTest(case=label):
+                temp, root = self.mutated_copy()
+                self.addCleanup(temp.cleanup)
+                path = root / "AGENTS.md"
+                content = path.read_text()
+                mutated = mutate(content)
+                self.assertNotEqual(mutated, content)
+                path.write_text(mutated)
+                result = self.verify(root)
+                self.assertEqual(result["ok"], admitted, result["errors"])
+                if not admitted:
+                    self.assertTrue(any("guarantee" in item for item in result["errors"]), result["errors"])
+
+    def test_orphaned_workflow_phrase_lists_are_gone_and_no_gate_reads_them(self) -> None:
+        """ed3c/noodles#84 - the six workflow phrase lists had no consumer anywhere and every gate
+        stayed green while they described nothing. Direct readback of the policy file plus every
+        tracked source, so the deletion is proven, not asserted.
+
+        Key names are assembled at runtime: this file is itself tracked source, so a literal would
+        satisfy the very absence it checks."""
+        policy = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text())
+        sources = "\n".join(
+            path.read_text(errors="ignore")
+            for path in sorted(CANDIDATE_ROOT.rglob("*.py"))
+            if ".git" not in path.parts
+        )
+        for stem in (
+            "trusted_verify_workflow",
+            "candidate_self_test_job",
+            "candidate_self_test_job_forbidden",
+            "trusted_verification_job",
+            "trusted_verification_job_forbidden",
+            "trusted_land_workflow",
+        ):
+            key = f"{stem}_phrases"
+            with self.subTest(key=key):
+                self.assertNotIn(key, policy)
+                self.assertNotIn(key, sources)
 
     def test_schedule_skill_without_deterministic_publish_gate_is_rejected(self) -> None:
         temp, root = self.mutated_copy()

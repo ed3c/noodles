@@ -56,6 +56,7 @@ from runtime_contract import (
 )
 from skill_contract import (
     validate_agent_document_route,
+    validate_agent_guarantee_classes,
     validate_backlog_scheduler,
     validate_concurrency_proof,
     validate_execute_task,
@@ -547,10 +548,12 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             errors.extend(skill_contract.validate_cycle_receipt(load_json(schedule_receipt)))
         except GateError as exc:
             errors.append(f"schedule cycle receipt unreadable: {exc}")
-    agents = (root / "AGENTS.md").read_text(encoding="utf-8", errors="ignore") if (root / "AGENTS.md").exists() else ""
-    for phrase in policy["required_agent_phrases"]:
-        if phrase not in agents:
-            errors.append(f"AGENTS.md missing required invariant: {phrase}")
+    # constraint: ed3c/noodles#84 - the AGENTS.md exact-phrase grep that stood here is retired: it
+    # constraint: proved the bytes existed somewhere, not that the document owned the rule. Removing
+    # constraint: the read is also the widening half of the staged transition - a successor can now
+    # constraint: delete `required_agent_phrases` from policy/fitness.json without the
+    # constraint: default-branch verifier raising KeyError against the candidate's own policy file.
+    errors.extend(validate_agent_guarantee_classes(root))
     workflow_paths = sorted(path for path in paths if path.startswith(".github/workflows/"))
     if len(workflow_paths) != policy["max_workflows"]:
         errors.append(f"workflow count must equal {policy['max_workflows']}, got {len(workflow_paths)}")

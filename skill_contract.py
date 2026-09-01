@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -10,11 +11,27 @@ from typing import Any
 
 CONCURRENCY_PROOF_PATH = "policy/concurrency-proof.json"
 CONCURRENCY_PROOF_INVARIANTS = ("I1", "I2", "I3", "I4")
+AGENT_DOCUMENT = "AGENTS.md"
+GUARANTEE_CLASSES = ("P", "L", "R", "N")
+# constraint: ed3c/noodles#84 - the publish entrypoint is argv, not a sentence: the exact tokens a
+# constraint: cook runs, matched inside a fenced command block, so a copy parked in prose or a dead
+# constraint: example cannot stand in for the runnable one.
+SCHEDULE_PUBLISH_ENTRYPOINT = ("python3", "skill_contract.py", "publish", ".noodle/orders-next.candidate.json")
+_FENCE_RE = re.compile(r"(?ms)^```[^\n]*\n(?P<body>.*?)^```[ \t]*$")
+_HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
+_SECTION_RE = re.compile(r"(?m)^##[ \t]+\S[^\n]*$")
+_ROUTE_BULLET_RE = re.compile(r"(?m)^- `[^`]+` -> ")
+_GUARANTEE_CELL_RE = re.compile(r"^([PLRN])(?![A-Za-z0-9])")
 
 
+# constraint: ed3c/noodles#84 - retired as a gate, not yet deletable. The invariant it stated is now
+# constraint: decided on the exact proposed bytes by `validate_schedule_output`, which refuses a
+# constraint: `schedule` order by exit code. These bytes survive one landing because the
+# constraint: default-branch copy of tests/test_noodles.py comments out this exact source line as its
+# constraint: untagged-comment probe; a candidate that deletes it reds in trusted verify and no rerun
+# constraint: fixes that. The successor filed on ed3c/noodles#84 deletes it once main's probe is
+# constraint: re-anchored by this atom.
 SCHEDULE_OWNERSHIP_PHRASE = "Noodle alone injects and owns the transient `schedule` order."
-SCHEDULE_ACTIVE_ORDER_PHRASE = "Do not re-emit any active non-schedule order."
-SCHEDULE_PUBLISH_COMMAND = "python3 skill_contract.py publish .noodle/orders-next.candidate.json"
 SCHEDULE_TASK_MODEL_PHRASE = (
     "Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model "
     "on the order's only `execute` stage."
@@ -23,18 +40,12 @@ EXECUTE_PREFLIGHT_PHRASE = "0. Run `./noodles preflight` before any source edit.
 EXECUTE_ENTRYPOINT_PHRASE = "Every execute task enters `poteto-mode` before any matched playbook or leaf skill."
 EXECUTE_BYPASS_PHRASE = "Do not bypass `poteto-mode` by entering a leaf skill directly."
 EXECUTE_EVIDENCE_PHRASE = "Record the selected P-class route and required physical oracle in the evidence packet."
-EXECUTE_INVESTIGATION_ROUTE = (
-    "- `investigation` -> `poteto-mode/playbooks/investigation.md`; "
-    "oracle `exact issue readback plus direct source/runtime/provider readback`"
-)
-EXECUTE_FEATURE_ROUTE = (
-    "- `function-boundary feature work` -> `architect` plus `poteto-mode/playbooks/feature.md`; "
-    "oracle `tests plus direct source/runtime readback`"
-)
-EXECUTE_MULTI_PHASE_ROUTE = (
-    "- `long multi-phase work` -> `show-me-your-work` plus "
-    "`poteto-mode/playbooks/multi-phase-plan.md`; oracle `decision trail plus direct readback`"
-)
+# constraint: ed3c/noodles#84 - the only surviving route sentence, and it survives as a
+# constraint: `feature_contract.VERIFICATION_SKILL_FEATURE` oracle phrase, not as a verify gate.
+# constraint: Route target resolution is owned by `runtime_contract.EXECUTE_ROUTE_TRAVERSALS`:
+# constraint: `validate_execute_route_bundle_contract` parses each fixture bullet and demands the
+# constraint: traversal leaf identity, and `_validate_execute_route_files` reads the pinned playbook
+# constraint: bytes, so a missing route target fails through a resolver, never through a sentence.
 EXECUTE_VERIFICATION_ROUTE = (
     "- `verification skill work` -> `create-verification-skill` or `maintain-verification-skill`; "
     "oracle `declared feature operation plus deterministic observed-state check`"
@@ -43,10 +54,9 @@ EXECUTE_VERIFICATION_P_CLASS_PHRASE = (
     "Output from `create-verification-skill` or `maintain-verification-skill` stays P-class until "
     "`./noodles feature verify <feature-id>` runs the declared operation and its oracle checks observed state."
 )
-EXECUTE_CONTROL_CLI_ROUTE = "- `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`"
-EXECUTE_DESLOP_ROUTE = "- `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`"
+# constraint: ed3c/noodles#130 owns these bytes as the stable line-start prefix; ed3c/noodles#84 adds
+# constraint: only ownership structure around them, and everything after the prefix stays free text.
 EXECUTE_UNSUPPORTED_PHRASE = "Unsupported routes fail closed:"
-EXECUTE_RESOLUTION_PHRASE = "If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed."
 SCHEDULE_SUMMARY_COMMAND = "python3 skill_contract.py summary .noodle/schedule-summary.md"
 SCHEDULE_RECEIPT_VERBATIM_PHRASE = (
     "Quote `frontier`, `winners`, `max_useful_workers`, and every per-subject status line verbatim from "
@@ -106,6 +116,137 @@ def _has_scheduler_frontmatter(content: str) -> bool:
     return False
 
 
+def _document_body(text: str) -> str:
+    """What a Markdown document asserts in its own voice: everything outside fenced examples and
+    HTML comments. A phrase parked in either is quoted, not owned."""
+    return _HTML_COMMENT_RE.sub("", _FENCE_RE.sub("", text))
+
+
+def _sections(body: str) -> list[str]:
+    bounds = [match.start() for match in _SECTION_RE.finditer(body)]
+    return [body[start:end] for start, end in zip([0, *bounds], [*bounds, len(body)])]
+
+
+def _fenced_command_lines(content: str) -> list[str]:
+    return [line.strip() for match in _FENCE_RE.finditer(content) for line in match["body"].splitlines() if line.strip()]
+
+
+def schedule_publish_entrypoint_errors(root: Path, skill_name: str, content: str) -> list[str]:
+    """ed3c/noodles#84 - structural plus resolution control for the deterministic publish entrypoint.
+
+    The invariant this gate exists to enforce: a scheduler proposal reaches `.noodle/orders-next.json`
+    only through the publish gate, never by a direct write. Exact-string membership proved only that
+    the sentence existed somewhere, so a planted control could keep it in a comment, an unrelated
+    section, or a dead example while deleting the block a cook actually runs. This requires exactly
+    one fenced command whose argv is the tracked script, the `publish` subcommand, and the candidate
+    path, and resolves that script on disk. Surrounding prose stays free text.
+
+    Scheduler ownership and active-order preservation are no longer prose here at all: once the
+    proposal goes through this entrypoint, `validate_schedule_output` rejects a `schedule` order and
+    any re-emitted active non-schedule order by exit code, on the exact bytes."""
+    command = list(SCHEDULE_PUBLISH_ENTRYPOINT)
+    matches = [line for line in _fenced_command_lines(content) if line.split() == command]
+    if len(matches) != 1:
+        return [
+            f"backlog adapter skill {skill_name!r} missing deterministic publish gate: exactly one "
+            f"fenced `{' '.join(command)}` command is required, found {len(matches)}"
+        ]
+    if not (root / command[1]).is_file():
+        return [
+            f"backlog adapter skill {skill_name!r} deterministic publish gate names unresolvable "
+            f"entrypoint {command[1]}"
+        ]
+    return []
+
+
+def execute_route_refusal_errors(skill_name: str, content: str) -> list[str]:
+    """ed3c/noodles#84 - bounded structural owner check for the unknown-route refusal.
+
+    The invariant this gate exists to enforce: an execute route outside the admitted fixture set
+    fails closed rather than proceeding best-effort. The rule must be exactly one document line, in
+    the document's own voice, inside the same `##` section that carries the route fixture bullets;
+    the historical sentence moved into a comment, a dead example, or an unrelated section no longer
+    satisfies it. Everything after `EXECUTE_UNSUPPORTED_PHRASE` is free text, so the branded
+    inventory owned by ed3c/noodles#253 can be replaced without touching this gate. The fixture
+    format itself stays owned by `runtime_contract.validate_execute_route_bundle_contract`; the
+    bullet pattern here only locates the owning section."""
+    body = _document_body(content)
+    refusals = [line for line in body.splitlines() if line.startswith(EXECUTE_UNSUPPORTED_PHRASE)]
+    if len(refusals) != 1:
+        return [
+            f"project task skill {skill_name!r} missing unsupported route refusal: exactly one "
+            f"document line must start with {EXECUTE_UNSUPPORTED_PHRASE!r}, found {len(refusals)}"
+        ]
+    if not any(_ROUTE_BULLET_RE.search(section) and refusals[0] in section for section in _sections(body)):
+        return [
+            f"project task skill {skill_name!r} unsupported route refusal is not owned by the "
+            "section that declares the route fixtures"
+        ]
+    return []
+
+
+def _guarantee_row_letter(row: list[str]) -> str | None:
+    for cell in row[:-2]:
+        match = _GUARANTEE_CELL_RE.match(cell)
+        if match:
+            return match[1]
+    return None
+
+
+def _markdown_tables(body: str) -> list[list[list[str]]]:
+    tables: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if len(line) > 1 and line.startswith("|") and line.endswith("|"):
+            current.append([cell.strip() for cell in line[1:-1].split("|")])
+            continue
+        if current:
+            tables.append(current)
+            current = []
+    return tables + ([current] if current else [])
+
+
+def validate_agent_guarantee_classes(root: Path) -> list[str]:
+    """ed3c/noodles#84 - structural replacement for the removed `required_agent_phrases` grep.
+
+    The invariant that gate existed to enforce: the always-loaded Agent document declares the four
+    guarantee classes and what each is allowed to prove. Exact-string membership proved only that
+    the bytes appeared somewhere in the file, so the same sentences parked in a comment, a fenced
+    example, or a duplicated second section satisfied it. This requires the owning structure
+    instead: exactly one table defining each of P/L/R/N once, in the document's own voice, each with
+    a non-empty meaning and allowed-authority cell. Wording is free.
+
+    Non-claim: this proves document structure, never that an Agent read or obeyed the table."""
+    try:
+        body = _document_body((root / AGENT_DOCUMENT).read_text(encoding="utf-8"))
+    except OSError as exc:
+        return [f"{AGENT_DOCUMENT} is unreadable: {exc}"]
+    owning = [
+        table
+        for table in _markdown_tables(body)
+        if {letter for row in table if (letter := _guarantee_row_letter(row))} == set(GUARANTEE_CLASSES)
+    ]
+    if len(owning) != 1:
+        return [
+            f"{AGENT_DOCUMENT} must own exactly one guarantee-class table defining "
+            f"{'/'.join(GUARANTEE_CLASSES)}; found {len(owning)}"
+        ]
+    errors: list[str] = []
+    seen: list[str] = []
+    for row in owning[0]:
+        letter = _guarantee_row_letter(row)
+        if letter is None:
+            continue
+        seen.append(letter)
+        if not all(cell for cell in row[1:]):
+            errors.append(f"{AGENT_DOCUMENT} guarantee class {letter} declares an empty meaning or allowed authority")
+    duplicated = sorted({letter for letter in seen if seen.count(letter) > 1})
+    if duplicated:
+        errors.append(f"{AGENT_DOCUMENT} defines guarantee class {', '.join(duplicated)} more than once")
+    return errors
+
+
 def _resolve_skill_file(root: Path, config: dict[str, Any], skill_name: str) -> Path | None:
     for raw_path in config.get("skills", {}).get("paths", []):
         if not isinstance(raw_path, str):
@@ -137,15 +278,12 @@ def validate_backlog_scheduler(root: Path, config: dict[str, Any]) -> list[str]:
             f"{relative} requires non-empty top-level schedule frontmatter"
         ]
     required_contracts = (
-        (SCHEDULE_OWNERSHIP_PHRASE, "self-order ownership"),
-        (SCHEDULE_ACTIVE_ORDER_PHRASE, "active-order preservation"),
-        (SCHEDULE_PUBLISH_COMMAND, "deterministic publish gate"),
         (SCHEDULE_TASK_MODEL_PHRASE, "task-model routing"),
         (SCHEDULE_RECEIPT_VERBATIM_PHRASE, "receipt-verbatim summary"),
         (SCHEDULE_SUMMARY_COMMAND, "deterministic summary gate"),
         (SCHEDULE_STARVATION_DIAGNOSTIC_PHRASE, "starvation diagnostic routing"),
     )
-    errors = []
+    errors = schedule_publish_entrypoint_errors(root, skill_name, content)
     for phrase, label in required_contracts:
         if phrase not in content:
             errors.append(f"backlog adapter skill {skill_name!r} missing {label} contract")
@@ -172,25 +310,11 @@ def validate_execute_task(root: Path, config: dict[str, Any]) -> list[str]:
         (EXECUTE_ENTRYPOINT_PHRASE, "poteto-mode entrypoint"),
         (EXECUTE_BYPASS_PHRASE, "direct leaf bypass refusal"),
         (EXECUTE_EVIDENCE_PHRASE, "route evidence packet"),
-        (EXECUTE_INVESTIGATION_ROUTE, "investigation fixture"),
-        (EXECUTE_FEATURE_ROUTE, "function-boundary feature fixture"),
-        (EXECUTE_MULTI_PHASE_ROUTE, "multi-phase fixture"),
-        (EXECUTE_VERIFICATION_ROUTE, "verification-skill fixture"),
         (EXECUTE_VERIFICATION_P_CLASS_PHRASE, "verification-skill P-class refusal"),
-        (EXECUTE_CONTROL_CLI_ROUTE, "CLI control fixture"),
-        (EXECUTE_DESLOP_ROUTE, "pre-commit cleanup fixture"),
-        (EXECUTE_UNSUPPORTED_PHRASE, "unsupported route refusal"),
-        (EXECUTE_RESOLUTION_PHRASE, "pinned provider resolution refusal"),
     )
-    content_lines = content.splitlines()
-    errors = []
+    errors = execute_route_refusal_errors(skill_name, content)
     for phrase, label in required_contracts:
-        present = (
-            any(line.startswith(phrase) for line in content_lines)
-            if phrase == EXECUTE_UNSUPPORTED_PHRASE
-            else phrase in content
-        )
-        if not present:
+        if phrase not in content:
             errors.append(f"project task skill {skill_name!r} missing {label} contract")
     return errors
 

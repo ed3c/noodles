@@ -90,44 +90,5 @@
     "R \u2014 provider-enforced readback",
     "N \u2014 non-claim",
     "Human Verifier is not an operational state"
-  ],
-  "trusted_verify_workflow_phrases": [
-    "pull_request_target:",
-    "persist-credentials: false",
-    "permissions:",
-    "contents: read",
-    "python3 .trusted/noodles.py github verify-pr"
-  ],
-  "candidate_self_test_job_phrases": [
-    "permissions:",
-    "contents: read",
-    "runs-on: ubuntu-latest",
-    "working-directory: .candidate",
-    "run: tests/run.sh"
-  ],
-  "candidate_self_test_job_forbidden_phrases": [
-    ": write"
-  ],
-  "trusted_verification_job_phrases": [
-    "needs: candidate-self-tests",
-    "runs-on: ubuntu-latest",
-    "python3 -m unittest discover -s .trusted/tests -v",
-    "python3 .trusted/noodles.py github verify-pr"
-  ],
-  "trusted_verification_job_forbidden_phrases": [
-    "working-directory: .candidate",
-    ".candidate/",
-    "tests/run.sh"
-  ],
-  "trusted_land_workflow_phrases": [
-    "workflow_run:",
-    "workflows: [verify]",
-    "contents: write",
-    "pull-requests: write",
-    "issues: write",
-    "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
-    "permission-administration: read",
-    "NOODLES_GITHUB_PROTECTION_TOKEN: ${{ steps.app-token.outputs.token }}",
-    "python3 noodles.py github land"
   ]
 }
