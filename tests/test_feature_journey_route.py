@@ -14,7 +14,10 @@ once that surface is really changed.
 from __future__ import annotations
 
 import ast
+import contextlib
+import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,7 +25,7 @@ from unittest import mock
 
 import feature_contract
 import noodles
-from tests.support import CANDIDATE_ROOT
+from tests.support import CANDIDATE_ROOT, cmd, initialize_repo
 
 HEAD_SHA = "c" * 40
 SUBJECT = "ed3c/noodles#900264"
@@ -113,6 +116,14 @@ class FeatureJourneyRouteGateTests(unittest.TestCase):
         self.assertIn("candidate feature-journey gate failed", diagnostic)
         self.assertIn("unadmitted noodles-feature", diagnostic)
         self.assertIn("drop the noodles-feature marker", diagnostic)
+
+    def test_the_landing_receipt_reads_the_one_owned_gate_inventory(self) -> None:
+        # constraint: ed3c/noodles#302 - the preview enumerates its coverage against this same tuple,
+        # constraint: so a gate re-inlined here as a literal would be a surface the preview never
+        # constraint: learns it misses. One owner is what makes the coverage list unable to rot.
+        receipt, _ = self.run_verify(issue_body(), [FEATURE.code_surface])
+
+        self.assertEqual(receipt["gates"], list(feature_contract.VERIFY_PR_GATES))
 
     def test_positive_control_marker_free_issue_carries_the_gate_with_no_compiled_map(self) -> None:
         receipt, repository = self.run_verify(issue_body(feature=None), ["AGENTS.md"])
@@ -298,6 +309,151 @@ class HandoffVerbCustodyTests(unittest.TestCase):
         entry = next(item for item in self.proof["invariants"] if item["id"] == "I2")
         self.assertEqual(len(entry["planted_negatives"]), 5)
         self.assertTrue(all(name.startswith("tests.test_execute_provenance.") for name in entry["planted_negatives"]))
+
+
+class JourneyGatePreviewTests(unittest.TestCase):
+    """ed3c/noodles#302 - the local preview covers the journey gate CI runs, or names that it does not.
+
+    The trusted tree here is a real git repository carrying the trusted `feature_contract` module, so
+    the compiler these controls exercise is the one CI would run over the candidate as data. Nothing
+    in this class touches the provider: a stale marker reds before any push exists."""
+
+    def preview_repo(self, *, changed: str = feature_contract.VERIFICATION_SKILL_FEATURE.code_surface, widen_candidate: bool = False) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-journey-preview-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        root.mkdir(parents=True)
+        for module in ("feature_contract.py", "skill_contract.py"):
+            shutil.copy2(CANDIDATE_ROOT / module, root / module)
+        initialize_repo(root)
+        cmd(["git", "checkout", "-q", "-b", "candidate"], root)
+        surface = root / changed
+        surface.parent.mkdir(parents=True, exist_ok=True)
+        surface.write_text("candidate change\n", encoding="utf-8")
+        if widen_candidate:
+            planted = (root / "feature_contract.py").read_text(encoding="utf-8") + (
+                "\n\nADMITTED_FEATURES['candidate-invented-feature'] = FeatureContract(\n"
+                "    feature_id='candidate-invented-feature',\n"
+                f"    code_surface={changed!r},\n"
+                "    operation=('./noodles', 'verify'),\n"
+                "    oracle_phrases=('x',),\n"
+                "    oracle='planted',\n"
+                "    transitions=('t',),\n"
+                "    journeys=('j',),\n"
+                ")\n"
+            )
+            (root / "feature_contract.py").write_text(planted, encoding="utf-8")
+        cmd(["git", "add", "-A"], root)
+        cmd(["git", "commit", "-q", "-m", "candidate"], root)
+        return root
+
+    def preview(self, root: Path, declared_feature: str | None) -> dict:
+        return feature_contract.preview_journey_gate(root, trusted_ref="main", declared_feature=declared_feature, error_cls=AssertionError)
+
+    def test_planted_control_stale_unadmitted_marker_reds_locally_naming_the_journey_gate(self) -> None:
+        receipt = self.preview(self.preview_repo(), "component-surface-existing-edges")
+
+        self.assertFalse(receipt["ok"], receipt)
+        self.assertTrue(receipt["simulated"])
+        self.assertIn("journey-compilation gate would red at CI", receipt["diagnostic"])
+        self.assertIn("verify_pull_request feature-journey gate", receipt["diagnostic"])
+        self.assertIn("unadmitted noodles-feature", receipt["diagnostic"])
+        self.assertIn("drop the noodles-feature marker", receipt["diagnostic"])
+        self.assertIsNone(receipt["feature_map"])
+
+    def test_planted_control_admitted_marker_whose_code_surface_is_absent_reds_locally(self) -> None:
+        receipt = self.preview(self.preview_repo(changed="AGENTS.md"), FEATURE.feature_id)
+
+        self.assertFalse(receipt["ok"], receipt)
+        self.assertIn("unmapped journey", receipt["diagnostic"])
+        self.assertIn(FEATURE.code_surface, receipt["diagnostic"])
+        self.assertEqual(receipt["changed_files"], ["AGENTS.md"])
+
+    def test_planted_negative_control_a_correct_marker_stays_green_and_compiles_the_journey(self) -> None:
+        receipt = self.preview(self.preview_repo(), FEATURE.feature_id)
+
+        self.assertTrue(receipt["ok"], receipt)
+        self.assertEqual(receipt["feature_map"]["feature_id"], FEATURE.feature_id)
+        self.assertEqual(receipt["feature_map"]["journeys"], list(FEATURE.journeys))
+        self.assertEqual(receipt["feature_map"]["transitions"], list(FEATURE.transitions))
+        self.assertEqual(receipt["changed_files"], [FEATURE.code_surface])
+        self.assertIn("feature-journey", receipt["coverage"]["covered"])
+
+    def test_planted_negative_the_compiler_is_the_trusted_trees_not_the_candidates(self) -> None:
+        """A candidate that invents its own admitted feature cannot preview itself green."""
+        receipt = self.preview(self.preview_repo(widen_candidate=True), "candidate-invented-feature")
+
+        self.assertFalse(receipt["ok"], receipt)
+        self.assertIn("unadmitted noodles-feature", receipt["diagnostic"])
+
+    def test_marker_free_issue_is_simulated_and_green_exactly_as_ci_compiles_nothing(self) -> None:
+        receipt = self.preview(self.preview_repo(changed="AGENTS.md"), "")
+
+        self.assertTrue(receipt["ok"], receipt)
+        self.assertTrue(receipt["simulated"])
+        self.assertIsNone(receipt["feature_map"])
+        self.assertIn("feature-journey", receipt["coverage"]["covered"])
+
+    def test_an_undeclared_feature_is_reported_as_an_uncovered_surface_never_as_a_pass(self) -> None:
+        receipt = self.preview(self.preview_repo(), None)
+
+        self.assertTrue(receipt["ok"], receipt)
+        self.assertFalse(receipt["simulated"])
+        self.assertEqual(receipt["coverage"]["covered"], [])
+        gap = next(item for item in receipt["coverage"]["uncovered"] if item["gate"] == "feature-journey")
+        self.assertEqual(gap["reason"], feature_contract.JOURNEY_PREVIEW_UNDECLARED)
+
+    def test_every_verify_pr_gate_is_previewed_or_carries_a_printed_reason(self) -> None:
+        receipt = self.preview(self.preview_repo(), FEATURE.feature_id)
+        enumerated = set(receipt["coverage"]["covered"]) | {item["gate"] for item in receipt["coverage"]["uncovered"]}
+
+        self.assertEqual(enumerated, set(feature_contract.VERIFY_PR_GATES))
+        self.assertEqual(feature_contract.preview_coverage_errors(feature_contract.VERIFY_PR_GATES), [])
+        for item in receipt["coverage"]["uncovered"]:
+            self.assertTrue(item["reason"].strip(), item)
+
+    def test_planted_negative_a_new_ci_gate_with_no_disposition_is_named_not_silently_skipped(self) -> None:
+        errors = feature_contract.preview_coverage_errors([*feature_contract.VERIFY_PR_GATES, "provider-quota"])
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("provider-quota", errors[0])
+        self.assertIn("neither previewed nor named", errors[0])
+
+    def test_the_gate_inventory_is_not_re_inlined_in_the_landing_route(self) -> None:
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        self.assertIn("feature_contract.VERIFY_PR_GATES", source)
+        self.assertNotIn('"evidence-publication"', source)
+
+    def test_the_cli_prints_the_journey_verdict_and_every_uncovered_surface(self) -> None:
+        root = self.preview_repo()
+        stub = {"ok": True, "trusted_ref": "main", "trusted_sha": "a" * 40, "fetch": "skipped", "would_red": [], "diagnostic": None}
+        buffer = io.StringIO()
+        with mock.patch.object(noodles.trusted_preview, "preview_trusted_verify", return_value=stub), \
+                mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": [], "metrics": {}, "warnings": [], "warning_readback": []}), \
+                contextlib.redirect_stdout(buffer):
+            code = noodles.main(["--root", str(root), "verify", "--trusted-preview", "--trusted-ref", "main", "--feature", FEATURE.feature_id])
+        printed = buffer.getvalue()
+
+        self.assertEqual(code, 0, printed)
+        self.assertIn("journey-preview main@", printed)
+        self.assertIn(f"feature={FEATURE.feature_id!r}: PASS", printed)
+        for gate in feature_contract.VERIFY_PR_GATES:
+            if gate not in feature_contract.PREVIEW_COVERED_GATES:
+                self.assertIn(f"  not previewed: {gate} - ", printed)
+
+    def test_the_cli_reds_and_names_the_journey_gate_on_a_stale_marker(self) -> None:
+        root = self.preview_repo()
+        stub = {"ok": True, "trusted_ref": "main", "trusted_sha": "a" * 40, "fetch": "skipped", "would_red": [], "diagnostic": None}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(noodles.trusted_preview, "preview_trusted_verify", return_value=stub), \
+                mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": [], "metrics": {}, "warnings": [], "warning_readback": []}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = noodles.main(["--root", str(root), "verify", "--trusted-preview", "--trusted-ref", "main", "--feature", "component-surface-existing-edges"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("journey-preview main@", out.getvalue())
+        self.assertIn(": FAIL", out.getvalue())
+        self.assertIn("journey-compilation gate would red at CI", err.getvalue())
 
 
 if __name__ == "__main__":
