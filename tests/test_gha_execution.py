@@ -521,6 +521,15 @@ class CandidateWiringTests(unittest.TestCase):
         # constraint: than a *.yml glob: a gh-aw workflow's human-authored source is a .md file, and
         # constraint: a glob that could not see it would let a new workflow source enter the
         # constraint: directory writable by the very lane it configures.
+        # constraint: this is self-consistency, not the trust boundary. A candidate that ships a new
+        # constraint: workflow file, declares it here, and widens its own max_workflows in the same
+        # constraint: commit passes this assertion by construction - that is #311's own point, letting
+        # constraint: a candidate declare the workflow set it carries. The byte that actually refuses
+        # constraint: an unreviewed workflow is not Python: pull_request_target always executes the
+        # constraint: *base* branch's .github/workflows/*.yml, never the candidate ref's, so a new or
+        # constraint: edited workflow file in a PR has no elevated execution until it already sits on
+        # constraint: the default branch. This test's job is narrower - keep verify from missing an
+        # constraint: untracked file - not to stand in for that platform property.
         declared = self.candidate_constant("GHA_TRUSTED_WORKFLOW_PATHS")
         for path in declared:
             with self.subTest(path=path):
