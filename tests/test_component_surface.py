@@ -7,13 +7,14 @@ from __future__ import annotations
 import ast
 import fnmatch
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import noodles
-from tests.support import CANDIDATE_ROOT, load_ready_backlog_fixtures
+from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, load_ready_backlog_fixtures
 
 HEAD_SHA = "a" * 40
 SUBJECT = "ed3c/noodles#900007"
@@ -238,38 +239,117 @@ class ImportTargetReadbackTests(unittest.TestCase):
         )
 
 
+# constraint: ed3c/noodles#306 - the disclosure sentence in AGENTS.md is the ledger, so it is
+# constraint: parsed rather than restated here; a fourth hand-synced copy of these four numbers is
+# constraint: exactly the staleness the disclosure exists to prevent.
+DISCLOSURE_SENTENCE_RE = re.compile(r"carry ((?:`[a-z]+` \d+(?:, )?)+) standing cross-surface edges")
+DISCLOSED_PAIR_RE = re.compile(r"`([a-z]+)` (\d+)")
+
+
+def disclosed_standing_edge_counts(root: Path) -> dict[str, int]:
+    """The counts AGENTS.md discloses on `root`, or {} when that tree discloses nothing.
+
+    Absence is its own answer rather than an empty comparison that passes: the caller asserts a
+    disclosure exists before comparing, so a candidate that deletes the sentence reds with that as
+    its diagnostic instead of silently measuring nothing."""
+    text = (root / "AGENTS.md").read_text(encoding="utf-8")
+    sentence = DISCLOSURE_SENTENCE_RE.search(text)
+    if sentence is None:
+        return {}
+    return {name: int(count) for name, count in DISCLOSED_PAIR_RE.findall(sentence.group(1))}
+
+
+def standing_cross_surface_edges(root: Path) -> dict[str, set[str]]:
+    """Every `file -> target` import edge that leaves its own component's globs, per component.
+
+    The same resolver `component_import_edge_errors` uses, over the whole tree rather than over one
+    diff, which is the difference between the edges a candidate *introduces* and the edges that
+    already stand."""
+    edges: dict[str, set[str]] = {}
+    for name, globs in noodles.component_map(root).items():
+        if globs == ["*"]:
+            continue
+        crossing: set[str] = set()
+        for path in sorted(p.relative_to(root).as_posix() for p in root.rglob("*.py") if ".git" not in p.parts):
+            if not any(fnmatch.fnmatchcase(path, glob) for glob in globs):
+                continue
+            source = (root / path).read_text(encoding="utf-8")
+            for dotted in sorted(noodles.python_import_targets(source, path)):
+                target = noodles.repo_module_target(dotted, root)
+                if target and target != path and not any(fnmatch.fnmatchcase(target, glob) for glob in globs):
+                    crossing.add(f"{path} -> {target}")
+        edges[name] = crossing
+    return edges
+
+
 class GrandfatheredImportDebtTests(unittest.TestCase):
     """ed3c/noodles#276: pre-existing cross-surface edges are grandfathered by
-    component_import_edge_errors's own base-diff rule and are unmeasured by any gate. The counts
-    below are quoted, not derived, in AGENTS.md and in #276's issue body; this recomputes them
-    against the live tree with the gate's own resolver so drift breaks a test instead of only ever
-    breaking a stale sentence nobody re-runs. A red here means: fix the drift (declare the coupling
-    or file its disposition), or the count genuinely changed - either way, update this dict AND the
-    two AGENTS.md paragraphs AND #276/#278 in the same commit."""
+    component_import_edge_errors's own base-diff rule and are unmeasured by any gate. The counts are
+    quoted in AGENTS.md and in #276's issue body; this recomputes them against the live tree with
+    the gate's own resolver so drift breaks a test instead of only ever breaking a stale sentence
+    nobody re-runs. A red here means: fix the drift (declare the coupling or file its disposition),
+    or the count genuinely changed - either way, update the AGENTS.md sentence in the same commit.
 
-    DISCLOSED_STANDING_EDGE_COUNTS = {"carrier": 38, "docs": 88, "schedule": 40, "verify": 33}
+    ed3c/noodles#306: that instruction was unfollowable while the expected counts were a literal in
+    *this* file. `pull_request_target` runs the default branch's copy of this module against the
+    candidate's tree, so a candidate that legitimately moved an edge computed new counts, was
+    compared against a literal only `main` could hold, and could never merge to update it - the same
+    deadlock #285 already cured for the sibling ratchet below. Both halves of the comparison now come
+    from the candidate: the measurement from its tree, the disclosure from its AGENTS.md."""
 
     def test_standing_cross_surface_edge_counts_match_the_agents_md_disclosure(self) -> None:
-        components = noodles.component_map(CANDIDATE_ROOT)
-        counts: dict[str, int] = {}
-        for name, globs in components.items():
-            if globs == ["*"]:
-                continue
-            edges: set[str] = set()
-            for path in sorted(
-                p.relative_to(CANDIDATE_ROOT).as_posix()
-                for p in CANDIDATE_ROOT.rglob("*.py")
-                if ".git" not in p.parts
-            ):
-                if not any(fnmatch.fnmatchcase(path, glob) for glob in globs):
-                    continue
-                source = (CANDIDATE_ROOT / path).read_text(encoding="utf-8")
-                for dotted in sorted(noodles.python_import_targets(source, path)):
-                    target = noodles.repo_module_target(dotted, CANDIDATE_ROOT)
-                    if target and target != path and not any(fnmatch.fnmatchcase(target, glob) for glob in globs):
-                        edges.add(f"{path} -> {target}")
-            counts[name] = len(edges)
-        self.assertEqual(counts, self.DISCLOSED_STANDING_EDGE_COUNTS)
+        counts = {name: len(edges) for name, edges in standing_cross_surface_edges(CANDIDATE_ROOT).items()}
+        disclosed = disclosed_standing_edge_counts(CANDIDATE_ROOT)
+        self.assertTrue(disclosed, "AGENTS.md discloses no standing cross-surface edge counts to read")
+        if counts != disclosed:
+            base = standing_cross_surface_edges(ENGINE_ROOT)
+            candidate = standing_cross_surface_edges(CANDIDATE_ROOT)
+            moved = {
+                name: sorted(f"+{edge}" for edge in candidate[name] - base.get(name, set()))
+                + sorted(f"-{edge}" for edge in base.get(name, set()) - candidate[name])
+                for name in sorted(candidate)
+                if counts.get(name) != disclosed.get(name)
+            }
+            self.fail(f"measured {counts} but AGENTS.md discloses {disclosed}; edges that moved: {moved}")
+
+    def test_a_stale_disclosed_count_is_a_red_rather_than_prose_nobody_reruns(self) -> None:
+        """Planted negative for the reader itself: one wrong digit in the AGENTS.md sentence and the
+        parse no longer matches the tree it claims to describe."""
+        text = (CANDIDATE_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        live = disclosed_standing_edge_counts(CANDIDATE_ROOT)
+        self.assertTrue(live)
+        stale = DISCLOSURE_SENTENCE_RE.sub(
+            lambda match: match.group(0).replace(f"`carrier` {live['carrier']}", f"`carrier` {live['carrier'] + 1}"),
+            text,
+            count=1,
+        )
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "AGENTS.md").write_text(stale, encoding="utf-8")
+            self.assertEqual(disclosed_standing_edge_counts(root)["carrier"], live["carrier"] + 1)
+
+    def test_a_tree_with_no_disclosure_sentence_reads_as_absent_not_as_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "AGENTS.md").write_text("no disclosure here\n", encoding="utf-8")
+            self.assertEqual(disclosed_standing_edge_counts(root), {})
+
+    def test_an_undeclared_new_cross_surface_edge_moves_the_measured_count(self) -> None:
+        """The property #276 disclosed: an added import that leaves its component's globs shows up in
+        the measurement, so a candidate carrying one and not disclosing it reds above."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "policy").mkdir()
+            (root / "policy" / "components.json").write_text(
+                json.dumps({"schema_version": 1, "components": {"docs": ["tests/*"], "carrier": ["noodles.py"]}}),
+                encoding="utf-8",
+            )
+            (root / "noodles.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_x.py").write_text("import os\n", encoding="utf-8")
+            self.assertEqual(standing_cross_surface_edges(root)["docs"], set())
+            (root / "tests" / "test_x.py").write_text("import noodles\n", encoding="utf-8")
+            self.assertEqual(standing_cross_surface_edges(root)["docs"], {"tests/test_x.py -> noodles.py"})
 
 
 def mutate_definition(source: str, name: str) -> str:
