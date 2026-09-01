@@ -67,7 +67,6 @@ SCHEMA_VERSION = 1
 # constraint: ed3c/noodles#99 - the exact entrypoint an open-PR refusal routes to; repair owns an
 # constraint: existing PR (repair_contract.find_open_pr_for_subject), scheduling never re-attempts it.
 OPEN_PR_REPAIR_OWNER = "./noodles repair"
-ALLOWED_MIGRATION_STATES = {"MIGRATE", "REVALIDATE", "ADAPT_EXTERNAL", "DROP", "HOLD"}
 ALLOWED_ISSUE_STATES = {"ready", "in_progress", "awaiting_land", "landed", "blocked"}
 SUBJECT_RE = issue_contract.SUBJECT_RE
 MARKER_PATTERNS = {
@@ -526,31 +525,6 @@ def validate_provider_lock(root: Path, max_enabled: int) -> list[str]:
     if enabled > max_enabled:
         errors.append(f"enabled providers {enabled} exceed limit {max_enabled}")
     errors.extend(runtime_contract.validate_enabled_provider_names(enabled_names)); return errors
-def validate_migration_ledger(root: Path) -> list[str]:
-    path = root / "migrations/skills-shared/ledger.json"
-    if not path.exists():
-        return ["missing migration ledger"]
-    try:
-        payload = load_json(path)
-        capabilities = payload["capabilities"]
-    except (GateError, KeyError, TypeError) as exc:
-        return [f"invalid migration ledger: {exc}"]
-    errors: list[str] = []
-    ids: set[str] = set()
-    for item in capabilities:
-        identifier = str(item.get("id", ""))
-        disposition = item.get("disposition")
-        if not identifier or identifier in ids:
-            errors.append(f"missing or duplicate migration id: {identifier!r}")
-        ids.add(identifier)
-        if disposition not in ALLOWED_MIGRATION_STATES:
-            errors.append(f"{identifier}: invalid disposition {disposition!r}")
-        if not item.get("claim") or not item.get("non_claims"):
-            errors.append(f"{identifier}: claim and non_claims are required")
-        evidence = item.get("physical_evidence", [])
-        if disposition == "MIGRATE" and not evidence:
-            errors.append(f"{identifier}: MIGRATE requires physical evidence")
-    return errors
 def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
     errors: list[str] = []
     for python_path in sorted(path for path in paths if path.endswith(".py")):
@@ -652,7 +626,6 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
     errors.extend(structural_contract.validate_parser_lock(root))
     errors.extend(retrieval_contract.validate_retrieval_lock(root))
-    errors.extend(validate_migration_ledger(root))
     for executable in policy["required_executables"]:
         full = root / executable
         if full.exists() and not (full.stat().st_mode & stat.S_IXUSR):

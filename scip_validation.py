@@ -13,11 +13,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
-EVIDENCE_PATH = "migrations/skills-shared/scip-validation.json"
 SCHEMA_VERSION = 1
-LEDGER_CAPABILITY = "scip-semantic-graph"
+CAPABILITY = "scip-semantic-graph"
 
 # constraint: exact pins; the same commits are recorded in policy/providers.lock.json and re-checked by admit_evidence.
 INDEXER_PIN = {
@@ -271,7 +270,7 @@ def validate(root: Path, out_dir: Path, symbol_module: str = "feature_contract",
     residue_after = [line for line in _git(root, "status", "--porcelain=v1", "--untracked-files=all").splitlines() if line]
     return {
         "schema_version": SCHEMA_VERSION,
-        "capability": LEDGER_CAPABILITY,
+        "capability": CAPABILITY,
         "indexer": dict(INDEXER_PIN),
         "reader": dict(READER_PIN),
         "repository": {"repo": "ed3c/noodles", "commit": commit, "tree": tree},
@@ -319,8 +318,8 @@ def admit_evidence(evidence: Any, *, root: Path | None = None) -> dict[str, Any]
         raise ScipError(f"SCIP evidence is an agent self-report; missing physical fields: {', '.join(missing)}")
     if evidence["schema_version"] != SCHEMA_VERSION:
         raise ScipError(f"unsupported SCIP evidence schema: {evidence['schema_version']!r}")
-    if evidence["capability"] != LEDGER_CAPABILITY:
-        raise ScipError(f"SCIP evidence names capability {evidence['capability']!r}, not {LEDGER_CAPABILITY!r}")
+    if evidence["capability"] != CAPABILITY:
+        raise ScipError(f"SCIP evidence names capability {evidence['capability']!r}, not {CAPABILITY!r}")
     if evidence["indexer"] != INDEXER_PIN or evidence["reader"] != READER_PIN:
         raise ScipError("SCIP evidence was produced by an unpinned indexer/reader pair")
 
@@ -380,21 +379,8 @@ def admit_evidence(evidence: Any, *, root: Path | None = None) -> dict[str, Any]
     return evidence
 
 
-def load_evidence(root: Path) -> dict[str, Any]:
-    path = Path(root) / EVIDENCE_PATH
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ScipError(f"cannot read {EVIDENCE_PATH}: {exc}") from exc
-
-
-def main(argv: Iterable[str]) -> int:
-    arguments = list(argv)
+def main() -> int:
     root = Path(os.getenv("NOODLES_CANDIDATE_ROOT", Path(__file__).resolve().parent)).resolve()
-    if arguments and arguments[0] == "admit":
-        admit_evidence(load_evidence(root))
-        print(f"PASS {EVIDENCE_PATH}")
-        return 0
     evidence = validate(root, Path(os.environ.get("TMPDIR", "/tmp")) / "scip-validation")
     admit_evidence(evidence, root=root)
     print(json.dumps(evidence, indent=2, sort_keys=True))
@@ -403,7 +389,7 @@ def main(argv: Iterable[str]) -> int:
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main(sys.argv[1:]))
+        raise SystemExit(main())
     except ScipError as failure:
         print(f"FAIL: {failure}", file=sys.stderr)
         raise SystemExit(1) from failure

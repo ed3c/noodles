@@ -755,18 +755,6 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("not pinned" in item for item in result["errors"]))
 
-    def test_invalid_migration_promotion_is_rejected(self) -> None:
-        temp, root = self.mutated_copy()
-        self.addCleanup(temp.cleanup)
-        path = root / "migrations/skills-shared/ledger.json"
-        payload = json.loads(path.read_text())
-        payload["capabilities"][6]["disposition"] = "MIGRATE"
-        path.write_text(json.dumps(payload))
-        self.commit(root)
-        result = self.verify(root)
-        self.assertFalse(result["ok"])
-        self.assertTrue(any("MIGRATE requires physical evidence" in item for item in result["errors"]))
-
     def test_untrusted_workflow_boundary_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
