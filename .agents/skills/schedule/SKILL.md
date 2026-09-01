@@ -25,7 +25,7 @@ Schedule an item only when all are true:
 3. Issue state is `ready`.
 4. The target repository is admitted by `policy/github.json`.
 5. The adapter reports `schedulable: true`, which means every declared predecessor read back closed and `landed`.
-6. The Issue describes one repository-mutating atom or one evidence-only audit atom.
+6. The Issue describes one repository-mutating atom. `noodles.parse_issue_contract` owns the role vocabulary and refuses every other value, so this list never widens it.
 7. No other executor claims the Issue: its exact execute branch does not already exist on the provider and its marker is not `in_progress`. A provider-rejected branch creation is another executor's claim; skip it without ordering or marker edits.
 
 Do not schedule an item whose `reasons` are non-empty, and never patch an Issue marker to represent dependency waiting: eligibility is re-derived from provider truth on every sync. Reject when the target, subject, acceptance evidence, or non-claims are ambiguous. Reserve `blocked` for a real blocker with an explicit `<!-- noodles-blocker: owner: reason -->`.
@@ -52,14 +52,12 @@ The order must have exactly one `execute` stage. Do not create generic planning,
 
 Read `required_codex_task_profiles.execute.model` from `policy/fitness.json` and set that exact model on the order's only `execute` stage. The repository-owned Codex carrier applies the paired reasoning effort from the same profile. Do not infer a model alias, substitute another supported model, add a reasoning field that pinned Noodle cannot parse, or rely on the routing default: the schedule carrier and execute carrier are intentionally distinct task types.
 
-Pass this context verbatim:
+Pass this context verbatim. It names the exact Issue and pins the bytes it named; it never snapshots the Issue's prose. Execute re-reads goal, acceptance, and non-claims from provider truth and refuses a body whose digest drifted, so a copied paragraph can only disagree with the Issue it names:
 
 ```text
 subject: owner/repo#N
 target: owner/repo
-claim: exact claim from Issue
-physical acceptance: exact positive/negative/readback/residue requirements
-non-claims: exact exclusions
+body_sha256: exact provider body digest from the adapter output
 dependencies: exact landed subjects
 ```
 

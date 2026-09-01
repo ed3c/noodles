@@ -43,7 +43,7 @@ Immutable route fixtures:
 - `CLI control` -> mapped `control-cli`; oracle `same-surface reproduction plus direct readback`
 - `pre-commit cleanup` -> mapped `deslop`; oracle `diff/status readback`
 
-Unsupported routes fail closed: `control-ui`, Cursor `create-skill`, Cursor `/loop`, Graphite `gt`, cloud-agent infrastructure, standalone `goal`.
+Unsupported routes fail closed: the immutable route fixtures above are the whole admitted set, so a task that matches none of them is an unknown route and stops here rather than proceeding best-effort.
 If a referenced playbook or mapped skill does not resolve from the pinned provider bytes, fail closed.
 
 Pinned route bundles, assembled at provider sync from the exact pinned bytes in traversal order:
