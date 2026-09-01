@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "compiler": {
+    "repository": "github/gh-aw",
+    "source": "https://github.com/github/gh-aw",
+    "release": "v0.86.2",
+    "commit": "48e5fa3ff52294d91d97715017a9f8693a48387f",
+    "command": "gh-aw compile --no-check-update --approve",
+    "platforms": {
+      "darwin_arm64": {
+        "asset_name": "darwin-arm64",
+        "asset_sha256": "ea38d02b6126ffe9a0c006111f2b17d6a36024ff8bf09c326e448a8537d8ad93"
+      },
+      "linux_amd64": {
+        "asset_name": "linux-amd64",
+        "asset_sha256": "b8fd100d1d56a77b842ad28375ff361215a5aa1277db6b9a05d70054cde7260e"
+      }
+    }
+  },
+  "workflow": {
+    "source_path": ".github/workflows/noodles-hosted.md",
+    "source_sha256": "6e9a323f3ad05ab8aeaf21811c1b2aabec5ac847119b77e23bb600b0416785c4",
+    "lock_path": ".github/workflows/noodles-hosted.lock.yml",
+    "lock_sha256": "80f34e7f6928c0600e37a6afd4c5272b125e228df3792d66f932e8bbf0c38256",
+    "body_sha256": "e38c37bd8b4e427954af8fe613532b23cd4b656fd17fdf196b7b4a2ada0cc66a",
+    "action_pin_path": ".github/aw/actions-lock.json",
+    "action_pin_sha256": "fdf504664c9d1a7c57f0f2bdb1a43fa0c97c081304a68146c40044bae5bd497c",
+    "agent_job": "agent",
+    "apply_job": "safe_outputs"
+  },
+  "actions": [
+    {
+      "uses": "actions/checkout",
+      "commit": "11d5960a326750d5838078e36cf38b85af677262",
+      "readback_path": ".github/workflows/verify.yml"
+    },
+    {
+      "uses": "actions/create-github-app-token",
+      "commit": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+      "readback_path": ".github/workflows/land.yml"
+    },
+    {
+      "uses": "oven-sh/setup-bun",
+      "commit": "0c5077e51419868618aeaa5fe8019c62421857d6",
+      "readback_path": ".github/workflows/noodles-hosted.lock.yml"
+    }
+  ]
+}

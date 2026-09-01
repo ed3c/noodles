@@ -765,6 +765,200 @@ def workflow_boundary_readback(
         ),
     }
     return errors, evidence
+GH_AW_LOCK_PATH = "policy/gh-aw.lock.json"
+GH_AW_HEX40_RE = re.compile(r"[0-9a-f]{40}")
+GH_AW_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+GH_AW_RELEASE_RE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+GH_AW_USES_RE = re.compile(r"(?m)^\s*(?:-\s+)?uses:\s*(\S+)\s*(?:#.*)?$")
+GH_AW_METADATA_PREFIX = "# gh-aw-metadata: "
+GH_AW_AGENT_JOB_PERMISSIONS = {"contents": "read"}
+GH_AW_APPLY_JOB_PERMISSIONS = {"contents": "write", "issues": "write", "pull-requests": "write"}
+# constraint: ed3c/noodles#265 - the Agent job may hold no GitHub App private key, no Google
+# constraint: credential, and no landing authority. CANDIDATE_SECRET_PHRASES cannot be reused here:
+# constraint: it forbids GH_TOKEN outright, and the gh-aw Agent job legitimately carries a
+# constraint: contents:read-scoped GITHUB_TOKEN for its read-only MCP server.
+GH_AW_AGENT_FORBIDDEN_PHRASES = (
+    "NOODLES_APP_PRIVATE_KEY",
+    "NOODLES_APP_CLIENT_ID",
+    "NOODLES_GITHUB_PROTECTION_TOKEN",
+    "NOODLES_TRAIN_PUSH_TOKEN",
+    "actions/create-github-app-token@",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_SERVICE_ACCOUNT",
+    "GDRIVE_",
+)
+GH_AW_LANDING_AUTHORITY_PHRASES = ("noodles.py github land", "noodles.py github train", "gh pr merge")
+def _gh_aw_source_body(source_text: str) -> str | None:
+    # constraint: ed3c/noodles#265 - gh-aw hashes the prompt half of the source as
+    # constraint: sha256(body.strip()) and stamps it into the lock's own metadata line, so the
+    # constraint: correspondence is recomputable here from the tracked source with no compiler, no
+    # constraint: network, and no trust in the compile-time report.
+    if not source_text.startswith("---\n"):
+        return None
+    closing = source_text.find("\n---\n", 3)
+    if closing < 0:
+        return None
+    return source_text[closing + len("\n---\n"):].strip()
+def _gh_aw_job_block(lock_text: str, job: str) -> list[str]:
+    lines = lock_text.splitlines()
+    try:
+        start = lines.index(f"  {job}:")
+    except ValueError:
+        return []
+    block: list[str] = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith("   "):
+            break
+        block.append(line)
+    return block
+def _gh_aw_job_permissions(block: Sequence[str]) -> dict[str, str] | None:
+    try:
+        start = list(block).index("    permissions:")
+    except ValueError:
+        return None
+    permissions: dict[str, str] = {}
+    for line in list(block)[start + 1:]:
+        match = re.fullmatch(r" {6}([a-z-]+): ([a-z-]+)", line)
+        if match is None:
+            break
+        permissions[match.group(1)] = match.group(2)
+    return permissions
+def gh_aw_lock_readback(
+    root: Path,
+    sha256_file_fn: Callable[[Path], str],
+) -> tuple[list[str], dict[str, Any]]:
+    """ed3c/noodles#265 - the compiled agentic lock corresponds to the pinned compiler and source.
+
+    The invalid state this makes impossible: compiled workflow bytes that do not correspond to the
+    pinned `gh-aw` compiler and the human-authored source they claim to be compiled from. Three
+    tracked digests, the compiler version the lock stamps on itself, the prompt-body digest the
+    lock stamps on itself, and the pin shape of every `uses:` it emits must all agree at once, and
+    only a real recompilation produces an agreeing set.
+
+    Non-claim: this is a deterministic ledger, not a compiler. It never runs `gh aw compile`, so it
+    cannot prove the emitted YAML is what the compiler would emit today; that is the recompilation
+    control in `tests/test_gha_workflow_source.py`, which needs the pinned binary. Frontmatter-only
+    drift is caught by `source_sha256`, not by `body_sha256`: a forger who edits the frontmatter
+    must also rewrite this ledger, which is the same act as hand-editing the lock."""
+    path = root / GH_AW_LOCK_PATH
+    if not path.is_file():
+        return [f"missing {GH_AW_LOCK_PATH}"], {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        compiler = payload["compiler"]
+        workflow = payload["workflow"]
+        actions = payload["actions"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        return [f"invalid gh-aw lock: {exc}"], {}
+    errors: list[str] = []
+    if payload.get("schema_version") != 1:
+        errors.append(f"unsupported gh-aw lock schema: {payload.get('schema_version')!r}")
+    release = str(compiler.get("release", ""))
+    if not GH_AW_RELEASE_RE.fullmatch(release):
+        errors.append(f"gh-aw lock compiler release {release!r} is not an exact release tag")
+    if not GH_AW_HEX40_RE.fullmatch(str(compiler.get("commit", ""))):
+        errors.append("gh-aw lock compiler is not pinned to an exact 40-hex commit")
+    platforms = compiler.get("platforms")
+    if not isinstance(platforms, dict) or not platforms:
+        errors.append("gh-aw lock compiler declares no platform checksum readback")
+        platforms = {}
+    for name in sorted(platforms):
+        entry = platforms[name]
+        digest = str(entry.get("asset_sha256", "")) if isinstance(entry, dict) else ""
+        if not GH_AW_HEX64_RE.fullmatch(digest):
+            errors.append(f"gh-aw lock compiler platform {name} has no exact asset sha256")
+    tracked = {
+        "source": (str(workflow.get("source_path", "")), str(workflow.get("source_sha256", ""))),
+        "compiled lock": (str(workflow.get("lock_path", "")), str(workflow.get("lock_sha256", ""))),
+        "action pin": (str(workflow.get("action_pin_path", "")), str(workflow.get("action_pin_sha256", ""))),
+    }
+    for label, (relative, expected) in tracked.items():
+        target = root / relative
+        if not relative or not target.is_file():
+            errors.append(f"gh-aw lock names a missing {label} file: {relative!r}")
+            continue
+        observed = sha256_file_fn(target)
+        if observed != expected:
+            errors.append(f"gh-aw {label} bytes were hand-edited: {relative} sha256 {observed} != pinned {expected}")
+    lock_path = root / str(workflow.get("lock_path", ""))
+    source_path = root / str(workflow.get("source_path", ""))
+    lock_text = lock_path.read_text(encoding="utf-8", errors="ignore") if lock_path.is_file() else ""
+    metadata: dict[str, Any] = {}
+    first_line = lock_text.splitlines()[0] if lock_text else ""
+    if not first_line.startswith(GH_AW_METADATA_PREFIX):
+        errors.append("gh-aw compiled lock carries no gh-aw-metadata provenance line")
+    else:
+        try:
+            metadata = json.loads(first_line[len(GH_AW_METADATA_PREFIX):])
+        except json.JSONDecodeError as exc:
+            errors.append(f"gh-aw compiled lock provenance line is unreadable: {exc}")
+    stamped = str(metadata.get("compiler_version", ""))
+    if metadata and stamped != release:
+        errors.append(f"gh-aw compiled lock was produced by compiler {stamped!r}, not the pinned {release!r}")
+    body = _gh_aw_source_body(source_path.read_text(encoding="utf-8", errors="ignore")) if source_path.is_file() else None
+    if body is None:
+        errors.append(f"gh-aw source {workflow.get('source_path')!r} has no frontmatter-delimited prompt body")
+    else:
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        if digest != str(workflow.get("body_sha256", "")):
+            errors.append(f"gh-aw lock body_sha256 {workflow.get('body_sha256')!r} is not the tracked source body digest {digest}")
+        if metadata and str(metadata.get("body_hash", "")) != digest:
+            errors.append(
+                f"gh-aw compiled lock is a stale recompilation: its stamped body_hash "
+                f"{metadata.get('body_hash')!r} is not the tracked source body digest {digest}"
+            )
+    floating = sorted({
+        ref for ref in GH_AW_USES_RE.findall(lock_text)
+        if "@" not in ref or not GH_AW_HEX40_RE.fullmatch(ref.rsplit("@", 1)[1])
+    })
+    if floating:
+        errors.append(f"gh-aw compiled lock references unpinned action refs: {', '.join(floating)}")
+    if not isinstance(actions, list) or not actions:
+        errors.append("gh-aw lock declares no pinned action readback")
+        actions = []
+    for entry in actions:
+        if not isinstance(entry, dict):
+            errors.append("gh-aw lock action pin must be an object")
+            continue
+        uses, commit, relative = str(entry.get("uses", "")), str(entry.get("commit", "")), str(entry.get("readback_path", ""))
+        if not GH_AW_HEX40_RE.fullmatch(commit):
+            errors.append(f"gh-aw lock action pin {uses!r} is not pinned to an exact 40-hex commit")
+            continue
+        target = root / relative
+        if not relative or not target.is_file():
+            errors.append(f"gh-aw lock action pin {uses!r} names a missing readback path: {relative!r}")
+            continue
+        if f"{uses}@{commit}" not in target.read_text(encoding="utf-8", errors="ignore"):
+            errors.append(f"gh-aw lock action pin {uses}@{commit} is absent from its readback path {relative}")
+    agent_block = _gh_aw_job_block(lock_text, str(workflow.get("agent_job", "")))
+    agent_permissions = _gh_aw_job_permissions(agent_block)
+    if agent_permissions != GH_AW_AGENT_JOB_PERMISSIONS:
+        errors.append(f"gh-aw Agent job permissions must stay {GH_AW_AGENT_JOB_PERMISSIONS}, got {agent_permissions}")
+    agent_text = "\n".join(agent_block)
+    for phrase in GH_AW_AGENT_FORBIDDEN_PHRASES:
+        if phrase in agent_text:
+            errors.append(f"gh-aw Agent job must hold no App key, Google credential, or landing token: {phrase}")
+    apply_permissions = _gh_aw_job_permissions(_gh_aw_job_block(lock_text, str(workflow.get("apply_job", ""))))
+    if apply_permissions != GH_AW_APPLY_JOB_PERMISSIONS:
+        errors.append(f"gh-aw apply job token must stay scoped to {GH_AW_APPLY_JOB_PERMISSIONS}, got {apply_permissions}")
+    for phrase in GH_AW_LANDING_AUTHORITY_PHRASES:
+        if phrase in lock_text:
+            errors.append(f"gh-aw compiled lock must hold no landing authority: {phrase}")
+    return errors, {
+        "compiler_release": release,
+        "compiler_commit": compiler.get("commit"),
+        "compiler_platform_checksums": {
+            name: entry.get("asset_sha256") for name, entry in sorted(platforms.items()) if isinstance(entry, dict)
+        },
+        "stamped_compiler_version": stamped or None,
+        "source_path": workflow.get("source_path"),
+        "source_sha256": sha256_file_fn(source_path) if source_path.is_file() else None,
+        "lock_path": workflow.get("lock_path"),
+        "lock_sha256": sha256_file_fn(lock_path) if lock_path.is_file() else None,
+        "action_pins": {str(entry.get("uses")): entry.get("commit") for entry in actions if isinstance(entry, dict)},
+        "agent_job_permissions": agent_permissions,
+        "apply_job_permissions": apply_permissions,
+    }
 def workflow_run_readback(
     gh_api_fn: Callable[..., Any],
     error_cls: type[Exception],
