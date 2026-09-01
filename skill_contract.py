@@ -171,8 +171,15 @@ def schedule_task_model_routing_errors(root: Path, skill_name: str, sections: li
     choice. Where it holds: the section that constructs the order - identified by the emitted
     `order_id` field it names, not by its heading text - must carry exactly one document-voice line
     naming the policy pointer, and that pointer must resolve in the candidate's own
-    `policy/fitness.json` to a complete non-empty profile. Wording is free; the same bytes in an HTML
-    comment, a fenced example, an unrelated section, or a second copy route nothing."""
+    `policy/fitness.json` to a complete non-empty profile. Wording is free; the pointer line alone
+    parked in an HTML comment, a fenced example, an unrelated section, or a second copy routes
+    nothing, because the check is mutual co-location with the `order_id` line, not a fixed section
+    identity.
+
+    Non-claim: this cannot detect the pointer line and the `order_id` line relocated together - a
+    coordinated move of both anchors into the same unrelated section still names one owner and
+    passes. Defeating it that way also relocates the order-construction contract itself, which is a
+    materially bigger, more visible edit than rewording one sentence."""
     pointer = f"`{SCHEDULE_TASK_MODEL_POINTER}`"
     naming = [index for index, section in enumerate(sections) for line in _document_body(section).splitlines() if pointer in line]
     if len(naming) != 1:
@@ -203,9 +210,22 @@ def schedule_summary_template_errors(skill_name: str, section: str) -> list[str]
     `validate_cycle_summary` demands of it, so a summary built from this template cannot be rejected
     by the gate that reads it, and a renamed or re-derived field cannot pass as a quote. Where it
     holds: the section that owns the deterministic summary entrypoint, in exactly one fenced
-    template. The required keys are computed from `cycle_summary_lines`, never restated here, so a
-    rename in the emitter reds the document. Placeholder wording is free."""
-    required = [line.partition(":")[0] for line in cycle_summary_lines(_SUMMARY_PROBE_RECEIPT)]
+    template. The required key labels are computed from `cycle_summary_lines`, never restated here,
+    so relabeling one of the four keys it already reads reds the document. Placeholder wording is
+    free.
+
+    Non-claim: `_SUMMARY_PROBE_RECEIPT` is a fixture, not a spec, so it only tracks keys
+    `cycle_summary_lines` already reads today. If the emitter starts reading a fifth receipt field,
+    the fixture is stale and `cycle_summary_lines` raises `KeyError` on it - caught below and turned
+    into a labeled red naming the missing fixture key, so a stale fixture reds the document instead
+    of crashing `verify`."""
+    try:
+        required = [line.partition(":")[0] for line in cycle_summary_lines(_SUMMARY_PROBE_RECEIPT)]
+    except KeyError as exc:
+        return [
+            f"backlog adapter skill {skill_name!r} summary probe fixture is stale: "
+            f"cycle_summary_lines now reads {exc}, missing from _SUMMARY_PROBE_RECEIPT"
+        ]
     templates = [
         lines
         for match in _FENCE_RE.finditer(section)
@@ -235,8 +255,14 @@ def schedule_starvation_routing_errors(skill_name: str, section: str) -> list[st
     response is a fixed ordered diagnostic read off the receipt, not a fresh causal story. Where it
     holds: the section that owns the cycle summary, in exactly one document-voice bullet parsed into
     non-empty signal, action and why fields whose action chains at least three `->` separated steps.
-    Every field's wording is free; a bullet parked in a comment, a fenced example, an unrelated
-    section, or duplicated routes nothing."""
+    Every field's wording is free; a bullet parked in a comment, a fenced example, or duplicated
+    routes nothing.
+
+    Non-claim: `section` here is whichever section the caller already decided owns the summary
+    entrypoint (see `validate_backlog_scheduler`'s `summary_owner`); this function does not itself
+    re-derive that ownership, so a bullet moved together with the summary entrypoint fence and its
+    template into another section is invisible to this check - it inherits the entrypoint's
+    co-location boundary rather than adding its own."""
     bullets = [
         match
         for line in _document_body(section).splitlines()
@@ -265,7 +291,12 @@ def validate_policy_key_consumption(root: Path, tracked_paths: set[str]) -> list
     added orphan red on the candidate that added it.
 
     Non-claim: this proves the key name appears literally in some tracked `.py` source. It does not
-    claim the consumer reads the value, or reads it correctly."""
+    claim the consumer reads the value, or reads it correctly - and the match is unscoped, so a
+    retirement comment or docstring that names a key only to say it is unused, or a test asserting
+    the key must NOT appear, both count as "consumed" the same as a real reader. This gate best
+    catches a key nobody has typed anywhere yet; a key already known and described as dead - which
+    this repo's own `# constraint:` retirement-comment convention produces at the moment a key is
+    retired - can outlive its last real reader undetected until the key itself is deleted."""
     try:
         policy = json.loads((root / POLICY_FITNESS_PATH).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:

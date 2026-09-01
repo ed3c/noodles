@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -330,6 +331,9 @@ class ScheduleContractTests(unittest.TestCase):
         expected_unrelated = {
             "task-model routing": "not owned by the single section that constructs the order",
             "receipt-verbatim summary": "missing receipt-verbatim summary contract",
+            # ponytail: the fence relocation doesn't red on its own name - moving it changes
+            # ponytail: summary_owner, which orphans the template that already lived in the old
+            # ponytail: section, so the diagnostic an operator sees names the template, not the fence.
             "deterministic summary gate": "missing receipt-verbatim summary contract",
             "starvation diagnostic routing": "missing starvation diagnostic routing contract",
         }
@@ -358,6 +362,53 @@ class ScheduleContractTests(unittest.TestCase):
                 self.assertTrue(
                     any(expected_unrelated[label] in item for item in result["errors"]), result["errors"]
                 )
+
+    def test_relocating_a_rule_together_with_its_anchor_is_the_documented_residual_limit(self) -> None:
+        """ed3c/noodles#277 residual limit, named not hidden: every co-location check above proves
+        mutual co-location between a rule's bytes and the anchor it is checked against, not a fixed
+        section identity. Moving the rule sentence ALONE into `## Prohibitions` reds (proven above);
+        moving the rule together with the anchor it is checked against - `order_id` for task-model
+        routing, the summary entrypoint fence for the template and diagnostic bullet - carries the
+        anchor along and still verifies. This is the exact boundary
+        `schedule_task_model_routing_errors` and `schedule_starvation_routing_errors` name in their
+        own Non-claim: defeating it this way relocates the real contract, not just its wording."""
+        def move_together(content: str, *chunks: str) -> str:
+            payload = "\n\n".join(chunks)
+            for chunk in chunks:
+                content = content.replace(chunk, "", 1)
+            return content.replace(UNRELATED_SECTION, f"{UNRELATED_SECTION}\n\n{payload}\n", 1)
+
+        def order_id_line(content: str) -> str:
+            return sole([line for line in content.splitlines() if "`order_id`" in line], "order_id line")
+
+        result = self.schedule_skill_verify(
+            lambda c: move_together(c, order_id_line(c), schedule_pointer_line(c))
+        )
+        self.assertTrue(result["ok"], result["errors"])
+
+        result = self.schedule_skill_verify(
+            lambda c: move_together(
+                c, schedule_summary_fence(c), schedule_summary_template(c), schedule_diagnostic_bullet(c)
+            )
+        )
+        self.assertTrue(result["ok"], result["errors"])
+
+    def test_summary_probe_fixture_going_stale_reds_instead_of_crashing_verify(self) -> None:
+        """ed3c/noodles#277 - `schedule_summary_template_errors` computes its required keys by calling
+        `cycle_summary_lines(_SUMMARY_PROBE_RECEIPT)`, so if the emitter starts reading a receipt key
+        the fixture does not carry, that call raises `KeyError`. This proves the caught path: a
+        stale fixture reds `validate_backlog_scheduler` with a diagnostic naming the missing key,
+        it does not propagate an uncaught exception out of `./noodles verify`."""
+        section = "\n".join(skill_contract._sections(skill_contract._quotable(
+            (CANDIDATE_ROOT / SCHEDULE_SKILL).read_text()
+        )))
+        stale_receipt = {"frontier": []}
+        with self.assertRaises(KeyError):
+            skill_contract.cycle_summary_lines(stale_receipt)
+        with unittest.mock.patch.object(skill_contract, "_SUMMARY_PROBE_RECEIPT", stale_receipt):
+            errors = skill_contract.schedule_summary_template_errors("schedule", section)
+        self.assertTrue(errors)
+        self.assertTrue(any("summary probe fixture is stale" in item and "winners" in item for item in errors), errors)
 
     def test_schedule_contracts_reject_kept_words_with_dropped_structure(self) -> None:
         """ed3c/noodles#277 - the two shape halves relocation does not exercise. The summary template
@@ -402,6 +453,28 @@ class ScheduleContractTests(unittest.TestCase):
             any(orphan in item and "zero tracked .py sources" in item for item in result["errors"]),
             result["errors"],
         )
+
+    def test_orphan_named_only_in_a_retirement_comment_is_the_documented_residual_limit(self) -> None:
+        """ed3c/noodles#277 residual limit, named not hidden: `validate_policy_key_consumption` is
+        literal-name matching (its own Non-claim says so), so a key this repo's own `# constraint:`
+        retirement-comment convention names - to say the key is dead - still counts as consumed. This
+        reproduces the exact shape ed3c/noodles#84's own history left behind: `required_agent_phrases`
+        stayed "consumed" by a docstring describing its removal for as long as that docstring existed,
+        right up until the key itself was deleted from policy/fitness.json."""
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        orphan = "orphan_" + "retirement_comment_probe"
+        path = root / "policy/fitness.json"
+        policy = json.loads(path.read_text())
+        self.assertNotIn(orphan, policy)
+        policy[orphan] = ["read by nobody"]
+        path.write_text(json.dumps(policy, indent=2) + "\n")
+        skill_path = root / "skill_contract.py"
+        skill_path.write_text(
+            f"# constraint: {orphan} is retired, no reader consumes it.\n" + skill_path.read_text()
+        )
+        result = noodles.verify_repository(root, CANDIDATE_ROOT)
+        self.assertTrue(result["ok"], result["errors"])
 
     def test_retired_phrase_locks_leave_no_source_residue(self) -> None:
         """ed3c/noodles#277 readback: the retired policy key and the five retired phrase constants
