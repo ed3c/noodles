@@ -909,13 +909,10 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
     contract = parse_issue_contract(issue_read(subject_value).get("body") or "", expected_subject=subject_value)
     evidence = feature_contract.admit_acceptance_evidence(root, contract["feature"], head, error_cls=GateError)
     base_ref = pr.get("base", {}).get("ref")
-    declared_feature = (contract["feature"] or "").strip()
-    feature_map = None
-    if declared_feature:
-        # constraint: compile the exact base..head changed code nodes into the declared feature's required-journey denominator before awaiting_land; an unmapped journey (feature surface absent from the diff) fails closed here, never after the state flip. A no-feature subject skips this by the mechanically checked non-case: no marker, so admit_acceptance_evidence already rejects any specialized oracle.
-        feature_map = feature_contract.compile_handoff_feature_map(
-            declared_feature, merge_base_changed_files(subject.repo, base_ref, head), error_cls=GateError
-        )
+    # constraint: ed3c/noodles#264 - the journey-compilation gate is not here. This route is one of
+    # constraint: several that reach awaiting_land, and the ones real lanes take cannot run it, so a
+    # constraint: gate placed here is enforced only where it is not needed. It lives at the single
+    # constraint: confluence every candidate must cross instead: verify_pull_request.
     issue_set_state(subject_value, "awaiting_land")
     receipt = blocking_handoff_readback(root, subject_value, pr_number, head, session_id, error_cls=GateError)
     if receipt is None:
@@ -994,9 +991,6 @@ def execute_handoff(root: Path, subject_value: str, pr_number: int, pr: dict[str
         "tree": evidence["tree"],
         "feature": specialized["feature_id"] if specialized else None,
         "feature_code_surface_sha256": specialized["code_surface_sha256"] if specialized else None,
-        "feature_changed_node": feature_map["changed_node"] if feature_map else None,
-        "feature_transitions": feature_map["transitions"] if feature_map else None,
-        "feature_journeys": feature_map["journeys"] if feature_map else None,
         **receipt,
     }
 def protection_policy(root: Path) -> dict[str, Any]:
@@ -1567,6 +1561,22 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     introduction_errors = component_introduction_errors(introductions, issue.get("body") or "")
     if introduction_errors:
         raise GateError("candidate component-introduction gate failed: " + "; ".join(introduction_errors))
+    # constraint: ed3c/noodles#264 - route truth: awaiting_land has several writers and the route
+    # constraint: real lanes take cannot run `./noodles issue handoff`, so the journey-compilation
+    # constraint: gate is compiled here, at the one confluence every candidate crosses on its way to
+    # constraint: a landing receipt, over the same trusted provider compare readback the component
+    # constraint: surface uses. Reaching awaiting_land by any writer therefore buys no bypass.
+    feature_map = None
+    declared_feature = (contract["feature"] or "").strip()
+    if declared_feature:
+        try:
+            feature_map = feature_contract.compile_handoff_feature_map(declared_feature, changed_files, error_cls=GateError)
+        except GateError as exc:
+            raise GateError(
+                f"candidate feature-journey gate failed: {exc}. Supported path: change the declared "
+                f"feature's code surface in this candidate, land the feature contract before the "
+                f"candidate that declares it, or drop the noodles-feature marker from {subject_value}"
+            ) from exc
     result = verify_repository(candidate_root, root)
     if not result["ok"]:
         raise GateError("candidate repository gate failed: " + "; ".join(result["errors"]))
@@ -1582,7 +1592,11 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "metrics": result["metrics"],
         "component": contract["component"],
         "introduces": introductions,
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction", "evidence-publication"],
+        "feature": feature_map["feature_id"] if feature_map else None,
+        "feature_changed_node": feature_map["changed_node"] if feature_map else None,
+        "feature_transitions": feature_map["transitions"] if feature_map else None,
+        "feature_journeys": feature_map["journeys"] if feature_map else None,
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction", "feature-journey", "evidence-publication"],
     }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,
