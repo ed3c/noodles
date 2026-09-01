@@ -2,6 +2,7 @@
 """Small deterministic policy/evidence layer around Noodle and GitHub; requires Python, git, gh, and noodle."""
 from __future__ import annotations
 import argparse
+import ast
 import codex_isolation
 import collections
 import daemon_lease
@@ -1137,6 +1138,75 @@ def findings_backlog_items(root: Path) -> list[dict[str, Any]]:
         }
         for entry in open_findings(root)
     ]
+
+
+def parse_python(source: str, label: str) -> ast.Module:
+    try:
+        return ast.parse(source)
+    except SyntaxError as exc:
+        raise GateError(f"cannot parse {label} as Python: {exc}") from exc
+def python_import_targets(source: str, label: str) -> set[str]:
+    """Every absolute dotted module name this source imports.
+
+    Ceiling: `from . import x` is not resolved - this repository has no relative import and a flat
+    module layout, so an unresolved relative edge would be inside its own package directory anyway.
+    A second, unrelated ceiling: this only walks `ast.Import`/`ast.ImportFrom` nodes, so a module
+    loaded at runtime through `importlib` is invisible to it regardless of where the loaded path
+    lives. Two real instances exist today - `tests/support.py`'s `spec_from_file_location` loading
+    `noodles.py`, and `tests/test_gh_pacing.py`'s `SourceFileLoader` loading the `gh` fixture binary -
+    and neither has produced a false negative because both loaded targets already sit inside every
+    component's own globs; nothing here would catch a future `importlib` load that crossed a real
+    boundary. Unparsable source is a refusal, never an empty edge set: a file whose imports cannot be
+    read is not a file that imports nothing."""
+    targets: set[str] = set()
+    for node in ast.walk(parse_python(source, label)):
+        if isinstance(node, ast.Import):
+            targets.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            targets.update({node.module, *(f"{node.module}.{alias.name}" for alias in node.names)})
+    return targets
+def repo_module_target(dotted: str, *roots: Path) -> str | None:
+    """Repository-relative path of the module `dotted` names, when one of these trees provides it.
+
+    A name no tree provides is stdlib or absent, and neither belongs to any component's surface."""
+    base = dotted.replace(".", "/")
+    for relative in (f"{base}.py", f"{base}/__init__.py"):
+        if any((root / relative).is_file() for root in roots):
+            return relative
+    return None
+# constraint: ed3c/noodles#257 - path globs bound which files a candidate may touch and say nothing
+# constraint: about what those files start coupling to, so a declared surface stayed honest-looking
+# constraint: while the diff imported another component's module. Only edges this diff introduces are
+# constraint: judged; an edge already on the base tree is the base tree's declaration, not this one's.
+# constraint: a component whose surface is the whole repository ("contract", glob "*") is bounded by
+# constraint: nothing this function can check, same as component_owner_errors below; both special-case
+# constraint: it explicitly rather than relying on fnmatch("*") matching everything by coincidence.
+def component_import_edge_errors(
+    component: str,
+    components: dict[str, list[str]],
+    changed_files: Sequence[str],
+    base_root: Path,
+    candidate_root: Path,
+) -> list[str]:
+    globs = components.get(component)
+    if not globs or "*" in globs:
+        return []
+    errors: list[str] = []
+    for path in sorted(set(changed_files)):
+        after = candidate_root / path
+        if not path.endswith(".py") or not after.is_file():
+            continue
+        before = base_root / path
+        introduced = python_import_targets(after.read_text(encoding="utf-8"), path) - (
+            python_import_targets(before.read_text(encoding="utf-8"), path) if before.is_file() else set()
+        )
+        for dotted in sorted(introduced):
+            target = repo_module_target(dotted, candidate_root, base_root)
+            if target and not any(fnmatch.fnmatchcase(target, glob) for glob in globs):
+                errors.append(
+                    f"{path} newly imports {dotted} ({target}), outside admitted component {component!r}"
+                )
+    return errors
 def pinned_entries(root: Path) -> set[str]:
     """Identity path of every pinned unit in this tree's `policy/*.lock.json` files.
 
@@ -1552,11 +1622,15 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     if actual_head != head_sha:
         raise GateError(f"candidate checkout {actual_head} != event head {head_sha}")
     changed_files = merge_base_changed_files(repository, base_ref, head_sha)
-    surface_errors = component_surface_errors(
-        contract["component"], component_map(root), changed_files
-    )
+    components = component_map(root)
+    surface_errors = component_surface_errors(contract["component"], components, changed_files)
     if surface_errors:
         raise GateError("candidate component-surface gate failed: " + "; ".join(surface_errors))
+    import_edge_errors = component_import_edge_errors(
+        contract["component"], components, changed_files, root, candidate_root
+    )
+    if import_edge_errors:
+        raise GateError("candidate component-import-edge gate failed: " + "; ".join(import_edge_errors))
     introductions = introduced_components(root, candidate_root)
     introduction_errors = component_introduction_errors(introductions, issue.get("body") or "")
     if introduction_errors:
@@ -1596,7 +1670,7 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "feature_changed_node": feature_map["changed_node"] if feature_map else None,
         "feature_transitions": feature_map["transitions"] if feature_map else None,
         "feature_journeys": feature_map["journeys"] if feature_map else None,
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-introduction", "feature-journey", "evidence-publication"],
+        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-import-edges", "component-introduction", "feature-journey", "evidence-publication"],
     }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,

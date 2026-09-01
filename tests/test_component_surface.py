@@ -4,6 +4,7 @@ component's admitted surface. Planted positive and negative fixtures run against
 candidate component map so scope creep becomes a mechanical FAIL, not a prompt-layer plea."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import tempfile
 import unittest
@@ -134,6 +135,142 @@ class ComponentSurfaceGateTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class ComponentImportEdgeGateTests(unittest.TestCase):
+    """ed3c/noodles#257: the file glob bounds which files change, not what they start importing."""
+
+    MODULES = ("issue_contract.py", "schedule_domain.py", "codex_isolation.py", "runtime_contract.py")
+
+    def setUp(self) -> None:
+        self.components = noodles.component_map(CANDIDATE_ROOT)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name) / "base"
+        self.candidate = Path(temp.name) / "candidate"
+        for root in (self.base, self.candidate):
+            root.mkdir(parents=True)
+            for module in self.MODULES:
+                (root / module).write_text("VALUE = 1\n", encoding="utf-8")
+
+    def plant(self, path: str, before: str | None, after: str | None) -> None:
+        for root, text in ((self.base, before), (self.candidate, after)):
+            target = root / path
+            if text is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+
+    def errors(self, component: str, changed: list[str]) -> list[str]:
+        return noodles.component_import_edge_errors(
+            component, self.components, changed, self.base, self.candidate
+        )
+
+    def test_positive_new_import_inside_the_declared_surface_passes(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "import codex_isolation\nVALUE = 1\n")
+        self.assertEqual(self.errors("carrier", ["runtime_contract.py"]), [])
+
+    def test_planted_negative_new_import_outside_the_declared_surface_fails_closed(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "import schedule_domain\nVALUE = 1\n")
+        errors = self.errors("carrier", ["runtime_contract.py"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("runtime_contract.py", errors[0])
+        self.assertIn("schedule_domain", errors[0])
+        self.assertIn("'carrier'", errors[0])
+
+    def test_from_import_of_a_foreign_module_fails_closed(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "from schedule_domain import ScheduleIssue\n")
+        self.assertEqual(len(self.errors("carrier", ["runtime_contract.py"])), 1)
+
+    def test_edge_already_on_the_base_tree_is_grandfathered(self) -> None:
+        source = "import schedule_domain\nVALUE = 1\n"
+        self.plant("runtime_contract.py", source, source + "EXTRA = 2\n")
+        self.assertEqual(self.errors("carrier", ["runtime_contract.py"]), [])
+
+    def test_wave_eight_instance_is_admitted_by_the_dispositioned_carrier_surface(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "from issue_contract import SUBJECT_RE\n")
+        self.assertEqual(self.errors("carrier", ["runtime_contract.py"]), [])
+
+    def test_stdlib_import_is_not_a_component_edge(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "import json\nfrom pathlib import Path\n")
+        self.assertEqual(self.errors("carrier", ["runtime_contract.py"]), [])
+
+    def test_file_deleted_by_the_candidate_introduces_no_edge(self) -> None:
+        self.plant("runtime_contract.py", "import schedule_domain\n", None)
+        self.assertEqual(self.errors("carrier", ["runtime_contract.py"]), [])
+
+    def test_non_python_changed_file_is_skipped(self) -> None:
+        self.plant("policy/notes.md", "", "import schedule_domain\n")
+        self.assertEqual(self.errors("carrier", ["policy/notes.md"]), [])
+
+    def test_unparsable_candidate_fails_closed_rather_than_reading_zero_edges(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "def broken(:\n")
+        with self.assertRaisesRegex(noodles.GateError, "cannot parse runtime_contract.py"):
+            self.errors("carrier", ["runtime_contract.py"])
+
+    def test_whole_repository_component_admits_every_edge(self) -> None:
+        self.plant("runtime_contract.py", "VALUE = 1\n", "import schedule_domain\n")
+        self.assertEqual(self.errors("contract", ["runtime_contract.py"]), [])
+
+
+class ImportTargetReadbackTests(unittest.TestCase):
+    def test_dotted_from_import_yields_module_and_member_paths(self) -> None:
+        targets = noodles.python_import_targets("from tests.support import CANDIDATE_ROOT\n", "x.py")
+        self.assertEqual(targets, {"tests.support", "tests.support.CANDIDATE_ROOT"})
+
+    def test_relative_import_is_not_resolved(self) -> None:
+        self.assertEqual(noodles.python_import_targets("from . import sibling\n", "x.py"), set())
+
+    def test_repo_module_target_prefers_a_tree_that_provides_the_module(self) -> None:
+        self.assertEqual(noodles.repo_module_target("issue_contract", CANDIDATE_ROOT), "issue_contract.py")
+        self.assertEqual(noodles.repo_module_target("tests.support", CANDIDATE_ROOT), "tests/support.py")
+        self.assertIsNone(noodles.repo_module_target("json", CANDIDATE_ROOT))
+
+    def test_carrier_surface_declares_the_issue_contract_edge_it_actually_carries(self) -> None:
+        """ed3c/noodles#257 disposition: runtime_contract.py imports issue_contract.SUBJECT_RE."""
+        components = noodles.component_map(CANDIDATE_ROOT)
+        self.assertIn("issue_contract.py", components["carrier"])
+        self.assertIn(
+            "issue_contract",
+            noodles.python_import_targets(
+                (CANDIDATE_ROOT / "runtime_contract.py").read_text(encoding="utf-8"), "runtime_contract.py"
+            ),
+        )
+
+
+class GrandfatheredImportDebtTests(unittest.TestCase):
+    """ed3c/noodles#276: pre-existing cross-surface edges are grandfathered by
+    component_import_edge_errors's own base-diff rule and are unmeasured by any gate. The counts
+    below are quoted, not derived, in AGENTS.md and in #276's issue body; this recomputes them
+    against the live tree with the gate's own resolver so drift breaks a test instead of only ever
+    breaking a stale sentence nobody re-runs. A red here means: fix the drift (declare the coupling
+    or file its disposition), or the count genuinely changed - either way, update this dict AND the
+    two AGENTS.md paragraphs AND #276/#278 in the same commit."""
+
+    DISCLOSED_STANDING_EDGE_COUNTS = {"carrier": 38, "docs": 88, "schedule": 40, "verify": 33}
+
+    def test_standing_cross_surface_edge_counts_match_the_agents_md_disclosure(self) -> None:
+        components = noodles.component_map(CANDIDATE_ROOT)
+        counts: dict[str, int] = {}
+        for name, globs in components.items():
+            if globs == ["*"]:
+                continue
+            edges: set[str] = set()
+            for path in sorted(
+                p.relative_to(CANDIDATE_ROOT).as_posix()
+                for p in CANDIDATE_ROOT.rglob("*.py")
+                if ".git" not in p.parts
+            ):
+                if not any(fnmatch.fnmatchcase(path, glob) for glob in globs):
+                    continue
+                source = (CANDIDATE_ROOT / path).read_text(encoding="utf-8")
+                for dotted in sorted(noodles.python_import_targets(source, path)):
+                    target = noodles.repo_module_target(dotted, CANDIDATE_ROOT)
+                    if target and target != path and not any(fnmatch.fnmatchcase(target, glob) for glob in globs):
+                        edges.add(f"{path} -> {target}")
+            counts[name] = len(edges)
+        self.assertEqual(counts, self.DISCLOSED_STANDING_EDGE_COUNTS)
+
+
 class CompareReadbackTests(unittest.TestCase):
     def test_rename_contributes_both_paths(self) -> None:
         comparison = {
@@ -163,10 +300,14 @@ class CompareReadbackTests(unittest.TestCase):
 class VerifyPullRequestComponentGateTests(unittest.TestCase):
     """The trusted verify path consumes the marker, the trusted-root map, and merge-base readback."""
 
-    def run_verify(self, body: str, changed_files: list[str]) -> tuple[Path, object]:
+    def run_verify(
+        self, body: str, changed_files: list[str], candidate_files: dict[str, str] | None = None
+    ) -> tuple[Path, object]:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
+        for relative, text in (candidate_files or {}).items():
+            (base / relative).write_text(text, encoding="utf-8")
         event_path = base / "event.json"
         event_path.write_text(
             json.dumps(
@@ -223,6 +364,25 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
         with self.assertRaises(noodles.GateError) as raised:
             self.run_verify(body, ["docs/notes.md"])
         self.assertIn("declares no noodles-component marker", str(raised.exception))
+
+    def test_new_import_inside_the_declared_surface_receives_an_import_edge_receipt(self) -> None:
+        body = issue_body(component="verify", state="awaiting_land")
+        _, receipt = self.run_verify(
+            body, ["feature_contract.py"], {"feature_contract.py": "import github_protection\n"}
+        )
+        self.assertIn("component-import-edges", receipt["gates"])
+
+    def test_new_import_outside_the_declared_surface_fails_closed_naming_file_import_component(self) -> None:
+        body = issue_body(component="verify", state="awaiting_land")
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify(
+                body, ["feature_contract.py"], {"feature_contract.py": "import schedule_domain\n"}
+            )
+        diagnostic = str(raised.exception)
+        self.assertIn("component-import-edge gate failed", diagnostic)
+        self.assertIn("feature_contract.py", diagnostic)
+        self.assertIn("schedule_domain", diagnostic)
+        self.assertIn("'verify'", diagnostic)
 
 
 if __name__ == "__main__":
