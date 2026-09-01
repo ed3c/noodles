@@ -89,6 +89,14 @@ MARKER_PATTERNS = {
     "merge": re.compile(r"<!--\s*noodles-merge:\s*([0-9a-f]{40})\s*-->", re.I),
 }
 REF_RE = re.compile(r"(?m)^Refs\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)\s*$")
+# constraint: ed3c/noodles#266 - the hosted lane's one machine-readable origin line. Its digest is
+# constraint: the exact provider body digest the target admitted the source Issue under, so a
+# constraint: reconciler on either side can tell the PR apart from one raised against a body nobody
+# constraint: validated. Typed exactly, because a looser shape would re-open the free-prose PR body.
+PR_ORIGIN_SHAPE = "<!-- noodles-origin: owner/repo#N sha256:<64-hex> -->"
+PR_ORIGIN_RE = re.compile(
+    r"(?m)^<!-- noodles-origin: ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*) sha256:([0-9a-f]{64}) -->$"
+)
 COMPONENT_MAP_PATH = "policy/components.json"
 COMPONENT_OWNER_MAP_PATH = "policy/component-owners.json"
 SUPERVISE_LOG_RELATIVE = ".noodle/supervise.log"
@@ -147,6 +155,7 @@ COMPONENT_INTRODUCTION_QUESTIONS = (
 PINNING_KEYS = frozenset({"commit", "version", "release", "digest", "binary_sha256", "asset_sha256"})
 AUTO_CLOSE_RE = re.compile(r"(?im)^\s*(close[sd]?|fix(e[sd])?|resolve[sd]?)\s+#[0-9]+")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 P0_TITLE_RE = re.compile(r"^\[[A-Za-z0-9][A-Za-z0-9-]*-P0\](?:\s|$)")
 N_CLASS_PREFIXES = ("docs/research/", "docs/design/")
 N_CLASS_EVIDENCE_RE = re.compile(
@@ -382,14 +391,39 @@ def replace_marker(body: str, name: str, value: str) -> str:
         return pattern.sub(replacement, body, count=1)
     prefix = body.rstrip()
     return f"{prefix}\n{replacement}\n" if prefix else replacement + "\n"
+def parse_pr_origin(body: str) -> tuple[str, str] | None:
+    """The hosted lane's one machine-readable origin link/digest, or None if the body carries none.
+
+    ed3c/noodles#266 - cross-repository reconciliation needs the source Issue and the exact provider
+    body digest the target admitted it under, and it needs them in the PR itself, because the PR is
+    the only artifact both repositories can read. The shape is one exact typed line so a second
+    origin, a floating digest, or origin prose is not a match."""
+    matches = PR_ORIGIN_RE.findall(body or "")
+    return (parse_subject(matches[0][0]).value, matches[0][1]) if len(matches) == 1 else None
 def parse_pr_reference(body: str) -> str:
+    """ed3c/noodles#266 - widened for the hosted lane's exact two-line shape, and no wider.
+
+    A non-hosted PR body is still exactly one `Refs owner/repo#N` line. The only admitted second
+    line is the typed origin marker, and it must name the same subject the Refs line names, so the
+    widening cannot smuggle in a second subject, free prose, or an auto-close keyword. Who may use
+    the two-line shape is not decided here: `verify_pull_request` holds that, because only it has
+    read the Issue contract that says which lane the candidate is on."""
     if AUTO_CLOSE_RE.search(body or ""):
         raise GateError("auto-close keywords are forbidden; provider lander closes the issue")
     lines = (body or "").splitlines()
     refs = REF_RE.findall(body or "")
-    if len(lines) != 1 or len(refs) != 1 or lines[0] != f"Refs {refs[0]}":
+    if len(refs) != 1 or not lines or lines[0] != f"Refs {refs[0]}":
         raise GateError("PR body must be exactly one 'Refs owner/repo#N' line")
-    return parse_subject(refs[0]).value
+    subject_value = parse_subject(refs[0]).value
+    if len(lines) == 1:
+        return subject_value
+    origin = parse_pr_origin(body)
+    if len(lines) != 2 or origin is None or not PR_ORIGIN_RE.fullmatch(lines[1]) or origin[0] != subject_value:
+        raise GateError(
+            "PR body must be exactly one 'Refs owner/repo#N' line, optionally followed by exactly one "
+            f"'{PR_ORIGIN_SHAPE}' line naming that same subject"
+        )
+    return subject_value
 def tracked_entries(root: Path) -> list[tuple[str, str]]:
     raw = run(["git", "ls-files", "-z", "--stage"], cwd=root).stdout
     entries: list[tuple[str, str]] = []
@@ -644,7 +678,9 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     schedule_receipt = root / ".noodle/schedule-cycle.json"
     if schedule_receipt.exists():
         try:
-            errors.extend(skill_contract.validate_cycle_receipt(load_json(schedule_receipt)))
+            published = load_json(schedule_receipt)
+            errors.extend(skill_contract.validate_cycle_receipt(published))
+            errors.extend(gha_cycle_receipt_errors(published))
         except GateError as exc:
             errors.append(f"schedule cycle receipt unreadable: {exc}")
     # constraint: ed3c/noodles#84 - the AGENTS.md exact-phrase grep that stood here is retired: it
@@ -1649,6 +1685,12 @@ def evidence_publication(candidate_root: Path, receipt: Mapping[str, Any]) -> di
     return {"status": "custody_unadmitted", **publication, **readback,
             "reason": "no admitted Google Drive destination credential exists for GitHub Actions; the packaged evidence stays on the GitHub artifact spool"}
 GHA_HOSTED_LANE = "gha-agentic"
+# constraint: ed3c/noodles#266 - the one value of policy/github.json's cross_repository_status that
+# constraint: admits a foreign sender. Any other value - including the hold ed3c/noodles#189
+# constraint: recorded - refuses every source that is not this target, so the hold became a live
+# constraint: gate instead of a note about one; before this atom nothing read that key at all.
+GHA_CROSS_REPOSITORY_ADMITTED = "TARGET_INSTALLATION_AND_TOKEN_READBACK_RECORDED"
+GHA_DISPATCH_EVENT_TYPE = "noodles-execution"
 # constraint: ed3c/noodles#265 - the hosted lane's own source and compiled lock join the trusted set
 # constraint: the apply gate refuses to let a proposal rewrite. The source is listed beside the lock
 # constraint: because the lock is only ever a compilation of it: leaving the source writable would
@@ -1688,7 +1730,12 @@ GHA_STATUS_MEANINGS = {
     "gha_trusted_workflow_edit": "the proposed apply would rewrite the trusted workflow bytes that judge it, which would let the agent lane approve itself",
     "gha_write_boundary_escape": "the proposed changed paths leave the issue's declared write boundary, named path by path, before any commit or push exists",
     "gha_pr_body_refused": "the proposed PR body is not exactly one 'Refs owner/repo#N' line naming this task's own subject",
+    "gha_origin_missing": "the hosted-lane PR body carries no exact machine-readable origin line binding it to the source subject and the provider body digest this task was admitted under",
     "gha_evidence_absent": "no complete evidence publication is bound to this candidate, so the run cannot report a custody receipt for what it executed",
+    "gha_dispatch_malformed": "the repository_dispatch event is not one exact typed payload naming its own source repository and every declared task field, so there is nothing well-formed enough to compare against target-local facts",
+    "gha_dispatch_source_mismatch": "the payload's declared source repository is not the repository its declared subject belongs to, so the sender's own identity claim disagrees with the subject it sent",
+    "gha_dispatch_source_unadmitted": "the target's own policy/github.json does not admit this source repository, so no source repository holds universal write authority over this target",
+    "gha_cross_repository_held": "the source repository is not this target, and the target's own policy/github.json still holds cross_repository_status pending the target installation and token readback",
 }
 def gha_outcome(status: str, **extra: Any) -> dict[str, Any]:
     # constraint: ed3c/noodles#189 - both hosted-lane gates leave through this one
@@ -1781,6 +1828,168 @@ def gha_execution_task(
         return gha_outcome("gha_boundary_conflict", task=None, branch=None,
                            reasons=[f"declared write boundary intersects active task {conflict[0]} at {conflict[1]}"])
     return gha_outcome("task_admitted", **binding)
+GHA_CYCLE_CLAIM_FIELDS = tuple(field for field in GHA_TASK_FIELDS if field != "subject_body_sha256")
+def gha_cycle_receipt_errors(receipt: Any) -> list[str]:
+    """ed3c/noodles#266 - a published hosted-lane task identity must arrive with its declaration.
+
+    The invariant: `schedule_publish` writes `binding["task"]` into the frontier authority, and
+    nothing downstream reads it back - `gha_pull_request_admission` derives its own identity from
+    provider truth - so an arbitrary 64-hex string was indistinguishable from a real one. This is
+    the parallel to `skill_contract.validate_cycle_receipt`'s status/meaning check: a claim must
+    publish an identity exactly when it is on the hosted lane, and must publish the declaration
+    that identity is of, so the identity is never admitted unaccompanied.
+
+    Ceiling, named rather than hidden: full rederivation needs `subject_body_sha256`, and the claim
+    does not carry it. Adding it is a one-line change inside `schedule_publish`, which
+    `policy/component-owners.json` assigns to the `schedule` component - outside this atom's
+    declared component and write boundary. Filed as ed3c/noodles#308; until it lands this gate
+    refuses an identity without its declaration, not an identity that disagrees with it. It does
+    NOT claim the published identity is the sha256 of the declaration beside it."""
+    claims = receipt.get("claims") if isinstance(receipt, dict) else None
+    if not isinstance(claims, list):
+        return []
+    errors: list[str] = []
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            continue
+        stored = claim.get("task")
+        if claim.get("lane") != GHA_HOSTED_LANE:
+            if stored is not None:
+                errors.append(f"schedule cycle receipt claim[{index}] carries a hosted-lane task identity on lane {claim.get('lane')!r}")
+            continue
+        if not isinstance(stored, str) or not HEX64_RE.fullmatch(stored):
+            errors.append(
+                f"schedule cycle receipt claim[{index}] is on the {GHA_HOSTED_LANE} lane and "
+                f"published {stored!r} rather than one exact derived task identity"
+            )
+            continue
+        missing = [field for field in GHA_CYCLE_CLAIM_FIELDS if claim.get(field) is None]
+        if missing:
+            errors.append(
+                f"schedule cycle receipt claim[{index}] published a task identity without the "
+                f"declaration it identifies, missing: {', '.join(missing)}"
+            )
+    return errors
+def gha_dispatch_payload(subject_value: str, issue_body: str, *, target: str, base_sha: str) -> dict[str, Any]:
+    """The exact `repository_dispatch` client payload one source derives for one target.
+
+    ed3c/noodles#266 - the source side owns nothing but derivation: it reads the source Issue's own
+    typed markers and restates them, plus the repository it is sending from. It cannot invent an
+    idempotency nonce, because the target derives task identity from the declaration alone, and it
+    cannot widen anything, because every field it sends is compared against the target's own read of
+    the same Issue before a task exists."""
+    contract = parse_issue_contract(issue_body, expected_subject=subject_value)
+    return {
+        "source_repository": parse_subject(subject_value).repo,
+        "target": contract["target"],
+        "subject": subject_value,
+        "subject_body_sha256": issue_contract.body_digest(issue_body),
+        "base_sha": base_sha,
+        "runtime": contract["runtime"],
+        "evidence": contract["evidence"],
+        "write_boundary": list(contract["write_boundary"] or ()),
+    }
+def gha_dispatch_admission(
+    event: Mapping[str, Any],
+    issue_body: str,
+    *,
+    policy: Mapping[str, Any],
+    base_head: str,
+    active_tasks: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Judge one `repository_dispatch` arrival on target-local facts before any task exists.
+
+    ed3c/noodles#266 - this is the one production entry into `gha_execution_task`, so the seven
+    declaration comparisons behind it are reached by every arrival, foreign or local. Three
+    target-local refusals come first, and each is decided from bytes the target owns:
+
+    - the payload must be one exact typed object; a sender cannot omit a field into a default,
+    - its declared source repository must be the repository its declared subject belongs to, so a
+      sender cannot claim one identity while sending another's subject,
+    - that source repository must appear in the target's own `policy/github.json`, which is what
+      denies any source repository universal write authority over this target, and while
+      `cross_repository_status` is held, any source that is not this target is refused outright.
+
+    `issue_body` is the target's own provider read of the source Issue, never the sender's copy: the
+    digest comparison downstream is therefore between two independent reads, not a self-report."""
+    payload = event.get("client_payload")
+    target = str((event.get("repository") or {}).get("full_name") or "")
+    declared = ("source_repository", *GHA_TASK_FIELDS)
+    if not isinstance(payload, dict) or sorted(payload) != sorted(declared):
+        return gha_outcome("gha_dispatch_malformed", task=None, branch=None, reasons=[
+            f"repository_dispatch client_payload must declare exactly {', '.join(sorted(declared))}"
+        ])
+    if not target:
+        return gha_outcome("gha_dispatch_malformed", task=None, branch=None,
+                           reasons=["repository_dispatch event names no target repository"])
+    if str(event.get("action") or "") != GHA_DISPATCH_EVENT_TYPE:
+        return gha_outcome("gha_dispatch_malformed", task=None, branch=None, reasons=[
+            f"repository_dispatch event_type {event.get('action')!r} is not {GHA_DISPATCH_EVENT_TYPE!r}"
+        ])
+    source = str(payload["source_repository"])
+    try:
+        subject_repo = parse_subject(str(payload["subject"])).repo
+    except GateError as exc:
+        return gha_outcome("gha_dispatch_malformed", task=None, branch=None, reasons=[str(exc)])
+    if source != subject_repo:
+        return gha_outcome("gha_dispatch_source_mismatch", task=None, branch=None, reasons=[
+            f"payload source repository {source!r} does not own its declared subject {payload['subject']!r}"
+        ])
+    admitted = tuple(policy.get("allowed_repositories") or ())
+    if source not in admitted:
+        return gha_outcome("gha_dispatch_source_unadmitted", task=None, branch=None, reasons=[
+            f"source repository {source!r} is not in the target's admitted repositories {list(admitted)}"
+        ])
+    hold = str(policy.get("cross_repository_status") or "")
+    if source != target and hold != GHA_CROSS_REPOSITORY_ADMITTED:
+        return gha_outcome("gha_cross_repository_held", task=None, branch=None, reasons=[
+            f"source {source!r} is not target {target!r} and cross_repository_status is {hold!r}"
+        ])
+    dispatch = {field: payload[field] for field in GHA_TASK_FIELDS}
+    return gha_execution_task(issue_body, dispatch, base_head=base_head, active_tasks=active_tasks)
+def gha_active_target_tasks(repository: str, base_sha: str, *, exclude: str) -> list[dict[str, Any]]:
+    """Every other hosted-lane task this target already holds, read from the target's own provider.
+
+    ed3c/noodles#266 - the ed3c/noodles#189 reconcile judge filed that `gha_execution_task`'s only
+    production caller passed no active tasks, so `task_reused`, `gha_duplicate_claim`, and
+    `gha_boundary_conflict` were constructible only by a test fixture. This is that missing input,
+    derived the same way the admitted task is: from the provider's open Issues, their own typed
+    markers, and this exact base head - never from a cached side list some other writer maintains.
+
+    Ceiling: an Issue whose body does not parse as a typed atom holds no target-local task and is
+    skipped rather than blocking; an Issue that is on the lane but declares no boundary is kept with
+    a null boundary, because `boundary_admission_conflict` is what decides that it blocks closed."""
+    active: list[dict[str, Any]] = []
+    for issue in open_issues(repository):
+        subject_value = f"{repository}#{issue['number']}"
+        if subject_value == exclude:
+            continue
+        body = str(issue.get("body") or "")
+        try:
+            contract = parse_issue_contract(body, expected_subject=subject_value)
+        except GateError:
+            continue
+        if contract["admission"]["lane"] != GHA_HOSTED_LANE:
+            continue
+        boundary = contract["write_boundary"]
+        entry: dict[str, Any] = {
+            "subject": subject_value,
+            "branch": execute_branch(subject_value),
+            "write_boundary": list(boundary) if boundary is not None else None,
+            "task": None,
+        }
+        if boundary is not None:
+            entry["task"] = gha_task_identity({
+                "target": contract["target"],
+                "subject": subject_value,
+                "subject_body_sha256": issue_contract.body_digest(body),
+                "base_sha": base_sha,
+                "runtime": contract["runtime"],
+                "evidence": contract["evidence"],
+                "write_boundary": list(boundary),
+            })
+        active.append(entry)
+    return active
 def gha_apply_admission(
     task: Mapping[str, Any],
     proposal: Mapping[str, Any],
@@ -1826,6 +2035,17 @@ def gha_apply_admission(
         return gha_outcome("gha_pr_body_refused", reasons=[str(exc)])
     if referenced != task["subject"]:
         return gha_outcome("gha_pr_body_refused", reasons=[f"PR body references {referenced} rather than this task's own subject {task['subject']}"])
+    # constraint: ed3c/noodles#266 - the hosted lane's PR must carry the origin line as well as the
+    # constraint: Refs line, and its digest must be the exact provider body digest this task was
+    # constraint: admitted under. Without it, a cross-repository reconciler reading only the PR
+    # constraint: cannot tell a PR raised against a validated source body from one raised against a
+    # constraint: body that changed after admission.
+    origin = parse_pr_origin(proposal["pr_body"])
+    if origin != (task["subject"], task["subject_body_sha256"]):
+        return gha_outcome("gha_origin_missing", reasons=[
+            f"hosted-lane PR body origin {origin!r} is not "
+            f"{(task['subject'], task['subject_body_sha256'])!r}; expected '{PR_ORIGIN_SHAPE}'"
+        ])
     published = evidence or {}
     if not str(published.get("folder") or "") or not str(published.get("manifest_sha256") or ""):
         return gha_outcome("gha_evidence_absent", reasons=[f"no complete evidence publication is bound to this candidate: {published.get('status')!r}"])
@@ -1920,8 +2140,18 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     # constraint: files and the exact issue body. The agent job never runs this gate and cannot
     # constraint: reach the bytes that implement it, so the lane cannot approve itself.
     if contract["admission"]["lane"] == GHA_HOSTED_LANE:
-        receipt["gha_execution"] = gha_pull_request_admission(pr, repository, subject_value, issue, base_ref, changed_files, receipt, str(policy["default_branch"]))
+        receipt["gha_execution"] = gha_pull_request_admission(pr, repository, subject_value, issue, base_ref, changed_files, receipt, policy)
         receipt["gates"].append("gha-execution")
+    # constraint: ed3c/noodles#266 - the two-line origin shape is admitted for the hosted lane only.
+    # constraint: parse_pr_reference cannot enforce that itself: it runs before the Issue contract is
+    # constraint: read, so the lane is not known yet. This is the first point that knows it, and it
+    # constraint: is inside the trusted verify, so no candidate reaches a landing receipt through a
+    # constraint: widened body it was never entitled to.
+    elif len((pr.get("body") or "").splitlines()) != 1:
+        raise GateError(
+            f"non-hosted PR body must be exactly one 'Refs owner/repo#N' line; the "
+            f"'{PR_ORIGIN_SHAPE}' line is admitted only on the {GHA_HOSTED_LANE} lane"
+        )
     write_json(receipt_path, receipt)
     return receipt
 def gha_pull_request_admission(
@@ -1932,35 +2162,38 @@ def gha_pull_request_admission(
     base_ref: str,
     changed_files: Sequence[str],
     receipt: Mapping[str, Any],
-    default_branch: str,
+    policy: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Rebuild this candidate's target-local task from provider truth and judge the landed patch.
 
-    The dispatch is reconstructed from what the provider itself reports about the candidate, so at
-    the same-repository canary source and target coincide and the seven declaration comparisons are
-    self-consistent by construction; they become live refusals only for a cross-repository
-    `repository_dispatch`, which `policy/github.json` still holds. What refuses here today is the
-    apply half: the head branch, the write boundary, the trusted workflow bytes, the PR body shape,
-    and the bound evidence publication."""
+    ed3c/noodles#266 - the arrival is built by the same source-side deriver a foreign sender would
+    run and admitted by the same target-side gate a foreign arrival meets, so the dispatch half has
+    one production caller rather than a test-only one. At the same-repository canary source and
+    target coincide, so the seven declaration comparisons are self-consistent here by construction;
+    what they stop being is unreachable, and the three target-local refusals in front of them - the
+    payload shape, the sender's own identity, and the target's admitted-source list plus its
+    cross-repository hold - are decided from target bytes alone for every arrival.
+
+    `active_tasks` is this target's real hosted-lane task state at admission time, so `task_reused`,
+    `gha_duplicate_claim`, and `gha_boundary_conflict` are reachable from a real arrival rather than
+    only from a fixture."""
     body = str(issue.get("body") or "")
-    contract = parse_issue_contract(body, expected_subject=subject_value)
     base_sha = str(pr.get("base", {}).get("sha") or "")
-    dispatch = {
-        "target": repository,
-        "subject": subject_value,
-        "subject_body_sha256": issue_contract.body_digest(body),
-        "base_sha": base_sha,
-        "runtime": contract["runtime"],
-        "evidence": contract["evidence"],
-        "write_boundary": list(contract["write_boundary"] or ()),
+    event = {
+        "action": GHA_DISPATCH_EVENT_TYPE,
+        "repository": {"full_name": repository},
+        "client_payload": gha_dispatch_payload(subject_value, body, target=repository, base_sha=base_sha),
     }
-    task = gha_execution_task(body, dispatch, base_head=base_sha)
+    task = gha_dispatch_admission(
+        event, body, policy=policy, base_head=base_sha,
+        active_tasks=gha_active_target_tasks(repository, base_sha, exclude=subject_value),
+    )
     if not task["admitted"]:
         raise GateError(f"candidate gha-execution task gate failed: {task['status']}: " + "; ".join(task.get("reasons") or ()))
     apply_result = gha_apply_admission(
         task,
         {"branch": str(pr.get("head", {}).get("ref") or ""), "changed_paths": list(changed_files), "pr_body": str(pr.get("body") or "")},
-        default_branch=default_branch,
+        default_branch=str(policy["default_branch"]),
         evidence=receipt.get("evidence_publication"),
     )
     if not apply_result["admitted"]:
