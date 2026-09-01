@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import tempfile
@@ -1032,6 +1033,55 @@ class DependencyDerivationTests(unittest.TestCase):
         for body, expected in cases.items():
             with self.subTest(body=body):
                 self.assertEqual(issue_contract.derive_dependencies(body, SUBJECT), expected)
+
+
+class BacklogCompletenessReadbackTests(unittest.TestCase):
+    """ed3c/noodles#279 - the runnable gap report over exact open provider bodies.
+
+    Without it, "the ready backlog is complete" is an inspection claim that decays the moment the
+    next Issue is filed, which is the story this atom exists to replace with data."""
+
+    def report(self, *bodies: str) -> dict:
+        issues = [{"number": 900 + index, "body": body} for index, body in enumerate(bodies)]
+        return noodles.backlog_completeness_report(issues)
+
+    def test_a_complete_ready_backlog_reports_zero_reasons(self) -> None:
+        report = self.report(issue_body(), issue_body(state="blocked", blocker="chef: awaiting a product decision"))
+        self.assertTrue(report["complete"], report)
+        self.assertEqual(report["incomplete"], [])
+        self.assertEqual([entry["number"] for entry in report["ready"]], [900])
+        self.assertEqual(report["ready"][0]["reasons"], [])
+        self.assertEqual(report["ready"][0]["body_sha256"], issue_contract.body_digest(issue_body()))
+
+    def test_an_emptied_claim_section_is_reported_and_reverting_clears_it(self) -> None:
+        planted = self.report(issue_body(claim=""))
+        self.assertFalse(planted["complete"])
+        self.assertEqual(planted["incomplete"], [900])
+        self.assertEqual(planted["ready"][0]["reasons"], ["issue body has no '## claim' section"])
+        self.assertTrue(self.report(issue_body())["complete"])
+
+    def test_an_unparseable_ready_body_is_reported_rather_than_silently_dropped(self) -> None:
+        # constraint: ed3c/noodles#279 - exactly the ed3c/noodles#278 defect class. A body that
+        # constraint: schedule_snapshot drops on GateError leaves no trace in any frontier readback,
+        # constraint: so a report built only from parsed contracts would call the sweep complete
+        # constraint: while that Issue stayed permanently unschedulable.
+        duplicated = issue_body() + "\n<!-- noodles-component: verify -->\n<!-- noodles-component: schedule -->\n"
+        report = self.report(duplicated)
+        self.assertFalse(report["complete"])
+        self.assertEqual([entry["number"] for entry in report["unparseable"]], [900])
+        self.assertIn("found 2", report["unparseable"][0]["error"])
+
+    def test_a_non_ready_unparseable_body_is_not_this_reports_business(self) -> None:
+        parked = issue_body(state="blocked", blocker="chef: parked")
+        duplicated = parked + "\n<!-- noodles-component: verify -->\n<!-- noodles-component: schedule -->\n"
+        self.assertEqual(self.report(duplicated), self.report())
+
+    def test_the_cli_exit_code_carries_the_verdict(self) -> None:
+        for body, expected in ((issue_body(), 0), (issue_body(claim=""), 1)):
+            with self.subTest(expected=expected):
+                payload = json.dumps([{"number": 900, "body": body}])
+                with mock.patch("sys.stdin", io.StringIO(payload)), mock.patch("sys.stdout", io.StringIO()):
+                    self.assertEqual(noodles.main(["issue", "completeness"]), expected)
 
 
 if __name__ == "__main__":
