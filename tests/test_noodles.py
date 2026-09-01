@@ -293,6 +293,13 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
 
     def test_execute_skill_unsupported_route_refusal_transition(self) -> None:
+        """ed3c/noodles#252 - this control asserts the *shape* of the refusal rule and names no brand
+        inside it. Trusted verify runs the default branch's copy of this module over the candidate
+        tree (`.github/workflows/verify.yml`: `PYTHONPATH: .trusted`, `NOODLES_CANDIDATE_ROOT:
+        .candidate`), so a brand assertion here is `main` requiring every candidate to keep naming
+        that brand, and no edit inside the de-branding successor's own PR can clear it. What stays
+        load-bearing: the stable line-start prefix, exactly one rule line, that each replacement
+        really replaced the rule it names, and the same accept/reject verdicts as before."""
         stable_refusal = "Unsupported routes fail closed:"
         self.assertEqual(skill_contract.EXECUTE_UNSUPPORTED_PHRASE, stable_refusal)
 
@@ -301,7 +308,6 @@ class RepositoryGateTests(unittest.TestCase):
         branded_content = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
         branded_rules = [line for line in branded_content.splitlines() if line.startswith(stable_refusal)]
         self.assertEqual(len(branded_rules), 1)
-        self.assertIn("`control-ui`", branded_rules[0])
 
         cases = (
             ("generic", "Unsupported routes fail closed: any route not explicitly admitted above.", True),
@@ -322,8 +328,11 @@ class RepositoryGateTests(unittest.TestCase):
                 refusal_rules = [line for line in content.splitlines() if line.startswith(stable_refusal)]
                 self.assertEqual(len(refusal_rules), 1)
                 path.write_text(content.replace(refusal_rules[0], replacement, 1))
-                if label == "generic":
-                    self.assertNotIn("`control-ui`", path.read_text())
+                # constraint: ed3c/noodles#252 - the brand-free replacement for the generic case's
+                # constraint: retired `assertNotIn(<brand>, ...)` guard. It proves the same thing
+                # constraint: that brand did - the mutation really removed the rule this case names -
+                # constraint: for every case, on whatever inventory the candidate's own rule carries.
+                self.assertNotIn(refusal_rules[0], path.read_text())
 
                 result = self.verify(root)
                 self.assertEqual(result["ok"], accepted, result["errors"])
