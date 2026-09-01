@@ -826,13 +826,18 @@ def _lock_start_runtime(root: Path, binary: Path, *, release: str, commit: str, 
     lock_path.write_text(json.dumps(lock), encoding="utf-8")
 
 
-def write_fake_codex_stub(path: Path) -> None:
+def write_fake_codex_stub(path: Path, *, stderr_note: str = "") -> None:
+    # constraint: ed3c/noodles#260 - stderr_note lets a caller emit one verbatim line on the stub's
+    # constraint: stderr, which is the only way to hand the truncation readback a real warning to
+    # constraint: recognize rather than a substring that merely looks like one.
+    note = f"sys.stderr.write({stderr_note!r} + '\\n')\n" if stderr_note else ""
     path.write_text(
         "#!/usr/bin/env python3\n"
         "import json\n"
         "import os\n"
         "import sys\n"
         "from pathlib import Path\n"
+        f"{note}"
         "cwd = Path.cwd().resolve()\n"
         "home = Path(os.environ.get('HOME', '~')).expanduser().resolve()\n"
         "codex_home = Path(os.environ.get('CODEX_HOME', str(home))).resolve()\n"
