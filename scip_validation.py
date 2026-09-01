@@ -90,9 +90,12 @@ LOOKUP_NON_CLAIMS = (
     "A resolved definition is one exact-commit fact read back from the clone's own bytes, not a claim about current upstream state.",
     "symbol-not-found is a refusal to answer, never proof that the symbol does not exist.",
 )
+# constraint: `noodles.py` carries its own HEX40_RE/HEX64_RE and this module deliberately does not
+# constraint: import them: `noodles.py` imports this module, so the only dedup direction available is
+# constraint: noodles -> scip_validation, which would put a pin-validation import in the carrier's
+# constraint: module-load path to save two regex lines. Two lines is the cheaper duplicate.
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
-FLOATING_REFS = frozenset({"latest", "main", "master", "head", "stable", "*", "@latest", "next"})
 
 
 class ScipError(RuntimeError):
@@ -107,8 +110,14 @@ def _run(argv: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedPr
 
 
 def validate_code_intel_lock(root: Path) -> list[str]:
-    """Deterministic pin gate: no tool, no clone, no network, so a floating or digest-free pin reds on
-    every host - including hosted CI, where neither binary is installed."""
+    """Deterministic pin gate: no tool, no clone, no network, so a digest-free pin reds on every host
+    - including hosted CI, where neither binary is installed.
+
+    Exactness is carried by `commit` (40-hex) and `binary_sha256` (64-hex), and `version` is checked
+    against the binary's own `--version` output in `resolve_pinned_tool`. This function therefore only
+    requires `version` to be present: an enumerated denylist of floating names ("latest", "main", ...)
+    would add nothing the commit pin does not already guarantee while failing open on every name
+    nobody thought to enumerate ("nightly", "dev", "edge")."""
     path = Path(root) / LOCK_PATH
     try:
         pins = json.loads(path.read_text(encoding="utf-8"))[CODE_INTEL_KEY]
@@ -128,8 +137,8 @@ def validate_code_intel_lock(root: Path) -> list[str]:
         version = str(pin.get("version", ""))
         if not tool.strip():
             errors.append(f"{CODE_INTEL_KEY} {role} tool is required")
-        if not version.strip() or version.strip().lower() in FLOATING_REFS:
-            errors.append(f"{CODE_INTEL_KEY} {role} version must be an exact release, got {version!r}")
+        if not version.strip():
+            errors.append(f"{CODE_INTEL_KEY} {role} version is required and is checked against the tool's own report")
         if not HEX40_RE.fullmatch(str(pin.get("commit", ""))):
             errors.append(f"{CODE_INTEL_KEY} {role} commit must be an exact 40-hex object id")
         if not HEX64_RE.fullmatch(str(pin.get("binary_sha256", ""))):

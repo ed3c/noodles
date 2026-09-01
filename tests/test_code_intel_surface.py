@@ -130,7 +130,7 @@ class CodeIntelLockTests(unittest.TestCase):
 
     def test_planted_lock_mutations_are_all_rejected(self) -> None:
         mutations = {
-            "floating version": (lambda pins: pins["indexer"].update(version="latest"), "exact release"),
+            "absent version": (lambda pins: pins["indexer"].update(version="  "), "version is required"),
             "short commit": (lambda pins: pins["reader"].update(commit="deadbeef"), "40-hex"),
             "no digest": (lambda pins: pins["indexer"].update(binary_sha256=""), "ambient PATH"),
             "foreign source": (lambda pins: pins["reader"].update(source="http://elsewhere"), "GitHub HTTPS"),
@@ -172,6 +172,22 @@ class PinnedToolResolutionTests(unittest.TestCase):
         message = str(refusal.exception)
         self.assertIn("not the pinned", message)
         self.assertIn(PINS["indexer"]["binary_sha256"], message)
+
+    def test_a_binary_that_does_not_report_the_pinned_version_is_refused(self) -> None:
+        """ed3c/noodles#294 monitor reconcile: `validate_code_intel_lock` no longer enumerates
+        floating names like "latest". This is where a version that does not describe the running
+        binary is actually caught - against the tool's own report, not against a denylist that fails
+        open on every name nobody enumerated."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as name:
+            temp = Path(name)
+            stub = self.stub_path(temp, PINS["indexer"]["tool"], "#!/bin/sh\necho 0.6.6\n")
+            pin = {**PINS["indexer"], "binary_sha256": hashlib.sha256(stub.read_bytes()).hexdigest(), "version": "latest"}
+            with mock.patch.dict(os.environ, {"PATH": str(temp)}, clear=False):
+                with self.assertRaises(ScipError) as refusal:
+                    scip_validation.resolve_pinned_tool(pin)
+        message = str(refusal.exception)
+        self.assertIn("not the pinned version", message)
+        self.assertIn("0.6.6", message)
 
 
 class CheckoutStateTests(unittest.TestCase):

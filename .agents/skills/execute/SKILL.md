@@ -30,9 +30,8 @@ This skill operates inside the Noodle-created isolated worktree.
 
 ## Cross-repository navigation
 
-`./noodles ceremony checkout` is the admitted navigation surface for a cross-repository atom, and it is the only one: it materializes the target clone at its exact commit and builds the pinned exact-commit index in the same step, so no call site is left at which remembering to index is a discipline problem. Unguided text search over an unfamiliar tree is not a substitute — a schedule cycle receipt that claims work on a foreign repository and names no `code_intel_checkout` is refused by `./noodles verify`.
-
-`./noodles ceremony lookup --checkout-receipt <path> --module <module> --name <name>` answers one exact-symbol question against that index and writes the receipt that a later "the code does X" has to cite. A missing pinned binary, a stale or commit-mismatched index, and a real miss are three different receipt states; none of them means the symbol is absent.
+- `./noodles ceremony checkout --repository <r> --source <path> --commit <sha>` — clone at the exact commit and build the pinned index in one step. Not optional: `./noodles verify` refuses a cross-repository cycle receipt that names no `code_intel_checkout`.
+- `./noodles ceremony lookup --checkout-receipt <path> --module <m> --name <n>` — one exact symbol against that index. `symbol-not-found`, `reader-unavailable`, and `index-mismatch` are three distinct receipt states; none of them means the symbol is absent.
 
 ## Routing contract
 
