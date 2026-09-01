@@ -19,6 +19,7 @@ import retrieval_contract
 import schedule_domain
 import runtime_contract
 import select
+import scip_validation
 import signal
 import skill_contract
 import stat
@@ -100,6 +101,7 @@ PR_ORIGIN_SHAPE = "<!-- noodles-origin: owner/repo#N sha256:<64-hex> -->"
 PR_ORIGIN_RE = re.compile(
     r"(?m)^<!-- noodles-origin: ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*) sha256:([0-9a-f]{64}) -->$"
 )
+CODE_INTEL_CHECKOUT_FIELD = "code_intel_checkout"
 COMPONENT_MAP_PATH = "policy/components.json"
 COMPONENT_OWNER_MAP_PATH = "policy/component-owners.json"
 DEFINITION_DISPOSITION_PATH = "policy/definition-dispositions.json"
@@ -843,6 +845,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     errors.extend(validate_provider_lock(root, int(policy["max_enabled_providers"])))
     errors.extend(structural_contract.validate_parser_lock(root))
     errors.extend(retrieval_contract.validate_retrieval_lock(root))
+    errors.extend(scip_validation.validate_code_intel_lock(root))
     for executable in policy["required_executables"]:
         full = root / executable
         if full.exists() and not (full.stat().st_mode & stat.S_IXUSR):
@@ -868,6 +871,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             published = load_json(schedule_receipt)
             errors.extend(skill_contract.validate_cycle_receipt(published))
             errors.extend(gha_cycle_receipt_errors(published))
+            errors.extend(cross_repository_receipt_errors(published, str(protection_policy(root)["repository"])))
         except GateError as exc:
             errors.append(f"schedule cycle receipt unreadable: {exc}")
     # constraint: ed3c/noodles#84 - the AGENTS.md exact-phrase grep that stood here is retired: it
@@ -4153,6 +4157,72 @@ def ceremony_edit_body(
     }
 
 
+def code_intel_session_dir(root: Path) -> Path:
+    """Receipts belong to the session that produced them, so the directory is derived from the live
+    NOODLE_SESSION_ID rather than from an argument a cook could point anywhere."""
+    session_id = os.getenv("NOODLE_SESSION_ID", "").strip()
+    if not session_id or Path(session_id).name != session_id:
+        raise GateError("code-intel ceremony needs the current NOODLE_SESSION_ID; it is missing or unsafe")
+    project = runtime_contract.noodle_project_root(Path(root).resolve(), error_cls=GateError)
+    session = project / ".noodle" / "sessions" / session_id
+    if not session.is_dir():
+        raise GateError(f"current Noodle session does not exist: {session}")
+    return session
+
+
+def ceremony_checkout(root: Path, repository: str, source: str, commit: str) -> dict[str, Any]:
+    """The shared exit for cross-repository work: one verb materializes the clone at its exact commit
+    and indexes it, so grounded navigation is the locally obvious path rather than a convention every
+    cook has to remember at every call site."""
+    pins = scip_validation.load_code_intel_pins(Path(root))
+    receipt = scip_validation.code_intel_checkout(
+        code_intel_session_dir(root), repository, source, commit, pins=pins
+    )
+    if receipt["state"] != scip_validation.CHECKOUT_INDEXED:
+        raise GateError(
+            f"ceremony checkout state {receipt['state']}: "
+            f"{(receipt['indexer'] or {}).get('diagnostic') or (receipt['index'] or {}).get('diagnostic')}"
+        )
+    return scip_validation.admit_checkout_receipt(receipt, pins)
+
+
+def ceremony_lookup(root: Path, checkout_receipt: str, module: str, name: str) -> dict[str, Any]:
+    pins = scip_validation.load_code_intel_pins(Path(root))
+    receipt = scip_validation.code_intel_lookup(Path(checkout_receipt), module, name, pins=pins)
+    if receipt["state"] != scip_validation.LOOKUP_RESOLVED:
+        raise GateError(f"ceremony lookup state {receipt['state']}: {receipt.get('diagnostic')}")
+    return scip_validation.admit_lookup_receipt(receipt, pins, root=Path(str(receipt["clone_path"])))
+
+
+def cross_repository_receipt_errors(receipt: Any, repository: str) -> list[str]:
+    """ed3c/noodles#294 - a cycle that touched a foreign repository must name the checkout receipt
+    that materialized and indexed it.
+
+    Availability is not use: a verb a cook merely may call leaves the same defect of shape the
+    ceremony surface exists to retire. Binding admissibility to the receipt makes work done outside
+    the surface inadmissible rather than only discouraged."""
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("claims"), list):
+        return []
+    foreign = sorted(
+        {
+            str(claim.get("subject")).split("#", 1)[0]
+            for claim in receipt["claims"]
+            if isinstance(claim, dict)
+            and isinstance(claim.get("subject"), str)
+            and str(claim["subject"]).split("#", 1)[0] not in {"", repository}
+        }
+    )
+    if not foreign:
+        return []
+    named = receipt.get(CODE_INTEL_CHECKOUT_FIELD)
+    if not isinstance(named, str) or not named.strip():
+        return [
+            f"schedule cycle receipt claims cross-repository work on {', '.join(foreign)} but names no "
+            f"{CODE_INTEL_CHECKOUT_FIELD}; run ./noodles ceremony checkout for the target and record its receipt path"
+        ]
+    return []
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="noodles")
     parser.add_argument("--root", default=None, help="repository root (testing/audit only)")
@@ -4259,6 +4329,14 @@ def build_parser() -> argparse.ArgumentParser:
     ceremony_edit_body_command.add_argument("--refused-body", required=True)
     ceremony_gh_command = ceremony_sub.add_parser("gh")
     ceremony_gh_command.add_argument("argv", nargs=argparse.REMAINDER)
+    ceremony_checkout_command = ceremony_sub.add_parser("checkout")
+    ceremony_checkout_command.add_argument("--repository", required=True)
+    ceremony_checkout_command.add_argument("--source", required=True)
+    ceremony_checkout_command.add_argument("--commit", required=True)
+    ceremony_lookup_command = ceremony_sub.add_parser("lookup")
+    ceremony_lookup_command.add_argument("--checkout-receipt", required=True)
+    ceremony_lookup_command.add_argument("--module", required=True)
+    ceremony_lookup_command.add_argument("--name", required=True)
     return parser
 
 
@@ -4492,6 +4570,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     Path(args.refused_body),
                 )
                 print(json.dumps(receipt, indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "checkout":
+                print(json.dumps(ceremony_checkout(root, args.repository, args.source, args.commit), indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "lookup":
+                print(json.dumps(ceremony_lookup(root, args.checkout_receipt, args.module, args.name), indent=2, sort_keys=True))
                 return 0
             if args.ceremony_verb == "gh":
                 child = list(args.argv[1:] if args.argv[:1] == ["--"] else args.argv)

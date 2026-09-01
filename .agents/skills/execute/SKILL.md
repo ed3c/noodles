@@ -28,6 +28,12 @@ This skill operates inside the Noodle-created isolated worktree.
 15. Confirm the provider verification run for the exact pushed head started after the Issue reached `awaiting_land`; the run triggered by the push necessarily predates the handoff, so re-run that exact workflow run once and confirm it is queued or running.
 16. Stop immediately after the handoff succeeds and the post-handoff verification is underway. GitHub verify/land and local machine reconciliation own completion.
 
+## Cross-repository navigation
+
+`./noodles ceremony checkout` is the admitted navigation surface for a cross-repository atom, and it is the only one: it materializes the target clone at its exact commit and builds the pinned exact-commit index in the same step, so no call site is left at which remembering to index is a discipline problem. Unguided text search over an unfamiliar tree is not a substitute — a schedule cycle receipt that claims work on a foreign repository and names no `code_intel_checkout` is refused by `./noodles verify`.
+
+`./noodles ceremony lookup --checkout-receipt <path> --module <module> --name <name>` answers one exact-symbol question against that index and writes the receipt that a later "the code does X" has to cite. A missing pinned binary, a stale or commit-mismatched index, and a real miss are three different receipt states; none of them means the symbol is absent.
+
 ## Routing contract
 
 Every execute task enters `poteto-mode` before any matched playbook or leaf skill.
