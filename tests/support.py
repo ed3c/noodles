@@ -24,6 +24,9 @@ CANDIDATE_ROOT = Path(os.getenv("NOODLES_CANDIDATE_ROOT", ENGINE_ROOT)).resolve(
 FEATURE = feature_contract.VERIFICATION_SKILL_FEATURE
 ISSUE_FEATURE_MARKER = f"<!-- noodles-feature: {FEATURE.feature_id} -->"
 ISSUE_DEPENDS_ON_MARKER = "<!-- noodles-depends-on: none -->"
+# constraint: ed3c/noodles#120 - one stable requirement heading that really exists in
+# constraint: contracts/system-v1.md, so fixtures resolve through the production read path.
+ISSUE_REQUIREMENT_MARKER = "<!-- noodles-requirement: SYSTEM.PURPOSE.001 -->"
 READY_BACKLOG_FIXTURE = Path("tests/fixtures/issue-contract-ready-backlog.json")
 MIGRATION_DIAGNOSTIC = (
     "migration obligation: update the durable ready-backlog fixture in this same atom; "
@@ -247,6 +250,22 @@ def assert_candidate_preserves_or_migrates_ready_backlog(trusted_root: Path, can
     baseline = candidate_parse(candidate_root, trusted)
     migrated = candidate_parse(candidate_root, candidate)
     assert_tightening_migrates_fixture_set(trusted, candidate, baseline, migrated)
+
+
+def complete_issue_sections(goal: str, non_claims: str, *, claim: str | None = None) -> str:
+    """ed3c/noodles#120 - the deterministic section shape a schedulable repository-mutating Issue
+    must carry, with one owner so a fixture cannot drift from the contract it represents."""
+    return (
+        "## Physical trigger\n\nA syntactically valid ready subject can still be unimplementable.\n\n"
+        f"## Goal\n\n{goal}\n\n"
+        f"## Claim\n\n{claim or goal}\n\n"
+        "## Physical acceptance\n\n"
+        "- Positive control and planted-negative control pass.\n"
+        "- Direct source readback proves the claim.\n"
+        "- Zero residue after the run.\n\n"
+        "## Non-case\n\nnone\n\n"
+        f"## Non-claims\n\n{non_claims}\n"
+    )
 
 
 def code_surface_digest(root: Path, feature: feature_contract.FeatureContract = FEATURE) -> str:

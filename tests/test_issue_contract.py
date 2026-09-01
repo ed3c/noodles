@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,24 +24,45 @@ SUBJECT = "ed3c/noodles#82"
 PREDECESSOR = "ed3c/noodles#81"
 
 
+# constraint: ed3c/noodles#120 - one stable requirement heading that really exists in
+# constraint: contracts/system-v1.md, so the fixture resolves through the same read path production
+# constraint: uses rather than through a test-only registry.
+REQUIREMENT = "REQUIREMENT.EVOLUTION.001"
+COMPLETE_ACCEPTANCE = (
+    "- Positive control: the exact contract admits this body.\n"
+    "- Planted-negative control: each dropped obligation fails closed.\n"
+    "- Direct source readback proves it.\n"
+    "- Zero residue after the run.\n"
+)
+
+
 def issue_body(
     *,
     subject: str = SUBJECT,
     state: str = "ready",
     depends_on: str = "none",
     blocker: str | None = None,
+    requirements: tuple[str, ...] = (REQUIREMENT,),
+    trigger: str = "A syntactically valid ready subject can still be too incomplete to implement.",
     goal: str = "Derive schedulability from typed provider dependencies.",
-    acceptance: str = "- Planted-negative controls fail closed.",
+    claim: str = "Ready becomes necessary but not sufficient for schedulability.",
+    acceptance: str = COMPLETE_ACCEPTANCE,
+    non_case: str = "none",
     non_claims: str = "- No scheduler is implemented here.",
 ) -> str:
     blocker_marker = f"<!-- noodles-blocker: {blocker} -->\n" if blocker is not None else ""
+    requirement_markers = "".join(f"<!-- noodles-requirement: {item} -->\n" for item in requirements)
     sections = ""
-    if goal:
-        sections += f"\n## Goal\n\n{goal}\n"
-    if acceptance:
-        sections += f"\n## Physical acceptance\n\n{acceptance}\n"
-    if non_claims:
-        sections += f"\n## Non-claims\n\n{non_claims}\n"
+    for heading, content in (
+        ("Physical trigger", trigger),
+        ("Goal", goal),
+        ("Claim", claim),
+        ("Physical acceptance", acceptance),
+        ("Non-case", non_case),
+        ("Non-claims", non_claims),
+    ):
+        if content:
+            sections += f"\n## {heading}\n\n{content}\n"
     return (
         "<!-- noodles-role: repository-mutating-atom -->\n"
         "<!-- noodles-target: ed3c/noodles -->\n"
@@ -48,7 +70,7 @@ def issue_body(
         f"<!-- noodles-state: {state} -->\n"
         f"{ISSUE_FEATURE_MARKER}\n"
         f"<!-- noodles-depends-on: {depends_on} -->\n"
-        f"{blocker_marker}{sections}"
+        f"{requirement_markers}{blocker_marker}{sections}"
     )
 
 
@@ -143,7 +165,9 @@ class DependencyMarkerTests(unittest.TestCase):
         body = issue_body().replace("<!-- noodles-depends-on: none -->\n", "")
         contract = noodles.parse_issue_contract(body, SUBJECT)
         self.assertIsNone(contract["dependencies"])
-        derived = issue_contract.derive_schedulability(contract, "open", {}, issue_contract.sections(body))
+        derived = issue_contract.derive_schedulability(
+            contract, "open", {}, issue_contract.sections(body), noodles.system_requirement_ids(CANDIDATE_ROOT)
+        )
         self.assertFalse(derived["schedulable"])
         self.assertIn("noodles-depends-on", " ".join(derived["reasons"]))
 
@@ -253,7 +277,11 @@ class SchedulabilityTests(unittest.TestCase):
 
     def derive(self, contract: dict, dependency_states: dict, provider_state: str = "open") -> dict:
         return issue_contract.derive_schedulability(
-            contract, provider_state, dependency_states, issue_contract.sections(issue_body())
+            contract,
+            provider_state,
+            dependency_states,
+            issue_contract.sections(issue_body()),
+            noodles.system_requirement_ids(CANDIDATE_ROOT),
         )
 
     def landed(self) -> dict:
@@ -296,16 +324,189 @@ class SchedulabilityTests(unittest.TestCase):
 
     def test_missing_typed_sections_are_not_schedulable(self) -> None:
         derived = issue_contract.derive_schedulability(
-            self.contract(), "open", {}, issue_contract.sections(issue_body(non_claims=""))
+            self.contract(),
+            "open",
+            {},
+            issue_contract.sections(issue_body(non_claims="")),
+            noodles.system_requirement_ids(CANDIDATE_ROOT),
         )
         self.assertFalse(derived["schedulable"])
         self.assertIn("non claims", " ".join(derived["reasons"]))
 
 
+# constraint: ed3c/noodles#69 is CLOSED and its body is immutable historical evidence; this is the
+# constraint: exact fixture derived from it, kept byte-faithful so the control keeps measuring the
+# constraint: real shape ed3c/noodles#120 was filed against rather than a convenient paraphrase.
+ISSUE_69_BODY = (
+    "<!-- noodles-role: repository-mutating-atom -->\n"
+    "<!-- noodles-target: ed3c/noodles -->\n"
+    "<!-- noodles-subject: ed3c/noodles#69 -->\n"
+    "<!-- noodles-state: ready -->\n"
+    "<!-- noodles-depends-on: none -->\n"
+    "\n## Goal\n\n--help\n"
+    "\n## Physical acceptance\n\n"
+    "- Exact-subject positive and planted-negative controls pass.\n"
+    "- Direct source/provider readback proves only the stated claim.\n"
+    "- `./noodles verify` passes with zero tracked residue.\n"
+    "\n## Non-claims\n\n- No adjacent capability is admitted by prose or inference.\n"
+)
+
+
+class RequirementBindingTests(unittest.TestCase):
+    """ed3c/noodles#120 - the typed requirement marker: syntax, multiplicity, duplicates, ordering,
+    and resolution against the specification's own `### ID` headings."""
+
+    def known(self) -> frozenset[str]:
+        return noodles.system_requirement_ids(CANDIDATE_ROOT)
+
+    def derive(self, body: str, subject: str = SUBJECT) -> dict:
+        return issue_contract.derive_schedulability(
+            noodles.parse_issue_contract(body, subject), "open", {}, issue_contract.sections(body), self.known()
+        )
+
+    def test_identities_come_from_the_specification_headings_through_the_declared_route(self) -> None:
+        route = noodles.load_json(CANDIDATE_ROOT / "policy/fitness.json")["agent_document_route"]
+        source = noodles.requirement_definition_source(CANDIDATE_ROOT)
+        self.assertEqual(source, CANDIDATE_ROOT / route[1])
+        self.assertEqual(len(route), 3, "requirement resolution must not add a fourth document hop")
+        known = self.known()
+        self.assertIn(REQUIREMENT, known)
+        self.assertEqual(
+            known,
+            frozenset(re.findall(r"(?m)^### ([A-Z][A-Z0-9_.-]+)$", source.read_text())),
+        )
+
+    def test_multiple_markers_keep_authored_order_and_are_bounded(self) -> None:
+        extra = "COMPLEXITY.SUBTRACT.001"
+        contract = noodles.parse_issue_contract(issue_body(requirements=(extra, REQUIREMENT)), SUBJECT)
+        self.assertEqual(contract["requirements"], [extra, REQUIREMENT])
+        self.assertEqual(contract["requirement_errors"], [])
+        over = tuple(sorted(self.known())[: issue_contract.MAX_REQUIREMENTS + 1])
+        contract = noodles.parse_issue_contract(issue_body(requirements=over), SUBJECT)
+        self.assertTrue(any("at most" in reason for reason in contract["requirement_errors"]))
+
+    def test_a_marker_printed_inside_a_section_is_documentation_not_a_declaration(self) -> None:
+        body = issue_body() + "\n## Required typed surface\n\n<!-- noodles-requirement: REQUIREMENT.ID -->\n"
+        contract = noodles.parse_issue_contract(body, SUBJECT)
+        self.assertEqual(contract["requirements"], [REQUIREMENT])
+        self.assertEqual(self.derive(body)["reasons"], [])
+
+    def test_each_planted_requirement_defect_fails_with_its_own_reason(self) -> None:
+        cases = (
+            ("missing", issue_body(requirements=()), "declares no noodles-requirement marker"),
+            ("unknown id", issue_body(requirements=("REQUIREMENT.NOT_A_HEADING.001",)), "resolves to no stable requirement heading"),
+            ("duplicate", issue_body(requirements=(REQUIREMENT, REQUIREMENT)), "duplicate noodles-requirement entry"),
+            ("malformed", issue_body(requirements=("requirement evolution 001",)), "malformed noodles-requirement"),
+        )
+        seen: list[str] = []
+        for label, body, expected in cases:
+            with self.subTest(plant=label):
+                derived = self.derive(body)
+                self.assertFalse(derived["schedulable"])
+                matched = [reason for reason in derived["reasons"] if expected in reason]
+                self.assertEqual(len(matched), 1, derived["reasons"])
+                seen.append(matched[0])
+        self.assertEqual(len(set(seen)), len(seen), "each plant must produce its own distinct reason")
+
+
+class DeterministicCompletenessTests(unittest.TestCase):
+    """ed3c/noodles#120 - `ready` is necessary but not sufficient; the gate reports only structure."""
+
+    def known(self) -> frozenset[str]:
+        return noodles.system_requirement_ids(CANDIDATE_ROOT)
+
+    def derive(self, body: str, subject: str = SUBJECT) -> dict:
+        return issue_contract.derive_schedulability(
+            noodles.parse_issue_contract(body, subject), "open", {}, issue_contract.sections(body), self.known()
+        )
+
+    def test_a_structurally_complete_ready_issue_is_admitted(self) -> None:
+        self.assertEqual(self.derive(issue_body()), {"schedulable": True, "reasons": []})
+
+    def test_the_immutable_issue_69_body_is_ready_yet_not_schedulable(self) -> None:
+        contract = noodles.parse_issue_contract(ISSUE_69_BODY, "ed3c/noodles#69")
+        self.assertEqual(contract["state"], "ready")
+        derived = self.derive(ISSUE_69_BODY, "ed3c/noodles#69")
+        self.assertFalse(derived["schedulable"], "noodles-state: ready alone must not admit it")
+        for expected in (
+            "declares no noodles-requirement marker",
+            "no '## claim' section",
+            "no '## Physical trigger' section",
+            "no '## Non-case' section",
+        ):
+            with self.subTest(missing=expected):
+                self.assertEqual(len([r for r in derived["reasons"] if expected in r]), 1, derived["reasons"])
+        # constraint: ed3c/noodles#120 - ed3c/noodles#69's acceptance really does name all four
+        # constraint: obligations, so this control proves the completeness gate rejects it for the
+        # constraint: obligations it actually lacks, not for a blanket "old issue" verdict.
+        self.assertFalse([r for r in derived["reasons"] if "Physical acceptance" in r], derived["reasons"])
+
+    def test_each_planted_completeness_defect_fails_with_its_own_reason(self) -> None:
+        cases = (
+            ("goal emptied", issue_body(goal=""), "no '## goal' section"),
+            ("claim emptied", issue_body(claim=""), "no '## claim' section"),
+            ("trigger emptied", issue_body(trigger=""), "no '## Physical trigger' section"),
+            ("non-case emptied", issue_body(non_case=""), "no '## Non-case' section"),
+            ("no positive control", issue_body(acceptance="- Planted-negative readback with zero residue."), "no positive control obligation"),
+            ("no planted negative", issue_body(acceptance="- Positive control readback with zero residue."), "no planted-negative control obligation"),
+            ("no readback", issue_body(acceptance="- Positive control and planted-negative control, zero residue."), "no direct readback obligation"),
+            ("no residue", issue_body(acceptance="- Positive control and planted-negative control readback."), "no zero-residue readback obligation"),
+        )
+        seen: list[str] = []
+        for label, body, expected in cases:
+            with self.subTest(plant=label):
+                derived = self.derive(body)
+                self.assertFalse(derived["schedulable"])
+                matched = [reason for reason in derived["reasons"] if expected in reason]
+                self.assertEqual(len(matched), 1, derived["reasons"])
+                seen.append(matched[0])
+        self.assertEqual(len(set(seen)), len(seen), "each plant must produce its own distinct reason")
+
+    def test_admitted_rationale_heading_and_explicit_none_non_case_are_accepted(self) -> None:
+        complete = issue_body()
+        reworded = complete.replace("## Physical trigger", "## Why this must land alone", 1)
+        self.assertEqual(self.derive(reworded), {"schedulable": True, "reasons": []})
+        self.assertIn(f"\n## Non-case\n\n{issue_contract.NON_CASE_NONE}\n", complete)
+
+    def test_provider_readback_is_required_only_when_the_claim_takes_provider_authority(self) -> None:
+        local = issue_body(claim="The local gate refuses an incomplete body.")
+        self.assertEqual(self.derive(local), {"schedulable": True, "reasons": []})
+        provider = issue_body(claim="The provider merge and closure readback admits the exact head.")
+        derived = self.derive(provider)
+        self.assertFalse(derived["schedulable"])
+        self.assertTrue(any("no provider readback obligation" in reason for reason in derived["reasons"]))
+        cured = issue_body(
+            claim="The provider merge and closure readback admits the exact head.",
+            acceptance=COMPLETE_ACCEPTANCE + "- Provider readback of the merge event.\n",
+        )
+        self.assertEqual(self.derive(cured), {"schedulable": True, "reasons": []})
+
+    def test_awkward_but_structurally_complete_prose_is_not_rejected(self) -> None:
+        awkward = issue_body(
+            trigger="thing broke, badly, again",
+            goal="make the thing not broke",
+            claim="the thing shall be less broke, we think",
+            acceptance="- positive control: it works. planted-negative control: it does not. readback. no residue.",
+            non_case="nope",
+            non_claims="- we claim nothing at all, really",
+        )
+        self.assertEqual(self.derive(awkward), {"schedulable": True, "reasons": []})
+
+    def test_body_digest_drift_reevaluates_completeness_on_the_exact_new_bytes(self) -> None:
+        complete = issue_body()
+        drifted = issue_body(claim="")
+        self.assertNotEqual(issue_contract.body_digest(complete), issue_contract.body_digest(drifted))
+        self.assertTrue(self.derive(complete)["schedulable"])
+        self.assertFalse(self.derive(drifted)["schedulable"])
+
+
 class SectionAndDigestTests(unittest.TestCase):
     def test_sections_are_typed_by_normalized_heading(self) -> None:
         parsed = issue_contract.sections(issue_body())
-        self.assertEqual(set(parsed), {"goal", "physical_acceptance", "non_claims"})
+        self.assertEqual(
+            set(parsed),
+            {"physical_trigger", "goal", "claim", "physical_acceptance", "non_case", "non_claims"},
+        )
         self.assertIn("Derive schedulability", parsed["goal"])
 
     def test_body_digest_is_the_exact_provider_bytes(self) -> None:
@@ -541,7 +742,12 @@ class IntakeNormalizerTests(unittest.TestCase):
         self.assertIn(offending, writes[1][2]["body"])
         self.assertEqual(self.sync(state)[1], [])
 
-    def test_issue_template_file_normalizes_into_a_schedulable_contract(self) -> None:
+    def test_issue_template_file_normalizes_markers_but_stays_incomplete_until_authored(self) -> None:
+        # constraint: ed3c/noodles#120 monitor reconcile - the raw template is exactly the ed3c/noodles#69
+        # constraint: shape this atom exists to catch: syntactically valid markers, no authored Goal,
+        # constraint: Claim, or Physical trigger. Marker normalization must still run (subject gets
+        # constraint: patched in), but "normalizes" must never mean "becomes schedulable for free" -
+        # constraint: the guidance comments in Goal/Claim/Physical trigger are not an author's assertion.
         text = (CANDIDATE_ROOT / ".github/ISSUE_TEMPLATE/repository-mutating-atom.md").read_text(encoding="utf-8")
         authored = text.split("\n---\n", 1)[1].lstrip("\n")
         self.assertIsNone(noodles.MARKER_PATTERNS["subject"].search(authored))
@@ -549,8 +755,12 @@ class IntakeNormalizerTests(unittest.TestCase):
         items, writes = self.sync(state)
         self.assertEqual([write[0] for write in writes], ["PATCH"])
         self.assertEqual(items[0]["status"], "ready")
-        self.assertTrue(items[0]["schedulable"], items[0]["reasons"])
         self.assertEqual(items[0]["id"], "ed3c/noodles#900")
+        self.assertFalse(items[0]["schedulable"], items[0]["reasons"])
+        reasons = " ".join(items[0]["reasons"])
+        self.assertIn("no '## goal' section", reasons)
+        self.assertIn("no '## claim' section", reasons)
+        self.assertIn("no '## Physical trigger' section", reasons)
 
 
 class DependencyDerivationTests(unittest.TestCase):

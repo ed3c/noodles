@@ -307,12 +307,13 @@ class ComponentOwnerMapTests(unittest.TestCase):
                     self.assertTrue(set(owning) <= set(self.components), owning)
 
     def test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure(self) -> None:
-        """ed3c/noodles#278: nothing else reds when this count grows, so AGENTS.md's "136 total, 18
-        owned, 118 unowned" would otherwise silently go stale. If this breaks because you legitimately
+        """ed3c/noodles#278: nothing else reds when this count grows, so AGENTS.md's "139 total, 18
+        owned, 121 unowned" would otherwise silently go stale. If this breaks because you legitimately
         added or renamed a top-level definition, update the floor here AND the sentence in AGENTS.md
-        that quotes the current true count in the same commit. (It already caught one such drift,
-        132→136, from landing-train traffic on main adding findings-register functions while this
-        exact reconcile was in flight - see GrandfatheredImportDebtTests for the same pattern.)
+        that quotes the current true count in the same commit. (It already caught this drift twice:
+        132→136 from landing-train traffic on main adding findings-register functions, then 136→139
+        from ed3c/noodles#120's own declared_markers/requirement_definition_source/
+        system_requirement_ids - see GrandfatheredImportDebtTests for the same pattern.)
 
         ed3c/noodles#285: a strict `==` here deadlocks any candidate that legitimately adds a
         top-level definition - trusted-preview always runs *this* file (main's copy) against the
@@ -325,7 +326,7 @@ class ComponentOwnerMapTests(unittest.TestCase):
         source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
         defs = noodles.top_level_definitions(source, "noodles.py")
         owned = self.owners.get("noodles.py", {})
-        self.assertGreaterEqual(len(defs), 136)
+        self.assertGreaterEqual(len(defs), 139)
         self.assertEqual(len(owned), 18)
 
     def test_absent_map_is_inert_rather_than_red(self) -> None:
