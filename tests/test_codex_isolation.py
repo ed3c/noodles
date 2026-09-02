@@ -200,5 +200,90 @@ class CodexIsolationTests(unittest.TestCase):
                 codex_isolation.codex_surface_canary(root, error_cls=RuntimeError)
 
 
+class TruncationReadbackBoundaryTests(unittest.TestCase):
+    """ed3c/noodles#260 - the truncation readback scans the whole prompt-input payload, which carries
+    every skill name, description, and filesystem path. A bare `truncat` substring therefore turned an
+    ordinary repository surface into a warning; these controls hold the decision to whole tokens.
+
+    Ceiling: the boundary is `\\w`-based, so a warning that welds the token to an identifier with an
+    underscore (`context_truncation_applied`) is not recognized. No observed Codex warning has that
+    shape; a real one would be cured by naming that literal token, not by returning to a substring.
+    """
+
+    def canary_root(self, *, skill_names: tuple[str, ...], stderr_note: str = "") -> tuple[Path, Path]:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-codex-truncation-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        for skill in skill_names:
+            skill_root = root / codex_isolation.PROJECT_SKILLS_ROOT / skill
+            skill_root.mkdir(parents=True)
+            (skill_root / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+        fake_bin = Path(temp.name) / "fake-bin"
+        fake_bin.mkdir()
+        write_fake_codex_stub(fake_bin / "codex", stderr_note=stderr_note)
+        user_home = Path(temp.name) / "user-home"
+        (user_home / ".codex").mkdir(parents=True)
+        (user_home / ".codex" / "auth.json").write_text('{"token":"fixture"}\n', encoding="utf-8")
+        return root, fake_bin
+
+    def run_canary(self, root: Path, fake_bin: Path) -> dict:
+        user_home = fake_bin.parent / "user-home"
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": str(user_home), "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+            clear=False,
+        ):
+            return codex_isolation.codex_surface_canary(root, error_cls=RuntimeError)
+
+    # constraint: ed3c/noodles#260 - the exact failing input. The fake carrier prints every discovered
+    # constraint: skill as `- <name>: planted (file: r2/<name>/SKILL.md)`, so a project skill directory
+    # constraint: whose name merely contains a warning token lands in stdout twice. Under the bare
+    # constraint: substring regex this reds with "emitted truncation warning readback"; under the
+    # constraint: boundary-delimited regex it is ordinary surface.
+    MISMATCHING_SKILL_NAMES = ("truncation-guard", "untruncated-readback", "no-skill-context-budget-probe")
+
+    def test_planted_negative_skill_names_containing_a_warning_token_are_not_warnings(self) -> None:
+        root, fake_bin = self.canary_root(skill_names=self.MISMATCHING_SKILL_NAMES)
+        receipt = self.run_canary(root, fake_bin)
+        for name in self.MISMATCHING_SKILL_NAMES:
+            self.assertIn(name, receipt["schedule"]["skills"])
+        self.assertEqual(receipt["schedule"]["warning_readback"], [])
+        self.assertEqual(receipt["execute"]["warning_readback"], [])
+
+    def test_positive_control_a_real_warning_line_still_fails_closed(self) -> None:
+        root, fake_bin = self.canary_root(
+            skill_names=(),
+            stderr_note="warning: skill instructions were truncated to fit the skill-context-budget",
+        )
+        with self.assertRaisesRegex(RuntimeError, "emitted truncation warning readback"):
+            self.run_canary(root, fake_bin)
+
+    def test_positive_control_warning_tokens_are_recognized_whole(self) -> None:
+        recognized = (
+            "output truncated",
+            "TRUNCATION applied",
+            "codex will truncate the skill block",
+            "truncates the developer prompt",
+            "truncating skills",
+            "two truncations occurred",
+            "skill-context-budget exceeded",
+        )
+        for line in recognized:
+            with self.subTest(line=line):
+                self.assertTrue(codex_isolation.TRUNCATION_RE.search(line), line)
+
+    def test_direct_source_readback_shows_a_boundary_delimited_match(self) -> None:
+        pattern = codex_isolation.TRUNCATION_RE.pattern
+        self.assertTrue(pattern.startswith(r"(?<![\w-])"), pattern)
+        self.assertTrue(pattern.endswith(r"(?![\w-])"), pattern)
+        source = (CANDIDATE_ROOT / "codex_isolation.py").read_text(encoding="utf-8")
+        # constraint: ed3c/noodles#260 - zero remaining bare-substring match for the same token: the
+        # constraint: boundary-delimited literal is the only compiled pattern carrying these tokens.
+        self.assertEqual(source.count(pattern), 1)
+        self.assertNotIn('re.compile(r"truncat', source)
+        self.assertNotIn('re.compile(r"skill-context-budget', source)
+
+
 if __name__ == "__main__":
     unittest.main()

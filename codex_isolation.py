@@ -15,7 +15,17 @@ ISOLATED_HOME = ".noodle/codex-isolation/home"
 ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
 PROJECT_SKILLS_ROOT = ".agents/skills"
 FORBIDDEN_FORWARD_ARG = "--dangerously-bypass-approvals-and-sandbox"
-TRUNCATION_RE = re.compile(r"truncat|skill-context-budget", re.I)
+# constraint: ed3c/noodles#260 - the warning readback scans the whole prompt-input payload, which
+# constraint: carries every discovered skill name, description, and filesystem path. The bare
+# constraint: `truncat` substring therefore reported a warning for ordinary surface: a project skill
+# constraint: named `truncation-guard` or `untruncated-readback`, or a path segment containing either,
+# constraint: raised "emitted truncation warning readback: ['truncat']" with no warning present. The
+# constraint: decision is now a whole hyphen-aware token, so a name that merely contains the token
+# constraint: cannot stand in for one. `truncat\w*` covers every inflection an enumeration would need
+# constraint: to list by hand. Ceiling: the boundary is `\w`-based, so a warning that welds the token
+# constraint: to an identifier with an underscore is not recognized; no observed Codex warning has
+# constraint: that shape, and a real one is cured by naming that literal token here.
+TRUNCATION_RE = re.compile(r"(?<![\w-])(?:truncat\w*|skill-context-budget)(?![\w-])", re.I)
 PERMISSION_PROFILE_OVERRIDES = (
     'approval_policy="never"',
     'default_permissions="noodles-cook"',
