@@ -62,7 +62,7 @@ jobs:
           replacement = '''    def test_trusted_verify_rejects_serial_candidate_dependency(self) -> None:\n        temp, root = self.mutated_copy()\n        self.addCleanup(temp.cleanup)\n        path = root / ".github/workflows/verify.yml"\n        workflow = path.read_text()\n        verify_job = "  verify:\\n"\n        dependency = "    needs: candidate-self-tests\\n"\n        self.assertIn(verify_job, workflow)\n        self.assertNotIn(dependency, workflow)\n        path.write_text(workflow.replace(verify_job, verify_job + dependency, 1))\n        self.commit(root)\n        result = self.verify(root)\n        self.assertFalse(result["ok"])\n        self.assertIn("trusted verify job must stay independent of candidate-self-tests", result["errors"])\n\n'''
           test_path.write_text(tests[:start] + replacement + tests[end:])
           PY
-          rm .github/workflows/issue-342-apply.yml
+          git rm .github/workflows/issue-342-apply.yml
 
       - name: Run repository deterministic suite
         id: deterministic-suite
