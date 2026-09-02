@@ -65,10 +65,20 @@ jobs:
           rm .github/workflows/issue-342-apply.yml
 
       - name: Run repository deterministic suite
+        id: deterministic-suite
         shell: bash
         run: |
-          set -euo pipefail
-          tests/run.sh
+          set -o pipefail
+          tests/run.sh 2>&1 | tee issue-342-tests.log
+
+      - name: Upload deterministic suite receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: issue-342-tests-${{ github.run_id }}
+          path: issue-342-tests.log
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Run repository verify
         shell: bash
@@ -86,6 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f issue-342-tests.log
           git diff --check
           python3 - <<'PY'
           import subprocess
