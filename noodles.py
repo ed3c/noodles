@@ -83,6 +83,7 @@ MARKER_PATTERNS = {
     "runtime": re.compile(r"<!--\s*noodles-runtime:\s*([^>]+?)\s*-->", re.I),
     "evidence": re.compile(r"<!--\s*noodles-evidence:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
+    "relation": re.compile(r"<!--\s*noodles-relation:\s*([^>]+?)\s*-->", re.I),
     "normalized": re.compile(r"<!--\s*noodles-normalized:\s*([0-9a-f]{64})\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
     "head": re.compile(r"<!--\s*noodles-head:\s*([0-9a-f]{40})\s*-->", re.I),
@@ -312,6 +313,10 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     runtime_token = issue_contract.parse_capability("runtime", one_marker(body, "runtime", required=False), error_cls=GateError)
     evidence = issue_contract.parse_capability("evidence", one_marker(body, "evidence", required=False), error_cls=GateError)
     blocker = issue_contract.parse_blocker(one_marker(body, "blocker", required=False), state_value or "", error_cls=GateError)
+    # constraint: ed3c/noodles#314 - the declared succession out of a defect-fingerprint block. It is
+    # constraint: optional (most atoms supersede nothing) and exact (a malformed one fails closed
+    # constraint: rather than reading as "no relation" and silently re-admitting a held duplicate).
+    relation = issue_contract.parse_relation(one_marker(body, "relation", required=False), subject.value, error_cls=GateError)
     # constraint: ed3c/noodles#120 - bounded multiplicity, so this marker parses into ids plus named
     # constraint: diagnostics instead of raising: a malformed declaration must reach the frontier as
     # constraint: an unschedulable Issue with an exact reason, never as an Issue schedule_snapshot
@@ -333,6 +338,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "evidence": evidence,
         "admission": issue_contract.executor_admission(executor, runtime_token, evidence),
         "blocker": blocker,
+        "relation": relation,
     }
 
 
@@ -352,6 +358,26 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
     known_requirements = system_requirement_ids()
     ready: list[dict[str, Any]] = []
     unparseable: list[dict[str, Any]] = []
+    # constraint: ed3c/noodles#314 - the same fingerprints over the same bodies as the two admission
+    # constraint: indexes, and one named difference rather than an implied identity: those two are
+    # constraint: built inside a repository and key on `owner/repo#number`, while this report is fed
+    # constraint: a captured backlog that carries only number and body, so it keys on the contract's
+    # constraint: OWN declared subject. For a body whose subject marker matches its number the two
+    # constraint: keys are the same string; for one that declares a foreign subject this report shows
+    # constraint: the cluster the body claims and admission shows the cluster its number is in. An
+    # constraint: unparseable body declares no subject and joins no cluster rather than being guessed
+    # constraint: into one. `gh issue list` never emits a pull request, but this reads whatever is on
+    # constraint: stdin, so the same filter the admission indexes carry is applied here too.
+    fingerprints: dict[str, str | None] = {}
+    for issue in issues:
+        if "pull_request" in issue:
+            continue
+        body = issue.get("body") or ""
+        try:
+            subject_value = parse_issue_contract(body)["subject"]
+        except GateError:
+            continue
+        fingerprints[subject_value] = issue_contract.defect_fingerprint(issue_contract.sections(body))
     for issue in sorted(issues, key=lambda item: int(item["number"])):
         body = issue.get("body") or ""
         entry = {"number": int(issue["number"]), "body_sha256": issue_contract.body_digest(body)}
@@ -370,6 +396,11 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
         body_sections = issue_contract.sections(body)
         reasons = issue_contract.required_section_reasons(body_sections)
         reasons.extend(issue_contract.completeness_reasons(contract, body_sections, known_requirements))
+        reasons.extend(
+            issue_contract.fingerprint_reasons(
+                issue_contract.fingerprint_elders(contract["subject"], fingerprints), contract["relation"]
+            )
+        )
         ready.append({**entry, "reasons": reasons})
     incomplete = [entry["number"] for entry in ready if entry["reasons"]]
     return {
@@ -377,6 +408,7 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
         "ready": ready,
         "unparseable": unparseable,
         "incomplete": incomplete,
+        "fingerprint_clusters": issue_contract.fingerprint_clusters(fingerprints),
         "complete": not incomplete and not unparseable,
     }
 
@@ -1063,6 +1095,7 @@ def issue_contract_payload(
     subject_value: str | None,
     dependency_cache: dict[str, dict[str, Any]] | None = None,
     known_requirements: frozenset[str] | None = None,
+    fingerprints: Mapping[str, str | None] | None = None,
 ) -> dict[str, Any]:
     # constraint: ed3c/noodles#120 monitor reconcile - known_requirements defaults to a fresh
     # constraint: system_requirement_ids() call for callers that read one Issue at a time, but a
@@ -1083,8 +1116,12 @@ def issue_contract_payload(
         observed[dependency] = cache[dependency]
     body_sections = issue_contract.sections(body)
     resolved_requirements = known_requirements if known_requirements is not None else system_requirement_ids()
+    # constraint: ed3c/noodles#314 - the elder set is derived from the caller's own open-backlog
+    # constraint: index. A caller with no index (single-subject readback) supplies none and this
+    # constraint: payload claims no collision rather than guessing one from a partial view.
+    elders = issue_contract.fingerprint_elders(contract["subject"], fingerprints or {})
     derived = issue_contract.derive_schedulability(
-        contract, str(issue.get("state") or ""), observed, body_sections, resolved_requirements
+        contract, str(issue.get("state") or ""), observed, body_sections, resolved_requirements, elders=elders
     )
     return {
         "subject": contract["subject"],
@@ -1103,6 +1140,9 @@ def issue_contract_payload(
         "admission": contract["admission"],
         "dependency_states": observed,
         "blocker": contract["blocker"],
+        "relation": contract["relation"],
+        "defect_fingerprint": issue_contract.defect_fingerprint(body_sections),
+        "fingerprint_elders": list(elders),
         "goal": body_sections.get("goal", ""),
         "physical_acceptance": body_sections.get("physical_acceptance", ""),
         "non_claims": body_sections.get("non_claims", ""),
@@ -3092,12 +3132,19 @@ def backlog_items(
     resumed: bool = False,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
+    fingerprints = {
+        f"{repository}#{issue['number']}": issue_contract.defect_fingerprint(
+            issue_contract.sections(issue.get("body") or "")
+        )
+        for issue in finalists.get("issues") or ()
+        if "pull_request" not in issue
+    }
     for issue in finalists.get("issues") or ():
         if "pull_request" in issue:
             continue
         try:
             issue = intake_normalize(issue, repository, verify_live=resumed)
-            contract = issue_contract_payload(issue, None, dependency_cache, known_requirements)
+            contract = issue_contract_payload(issue, None, dependency_cache, known_requirements, fingerprints)
         except GateError as exc:
             number = issue.get("number")
             output.append(
@@ -3110,6 +3157,29 @@ def backlog_items(
                 }
             )
             continue
+        # constraint: ed3c/noodles#314 - the surfacing UX, and nothing wider: one comment naming the
+        # constraint: elder, written at most once because its own marker is the receipt. It sits
+        # constraint: OUTSIDE the contract's try on purpose: a rate-limited or failed comment call is
+        # constraint: a provider absence, and reporting it as `issue contract invalid` would make one
+        # constraint: exit carry two different absences - the shape this atom's own trigger is about.
+        # constraint: The comment list is read once per colliding issue rather than once per elder,
+        # constraint: and only for an issue that actually collides, so a backlog with no collisions
+        # constraint: pays nothing and a re-sync writes nothing.
+        if contract["fingerprint_elders"]:
+            try:
+                posted = gh_api(f"repos/{repository}/issues/{issue['number']}/comments")
+                existing = [str(item.get("body") or "") for item in posted if isinstance(item, dict)]
+                for elder in contract["fingerprint_elders"]:
+                    comment = issue_contract.fingerprint_comment(elder, existing)
+                    if comment:
+                        gh_api(
+                            f"repos/{repository}/issues/{issue['number']}/comments",
+                            method="POST",
+                            payload={"body": comment},
+                        )
+                        existing.append(comment)
+            except GateError as exc:
+                print(f"fingerprint surfacing: {repository}#{issue['number']}: {exc}", file=sys.stderr)
         output.append(
             {
                 "id": contract["subject"],
@@ -4231,6 +4301,16 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
         for issue in provider_issues
         if "pull_request" not in issue
     }
+    # constraint: ed3c/noodles#314 - the collision index is derived from exactly the open bodies this
+    # constraint: frontier already read, so the gate costs no extra provider call and an elder that
+    # constraint: closed is simply absent from it.
+    fingerprints = {
+        f"{repository}#{issue['number']}": issue_contract.defect_fingerprint(
+            issue_contract.sections(issue.get("body") or "")
+        )
+        for issue in provider_issues
+        if "pull_request" not in issue
+    }
     for issue in provider_issues:
         if "pull_request" in issue:
             continue
@@ -4238,7 +4318,7 @@ def schedule_snapshot(repository: str) -> tuple[schedule_domain.ScheduleIssue, .
         assert isinstance(number, int)
         subject_value = f"{repository}#{number}"
         try:
-            contract = issue_contract_payload(issue, subject_value, dependency_cache, known_requirements)
+            contract = issue_contract_payload(issue, subject_value, dependency_cache, known_requirements, fingerprints)
         except GateError:
             continue
         emitted_subjects.add(subject_value)

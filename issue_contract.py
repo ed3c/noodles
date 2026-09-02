@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any, Collection, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 SUBJECT_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[1-9][0-9]*)$")
 SECTION_RE = re.compile(r"(?m)^##[ \t]+(?P<heading>\S[^\n]*?)[ \t]*$")
@@ -47,6 +47,28 @@ ACCEPTANCE_OBLIGATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("planted-negative control", ("planted-negative", "planted negative", "negative control", "positive/planted")),
     ("direct readback", ("readback",)),
     ("zero-residue readback", ("residue", "cleanup")),
+)
+# constraint: ed3c/noodles#314 - dedupe that compares subjects answers "is this the same ISSUE";
+# constraint: concurrent discovery files the same DEFECT. The mechanical half of defect identity is
+# constraint: the identifiers the rationale section QUOTES - a failing test name, a diagnostic
+# constraint: literal - so nothing here reads prose and nothing scores similarity.
+DEFECT_QUOTE_RE = re.compile(r"`([^`\n]+)`")
+# constraint: ed3c/noodles#314 - one closed shape: a lowercase snake_case identifier of at least two
+# constraint: parts. `git status`, `noodles.py` and `connection refused` are not mechanical tokens
+# constraint: under it, which is what keeps a shared prose quote from blocking an unrelated atom.
+DEFECT_TOKEN_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+RELATION_VERBS = ("enriches", "supersedes")
+RELATION_RE = re.compile(
+    r"(?P<verb>enriches|supersedes)[ \t]+(?P<elder>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*)"
+)
+FINGERPRINT_COMMENT_MARKER = "<!-- noodles-defect-fingerprint: {elder} -->"
+FINGERPRINT_COMMENT = (
+    "Defect-fingerprint collision: this issue's rationale section quotes exactly the mechanical "
+    "token set {elder} already quotes, so intake holds it unschedulable until it declares "
+    "`<!-- noodles-relation: enriches {elder} -->` or `<!-- noodles-relation: supersedes {elder} -->`, "
+    "or until {elder} closes. Nothing is closed, merged, or edited automatically: whether these are "
+    "one defect stays a human judgment, and the relation marker is how that judgment becomes "
+    "permanently visible.\n\n" + FINGERPRINT_COMMENT_MARKER + "\n"
 )
 PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
 PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
@@ -295,6 +317,123 @@ def parse_requirements(raw_values: Sequence[str]) -> tuple[tuple[str, ...], tupl
     return tuple(ids), tuple(errors)
 
 
+def _subject_number(subject: str) -> int:
+    match = SUBJECT_RE.fullmatch(subject.strip())
+    return int(match.group("number")) if match else 0
+
+
+def defect_tokens(body_sections: dict[str, str]) -> tuple[str, ...]:
+    """The mechanical tokens the rationale section quotes, normalized, de-duplicated, sorted.
+
+    Only backtick-quoted spans are read, and only the snake_case identifiers inside them survive.
+    A rationale that quotes nothing mechanical yields no tokens, which is the honest answer for a
+    design atom and the reason such an atom can never collide with anything."""
+    rationale = "\n".join(
+        text
+        for name, text in body_sections.items()
+        if name == RATIONALE_SECTION or name.startswith(RATIONALE_PREFIX)
+    )
+    tokens: set[str] = set()
+    for quoted in DEFECT_QUOTE_RE.findall(rationale):
+        tokens.update(DEFECT_TOKEN_RE.findall(quoted.lower()))
+    return tuple(sorted(tokens))
+
+
+def defect_fingerprint(body_sections: dict[str, str]) -> str | None:
+    """One digest over the exact normalized token SET, or None when the rationale quotes none.
+
+    Ceiling, stated rather than hidden: identity here is set equality, so it catches the twin filing
+    that quotes the same identifiers and nothing else, and it does NOT catch a partial overlap.
+    Set equality is chosen over intersection deliberately - two atoms both quoting one shared token
+    are routinely unrelated, and a false block has no honest exit, because `enriches`/`supersedes`
+    would be a lie. Partial overlap stays a monitor/judge finding."""
+    tokens = defect_tokens(body_sections)
+    return hashlib.sha256("\n".join(tokens).encode("utf-8")).hexdigest() if tokens else None
+
+
+def fingerprint_elders(subject: str, fingerprints: Mapping[str, str | None]) -> tuple[str, ...]:
+    """The OPEN subjects that already carry this subject's fingerprint and are older than it.
+
+    Elder is issue order, not clock order: the index only ever contains open issues, so an elder
+    that closes drops out and releases its juniors with no marker to patch anywhere."""
+    own = fingerprints.get(subject)
+    if not own:
+        return ()
+    number = _subject_number(subject)
+    return tuple(
+        sorted(
+            (
+                other
+                for other, fingerprint in fingerprints.items()
+                if fingerprint == own and _subject_number(other) < number
+            ),
+            key=_subject_number,
+        )
+    )
+
+
+def fingerprint_clusters(fingerprints: Mapping[str, str | None]) -> list[dict[str, Any]]:
+    """Every fingerprint at least two open subjects share, with its member subjects in issue order."""
+    clusters: dict[str, list[str]] = {}
+    for subject, fingerprint in fingerprints.items():
+        if fingerprint:
+            clusters.setdefault(fingerprint, []).append(subject)
+    return [
+        {"fingerprint": fingerprint, "members": sorted(members, key=_subject_number)}
+        for fingerprint, members in sorted(clusters.items())
+        if len(members) > 1
+    ]
+
+
+def parse_relation(raw: str | None, subject: str, *, error_cls: type[Exception]) -> dict[str, str] | None:
+    """The declared succession, or None when the issue declares none.
+
+    ed3c/noodles#314 - this is the honest exit from a fingerprint block, so it is typed exactly: one
+    admitted verb plus the elder it names, in this repository, and never the issue itself."""
+    value = (raw or "").strip()
+    if not value:
+        return None
+    match = RELATION_RE.fullmatch(value)
+    if not match:
+        raise error_cls(
+            f"malformed noodles-relation {raw!r}: expected exactly "
+            f"'{'|'.join(RELATION_VERBS)} owner/repo#N' naming the elder"
+        )
+    elder = match.group("elder")
+    if elder.partition("#")[0] != subject.partition("#")[0]:
+        raise error_cls(f"noodles-relation elder {elder} is outside the issue repository {subject.partition('#')[0]}")
+    if elder == subject:
+        raise error_cls(f"noodles-relation elder {elder} is the issue's own subject")
+    return {"verb": match.group("verb"), "elder": elder}
+
+
+def fingerprint_reasons(elders: Sequence[str], relation: dict[str, str] | None) -> list[str]:
+    """One reason per open elder this issue shares a defect fingerprint with and has not declared.
+
+    Admission-blocking on purpose: an UNDECLARED duplicate does not schedule. Declaring the relation
+    is not an admission of duplication being resolved - it converts silent parallel discovery into a
+    succession that stays readable forever, which is the whole exit."""
+    declared = (relation or {}).get("elder")
+    return [
+        f"defect fingerprint is shared with open elder {elder}; declare "
+        f"<!-- noodles-relation: enriches {elder} --> or <!-- noodles-relation: supersedes {elder} -->, "
+        f"or wait for {elder} to close"
+        for elder in elders
+        if elder != declared
+    ]
+
+
+def fingerprint_comment(elder: str, existing_comments: Sequence[str]) -> str | None:
+    """The one mechanical cross-link comment naming the elder, or None when it is already posted.
+
+    The receipt is the marker inside the comment itself, so a re-sync is a zero-write no-op without
+    any second store to keep honest."""
+    marker = FINGERPRINT_COMMENT_MARKER.format(elder=elder)
+    if any(marker in (body or "") for body in existing_comments):
+        return None
+    return FINGERPRINT_COMMENT.format(elder=elder)
+
+
 def completeness_reasons(
     contract: dict[str, Any],
     body_sections: dict[str, str],
@@ -396,10 +535,16 @@ def derive_schedulability(
     dependency_states: dict[str, dict[str, Any]],
     body_sections: dict[str, str],
     known_requirements: Collection[str] = (),
+    *,
+    elders: Sequence[str] = (),
 ) -> dict[str, Any]:
     # constraint: ed3c/noodles#120 - `known_requirements` defaults to empty and therefore fails
     # constraint: closed: a caller that cannot read the specification never admits a requirement id
     # constraint: it could not resolve.
+    # constraint: ed3c/noodles#314 - `elders` is the collision the caller measured against the open
+    # constraint: backlog it can see. It defaults to none because a single-subject readback has no
+    # constraint: backlog in hand and must not invent one; admission runs on the frontier callers
+    # constraint: (schedule_snapshot, backlog_items), which read every open issue anyway.
     reasons: list[str] = []
     if provider_state != "open":
         reasons.append(f"issue provider state is {provider_state!r}, not open")
@@ -410,6 +555,7 @@ def derive_schedulability(
         reasons.append(f"blocker owned by {blocker['owner']}: {blocker['reason']}")
     reasons.extend(required_section_reasons(body_sections))
     reasons.extend(completeness_reasons(contract, body_sections, known_requirements))
+    reasons.extend(fingerprint_reasons(elders, contract.get("relation")))
     if contract.get("dependencies") is None:
         reasons.append(f"issue declares no noodles-depends-on marker; use {NO_DEPENDENCIES!r} for no dependencies")
     for dependency in contract.get("dependencies") or ():

@@ -1035,6 +1035,218 @@ class DependencyDerivationTests(unittest.TestCase):
                 self.assertEqual(issue_contract.derive_dependencies(body, SUBJECT), expected)
 
 
+TWIN_TRIGGER = (
+    "The admission-receipt promptness control `test_admission_receipt_promptness` failed with "
+    "`connection refused` five times in eight runs on the untouched default branch."
+)
+DISJOINT_TRIGGER = (
+    "The landing train starved: `test_oldest_behind_is_selected` never selects the second lane, "
+    "and `git status` reports nothing."
+)
+
+
+class DefectFingerprintGateTests(unittest.TestCase):
+    """ed3c/noodles#314 - two lanes, one defect, two atoms. Subject dedupe cannot see that; a
+    fingerprint over the mechanical tokens the rationale QUOTES can, and blocks admission until the
+    younger declares the succession or the elder closes."""
+
+    ELDER = SUBJECT
+    YOUNGER = "ed3c/noodles#90"
+
+    def twin(self, subject: str, *, relation: str | None = None, trigger: str = TWIN_TRIGGER) -> str:
+        body = issue_body(subject=subject, trigger=trigger)
+        if relation is None:
+            return body
+        return body.replace(
+            "<!-- noodles-depends-on: none -->\n",
+            f"<!-- noodles-depends-on: none -->\n<!-- noodles-relation: {relation} -->\n",
+            1,
+        )
+
+    def fingerprints(self, *bodies: str) -> dict[str, str | None]:
+        return {
+            noodles.parse_issue_contract(body)["subject"]: issue_contract.defect_fingerprint(
+                issue_contract.sections(body)
+            )
+            for body in bodies
+        }
+
+    def derive(self, body: str, index: dict[str, str | None]) -> dict:
+        contract = noodles.parse_issue_contract(body)
+        return issue_contract.derive_schedulability(
+            contract,
+            "open",
+            {},
+            issue_contract.sections(body),
+            noodles.system_requirement_ids(CANDIDATE_ROOT),
+            elders=issue_contract.fingerprint_elders(contract["subject"], index),
+        )
+
+    def test_the_younger_twin_is_held_and_the_reason_names_the_elder(self) -> None:
+        index = self.fingerprints(self.twin(self.ELDER), self.twin(self.YOUNGER))
+        self.assertEqual(len(set(index.values())), 1)
+
+        self.assertTrue(self.derive(self.twin(self.ELDER), index)["schedulable"])
+        held = self.derive(self.twin(self.YOUNGER), index)
+        self.assertFalse(held["schedulable"])
+        self.assertEqual(len(held["reasons"]), 1)
+        self.assertIn(f"shared with open elder {self.ELDER}", held["reasons"][0])
+        self.assertIn("noodles-relation: supersedes", held["reasons"][0])
+
+    def test_positive_control_either_relation_verb_naming_the_elder_releases_the_younger(self) -> None:
+        index = self.fingerprints(self.twin(self.ELDER), self.twin(self.YOUNGER))
+        for verb in issue_contract.RELATION_VERBS:
+            with self.subTest(verb=verb):
+                body = self.twin(self.YOUNGER, relation=f"{verb} {self.ELDER}")
+                self.assertEqual(
+                    noodles.parse_issue_contract(body)["relation"], {"verb": verb, "elder": self.ELDER}
+                )
+                self.assertTrue(self.derive(body, index)["schedulable"])
+
+    def test_positive_control_a_closed_elder_releases_the_younger_with_no_marker_to_patch(self) -> None:
+        # constraint: ed3c/noodles#314 - the index only ever holds OPEN subjects, so closure is the
+        # constraint: second exit and it needs nobody to edit the younger body at all.
+        index = self.fingerprints(self.twin(self.YOUNGER))
+        self.assertTrue(self.derive(self.twin(self.YOUNGER), index)["schedulable"])
+
+    def test_a_relation_naming_a_different_elder_does_not_release_this_one(self) -> None:
+        index = self.fingerprints(self.twin(self.ELDER), self.twin(self.YOUNGER))
+        body = self.twin(self.YOUNGER, relation="enriches ed3c/noodles#61")
+        self.assertFalse(self.derive(body, index)["schedulable"])
+
+    def test_planted_negative_disjoint_fingerprints_are_untouched(self) -> None:
+        index = self.fingerprints(self.twin(self.ELDER), self.twin(self.YOUNGER, trigger=DISJOINT_TRIGGER))
+        self.assertEqual(len(set(index.values())), 2)
+        self.assertTrue(self.derive(self.twin(self.YOUNGER, trigger=DISJOINT_TRIGGER), index)["schedulable"])
+
+    def test_planted_negative_one_extra_quoted_token_is_a_different_defect(self) -> None:
+        """The detector's own RED direction: set equality really is computed, so a trigger that
+        quotes one more identifier stops colliding rather than staying blocked by inertia."""
+        widened = TWIN_TRIGGER + " It also broke `test_landing_train_selection`."
+        index = self.fingerprints(self.twin(self.ELDER), self.twin(self.YOUNGER, trigger=widened))
+        self.assertEqual(len(set(index.values())), 2)
+        self.assertTrue(self.derive(self.twin(self.YOUNGER, trigger=widened), index)["schedulable"])
+
+    def test_planted_negative_a_trigger_quoting_no_mechanical_token_has_no_fingerprint(self) -> None:
+        for trigger in (
+            "A design atom with no quoted token at all.",
+            "The observer was `git status` and the tree carried `noodles.py`; it printed `connection refused`.",
+        ):
+            with self.subTest(trigger=trigger):
+                sections = issue_contract.sections(issue_body(trigger=trigger))
+                self.assertEqual(issue_contract.defect_tokens(sections), ())
+                self.assertIsNone(issue_contract.defect_fingerprint(sections))
+        index = self.fingerprints(
+            issue_body(subject=self.ELDER, trigger="Nothing quoted."),
+            issue_body(subject=self.YOUNGER, trigger="Nothing quoted either."),
+        )
+        self.assertTrue(self.derive(issue_body(subject=self.YOUNGER, trigger="Nothing quoted either."), index)["schedulable"])
+        self.assertEqual(issue_contract.fingerprint_clusters(index), [])
+
+    def test_a_malformed_relation_marker_fails_closed_rather_than_reading_as_no_relation(self) -> None:
+        for value in ("supersedes", "duplicates ed3c/noodles#82", "supersedes #82", "supersedes other/repo#82"):
+            with self.subTest(value=value):
+                with self.assertRaises(noodles.GateError):
+                    noodles.parse_issue_contract(self.twin(self.YOUNGER, relation=value), self.YOUNGER)
+        with self.assertRaisesRegex(noodles.GateError, "own subject"):
+            noodles.parse_issue_contract(self.twin(self.YOUNGER, relation=f"enriches {self.YOUNGER}"), self.YOUNGER)
+
+    def test_the_completeness_report_lists_clusters_with_member_subjects(self) -> None:
+        report = noodles.backlog_completeness_report(
+            [
+                {"number": 82, "body": self.twin(self.ELDER)},
+                {"number": 90, "body": self.twin(self.YOUNGER)},
+                {"number": 61, "body": issue_body(subject="ed3c/noodles#61", trigger=DISJOINT_TRIGGER)},
+            ]
+        )
+        clusters = report["fingerprint_clusters"]
+        self.assertEqual([cluster["members"] for cluster in clusters], [[self.ELDER, self.YOUNGER]])
+        self.assertEqual(
+            clusters[0]["fingerprint"],
+            issue_contract.defect_fingerprint(issue_contract.sections(self.twin(self.ELDER))),
+        )
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["incomplete"], [90])
+        self.assertEqual(report["ready"][0]["reasons"], [])
+
+    def test_the_cross_link_comment_is_written_once_and_a_resync_writes_nothing(self) -> None:
+        """The surfacing UX through the real sync seam: one POST on the first cycle, none on the
+        second, and no issue body edited or closed by either."""
+        issues = [
+            {"number": 82, "state": "open", "title": "elder", "body": self.twin(self.ELDER), "html_url": "u82"},
+            {"number": 90, "state": "open", "title": "younger", "body": self.twin(self.YOUNGER), "html_url": "u90"},
+        ]
+        posted: list[str] = []
+        calls: list[tuple[str, str]] = []
+
+        def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None):
+            calls.append((method, endpoint))
+            if endpoint == "graphql":
+                return graphql_backlog_payload(issues)
+            if endpoint == "repos/ed3c/noodles/issues/90/comments":
+                if method == "POST":
+                    posted.append(str((payload or {}).get("body")))
+                    return {"id": len(posted)}
+                return [{"body": body} for body in posted]
+            raise noodles.GateError(f"unexpected endpoint {endpoint}")
+
+        with backlog_project() as project:
+            for now in (1_000.0, 100_000.0):
+                with mock.patch.object(noodles, "gh_api", side_effect=fake):
+                    items = noodles.sync_backlog(
+                        project, "ed3c/noodles", {}, noodles.system_requirement_ids(CANDIDATE_ROOT), now=now
+                    )
+
+        self.assertEqual(len(posted), 1)
+        self.assertIn(self.ELDER, posted[0])
+        self.assertIn(issue_contract.FINGERPRINT_COMMENT_MARKER.format(elder=self.ELDER), posted[0])
+        self.assertEqual(
+            [method for method, endpoint in calls if endpoint != "graphql"],
+            ["GET", "POST", "GET"],
+        )
+        self.assertEqual([item["schedulable"] for item in items], [True, False])
+        self.assertIn(self.ELDER, " ".join(items[1]["reasons"]))
+
+    def test_a_failing_surfacing_call_is_a_provider_absence_not_an_invalid_contract(self) -> None:
+        """Two different absences must not share one exit.
+
+        The hold is structural and already derived before any comment is read; the cross-link is
+        the UX that explains it. A rate-limited or transient failure on that comment call is a
+        PROVIDER absence, and reporting it as `issue contract invalid` would say the body is
+        unparseable when it parsed - the exact wrong-absence shape this atom's own trigger is
+        about. The younger stays a normally held item and the provider failure is named on
+        stderr, where it is a different string carrying its own subject."""
+        finalists = {
+            "issues": [
+                {"number": 82, "state": "open", "title": "elder", "body": self.twin(self.ELDER), "html_url": "u82"},
+                {"number": 90, "state": "open", "title": "younger", "body": self.twin(self.YOUNGER), "html_url": "u90"},
+            ]
+        }
+        calls: list[str] = []
+
+        def refuse(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None):
+            calls.append(endpoint)
+            raise noodles.GateError("API rate limit exceeded")
+
+        stderr = io.StringIO()
+        with mock.patch.object(noodles, "gh_api", side_effect=refuse):
+            with mock.patch("sys.stderr", stderr):
+                items = noodles.backlog_items(
+                    "ed3c/noodles", finalists, {}, noodles.system_requirement_ids(CANDIDATE_ROOT)
+                )
+
+        younger = next(item for item in items if item["id"] == self.YOUNGER)
+        self.assertNotIn("diagnostic", younger)
+        self.assertFalse(younger["schedulable"])
+        self.assertIn(self.ELDER, " ".join(younger["reasons"]))
+        self.assertIn(f"fingerprint surfacing: {self.YOUNGER}", stderr.getvalue())
+        self.assertIn("API rate limit exceeded", stderr.getvalue())
+        self.assertNotIn("issue contract invalid", stderr.getvalue())
+        # constraint: the elder collides with nobody older, so it never reaches the comment seam at
+        # constraint: all - the only provider call this backlog makes is the younger's comment read.
+        self.assertEqual(calls, ["repos/ed3c/noodles/issues/90/comments"])
+
+
 class BacklogCompletenessReadbackTests(unittest.TestCase):
     """ed3c/noodles#279 - the runnable gap report over exact open provider bodies.
 
