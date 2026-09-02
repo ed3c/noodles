@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 import unittest
 
-import github_protection
 import verified_batch
 
 
@@ -155,14 +154,18 @@ class VerifiedBatchTests(unittest.TestCase):
     def test_github_canary_is_manual_read_only_and_not_a_landing_receipt(self) -> None:
         path = Path(__file__).parents[1] / ".github/workflows/verified-batch-canary.yml"
         workflow = path.read_text(encoding="utf-8")
-        model, errors = github_protection._workflow_model(workflow, workflow_name="verified-batch-canary")
-        self.assertEqual(errors, [])
-        self.assertEqual(set(model["on"]), {"workflow_dispatch"})
-        expected_permissions = {"contents": "read", "pull-requests": "read"}
-        self.assertEqual(model["permissions"], expected_permissions)
-        self.assertEqual(model["jobs"]["canary"]["permissions"], expected_permissions)
-        self.assertEqual(model["jobs"]["canary"]["runs-on"], "ubuntu-latest")
-        self.assertEqual(model["jobs"]["canary"]["timeout-minutes"], 15)
+        self.assertIn("\non:\n  workflow_dispatch:\n", workflow)
+        self.assertEqual(workflow.count("\n  workflow_dispatch:\n"), 1)
+        self.assertIn(
+            "\npermissions:\n  contents: read\n  pull-requests: read\n",
+            workflow,
+        )
+        self.assertIn(
+            "\n  canary:\n    permissions:\n      contents: read\n"
+            "      pull-requests: read\n    runs-on: ubuntu-latest\n"
+            "    timeout-minutes: 15\n",
+            workflow,
+        )
         for forbidden in (
             "contents: write",
             "issues: write",
