@@ -985,5 +985,116 @@ class ClaimedBoundaryWideningTests(unittest.TestCase):
         )
 
 
+class StruggleDetectorTests(unittest.TestCase):
+    """ed3c/noodles#323 - retry counters bound attempts; these bound repetition.
+
+    The burn this exists for is nineteen consecutive cycles with an identical signature and zero new
+    evidence, which every record it left read as ordinary work. Both directions are asserted: the
+    threshold fires on a repeated signature, and never on attempts that keep producing new evidence
+    nor on a first failure."""
+
+    SUBJECT = f"{REPOSITORY}#900"
+
+    def attempt(
+        self,
+        *,
+        controls: tuple[str, ...] = ("verify",),
+        diagnostics: tuple[str, ...] = ("failure",),
+        head: str = "a" * 40,
+    ) -> schedule_domain.RepairAttempt:
+        return schedule_domain.RepairAttempt(
+            subject=self.SUBJECT, diagnostics=diagnostics, failing_controls=controls, head=head
+        )
+
+    def test_a_repeated_failure_keeps_its_signature_across_run_specific_volatiles(self) -> None:
+        first = self.attempt(diagnostics=(
+            "verify run #4812 at head 9c3f1ab2ee1 failed 2026-09-01T04:15:02Z after 91.4s",
+            "/private/var/folders/kx/T/noodles-test-a1b2/repo: assertion failed",
+        ))
+        second = self.attempt(diagnostics=(
+            "verify run #5107 at head 771abcd0f42 failed 2026-09-01T07:02:44Z after 88.1s",
+            "/private/var/folders/kx/T/noodles-test-z9y8/repo: assertion failed",
+        ))
+        self.assertEqual(schedule_domain.attempt_signature(first), schedule_domain.attempt_signature(second))
+        self.assertIn("assertion failed", schedule_domain.attempt_signature(first))
+
+    def test_a_different_failure_and_a_different_failing_control_are_different_signatures(self) -> None:
+        base = self.attempt()
+        self.assertNotEqual(
+            schedule_domain.attempt_signature(base),
+            schedule_domain.attempt_signature(self.attempt(diagnostics=("a different failure",))),
+        )
+        self.assertNotEqual(
+            schedule_domain.attempt_signature(base),
+            schedule_domain.attempt_signature(self.attempt(controls=("verify", "trusted-preview"))),
+        )
+
+    def test_reordering_the_same_failures_is_not_new_evidence(self) -> None:
+        self.assertEqual(
+            schedule_domain.attempt_signature(self.attempt(diagnostics=("one", "two"), controls=("a", "b"))),
+            schedule_domain.attempt_signature(self.attempt(diagnostics=("two", "one"), controls=("b", "a"))),
+        )
+
+    def test_the_threshold_of_same_signature_attempts_raises_a_named_struggle(self) -> None:
+        history = [self.attempt() for _ in range(3)]
+        self.assertIsNone(schedule_domain.struggle_verdict(history[:2], 3))
+        verdict = schedule_domain.struggle_verdict(history, 3)
+        assert verdict is not None
+        self.assertEqual((verdict.subject, verdict.attempts, verdict.reason), (self.SUBJECT, 3, "same_signature"))
+        self.assertEqual(verdict.signature, schedule_domain.attempt_signature(history[-1]))
+
+    def test_a_single_failure_and_changing_signatures_never_raise_a_struggle(self) -> None:
+        self.assertIsNone(schedule_domain.struggle_verdict([self.attempt()], 3))
+        moving = [self.attempt(diagnostics=(f"failure {index}",), head=str(index) * 40) for index in range(6)]
+        self.assertIsNone(schedule_domain.struggle_verdict(moving, 3))
+
+    def test_new_evidence_resets_the_run_rather_than_only_delaying_it(self) -> None:
+        history = [self.attempt(), self.attempt(), self.attempt(diagnostics=("something new",)), self.attempt()]
+        self.assertIsNone(schedule_domain.struggle_verdict(history, 3))
+
+    def test_a_revert_oscillation_raises_before_the_threshold_even_with_changing_signatures(self) -> None:
+        history = [
+            self.attempt(diagnostics=("first",), head="a" * 40),
+            self.attempt(diagnostics=("second",), head="b" * 40),
+            self.attempt(diagnostics=("third",), head="a" * 40),
+        ]
+        verdict = schedule_domain.struggle_verdict(history, 5)
+        assert verdict is not None
+        self.assertEqual(verdict.reason, "revert_oscillation")
+
+    def test_a_threshold_below_two_and_a_mixed_subject_history_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least 2 attempts"):
+            schedule_domain.struggle_verdict([self.attempt()], 1)
+        other = schedule_domain.RepairAttempt(
+            subject=f"{REPOSITORY}#901", diagnostics=("failure",), failing_controls=("verify",), head="a" * 40
+        )
+        with self.assertRaisesRegex(ValueError, "judged per subject"):
+            schedule_domain.struggle_verdict([self.attempt(), other], 2)
+
+    def test_the_declaration_round_trips_through_the_line_the_supervisor_reads(self) -> None:
+        verdict = schedule_domain.struggle_verdict([self.attempt(), self.attempt()], 2)
+        assert verdict is not None
+        line = schedule_domain.struggle_declaration(verdict)
+        self.assertEqual(
+            schedule_domain.parse_struggle_declarations(f"noise\n{line}\nmore noise"),
+            [{
+                "subject": verdict.subject,
+                "attempts": verdict.attempts,
+                "reason": verdict.reason,
+                "signature": verdict.signature,
+            }],
+        )
+        self.assertEqual(schedule_domain.parse_struggle_declarations("nothing was declared here"), [])
+
+    def test_the_repetition_bound_is_a_policy_value_and_not_a_code_literal(self) -> None:
+        policy = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text(encoding="utf-8"))
+        self.assertGreaterEqual(policy["struggle_same_signature_attempts"], 2)
+        for module in ("noodles.py", "schedule_domain.py"):
+            source = (CANDIDATE_ROOT / module).read_text(encoding="utf-8")
+            with self.subTest(module=module):
+                self.assertNotIn("struggle_same_signature_attempts =", source)
+                self.assertNotIn("STRUGGLE_SAME_SIGNATURE_ATTEMPTS", source)
+
+
 if __name__ == "__main__":
     unittest.main()

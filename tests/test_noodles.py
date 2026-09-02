@@ -1146,6 +1146,77 @@ class StartUnattendedTests(unittest.TestCase):
         sleep.assert_called_once_with(0.25)
         process.terminate.assert_not_called()
 
+    def repair_receipt(self, subject: str, attempt: int, *, conclusion: str = "failure", job: str = "verify", head: str = "a" * 40) -> dict:
+        return {
+            "issue_subject": subject,
+            "head_sha": head,
+            "failed_workflow_run": {"conclusion": conclusion},
+            "failed_job": {"name": job, "conclusion": conclusion},
+            "repair": {"attempt": attempt},
+        }
+
+    def test_wrapper_declares_a_struggle_for_the_repeating_subject_only(self) -> None:
+        """ed3c/noodles#323 - the production emitter, both directions. `#900` repeats one signature
+        and is declared exactly once at the policy threshold, then contributes nothing further;
+        `#901` carries a different signature every attempt and is never declared, so a lane still
+        producing evidence is not stopped alongside the one that is not."""
+        process = mock.Mock(returncode=0)
+        process.poll.side_effect = [None, None, None, None, 0, 0]
+        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
+        polls = [
+            [self.repair_receipt("ed3c/noodles#900", 1), self.repair_receipt("ed3c/noodles#901", 1, conclusion="timed_out")],
+            [self.repair_receipt("ed3c/noodles#900", 2), self.repair_receipt("ed3c/noodles#901", 2, conclusion="cancelled")],
+            [self.repair_receipt("ed3c/noodles#900", 3), self.repair_receipt("ed3c/noodles#901", 3, job="trusted-preview")],
+            [self.repair_receipt("ed3c/noodles#900", 4), self.repair_receipt("ed3c/noodles#901", 4, conclusion="startup_failure")],
+        ]
+
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+             mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
+             mock.patch.object(noodles, "provider_sync"), \
+             mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
+             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles.runtime_contract, "noodle_project_root", return_value=CANDIDATE_ROOT), \
+             mock.patch.object(noodles.daemon_lease, "reject_existing_lease"), \
+             mock.patch.object(noodles.daemon_lease, "admit_started_daemon", return_value={"admitted": True}), \
+             mock.patch.object(noodles.subprocess, "Popen", return_value=process), \
+             mock.patch.object(noodles, "repair_pending_reviews", side_effect=polls), \
+             mock.patch.object(noodles, "sweep_dead_claims", return_value=[]), \
+             mock.patch.object(noodles, "reconcile_once"), \
+             mock.patch.object(time, "sleep"), \
+             mock.patch.object(sys, "stderr", io.StringIO()) as captured:
+            noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+            emitted = captured.getvalue()
+
+        declarations = [line for line in emitted.splitlines() if line.startswith("NOODLES_STRUGGLE_DETECTED:")]
+        threshold = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text())["struggle_same_signature_attempts"]
+        self.assertEqual(len(declarations), 1, emitted)
+        self.assertIn("subject ed3c/noodles#900", declarations[0])
+        self.assertIn(f"attempts {threshold}", declarations[0])
+        self.assertIn("reason same_signature", declarations[0])
+        self.assertIn("signature controls=[verify]", declarations[0])
+        self.assertNotIn("ed3c/noodles#901", emitted)
+
+    def test_wrapper_refuses_to_start_when_the_repetition_bound_is_not_a_policy_value(self) -> None:
+        """Planted negative for the "thresholds live in policy" clause: with the key gone the
+        generation fails closed before it spawns anything, rather than falling back to a literal."""
+        policy = {"repository": "ed3c/noodles", "default_branch": "main", "required_check": "verify"}
+        fitness = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text())
+        del fitness["struggle_same_signature_attempts"]
+        with mock.patch.object(noodles, "control_checkout_admission", return_value={"branch": "main"}), \
+             mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": []}), \
+             mock.patch.object(noodles, "runtime_check", return_value={"binary_path": "/tmp/noodle"}), \
+             mock.patch.object(noodles, "provider_sync"), \
+             mock.patch.object(noodles, "skill_discovery_check"), mock.patch.object(noodles.codex_isolation, "codex_surface_canary"), \
+             mock.patch.object(noodles, "protection_policy", return_value=policy), \
+             mock.patch.object(noodles, "protection_readback"), \
+             mock.patch.object(noodles, "load_json", return_value=fitness), \
+             mock.patch.object(noodles.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(noodles.GateError, "struggle_same_signature_attempts"):
+                noodles.start_unattended(CANDIDATE_ROOT, "http://noodle.test", 0.25)
+        popen.assert_not_called()
+
     def test_wrapper_does_not_swallow_non_gate_exceptions(self) -> None:
         process = mock.Mock(returncode=0)
         process.poll.side_effect = [None, None]
