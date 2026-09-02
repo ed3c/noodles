@@ -68,6 +68,96 @@ symbol surface lands, deletion-type refactors either keep the symbol (move it
 aside, ownership-dispositioned) or carry a hand-audit naming every searched
 surface and the open-issue sweep.
 
+## The sensitivity layer — oracle strength is a separate claim
+
+The six clauses prove one thing: under the CURRENTLY ENCODED observable
+contract, candidate and baseline are equivalent. A green suite says nothing
+about its own blind spots — whether the oracle can even see the distinctions
+that matter. Oracle sensitivity is a separate claim requiring separate
+evidence, and it must never be folded into the equivalence claim itself.
+
+> Observable behavior is preserved by executable regression oracles; oracle
+> strength is demonstrated by adversarial sensitivity. Mutation testing,
+> planted negatives, property tests, and fault injection strengthen the
+> oracle; they do not replace it, discover architecture, or independently
+> prove correctness.
+
+### The confidence ladder (cost-ordered, cumulative; no rung replaces a lower one)
+
+1. Regression green — the floor: the encoded contract holds.
+2. Red-then-green — sensitivity to one specific historical bug.
+3. Planted negative — sensitivity to one designed invariant violation.
+4. Differential mutation — systematically generated local semantic
+   perturbations of the touched surface (`>=`→`>`, `and`→`or`, `==`→`!=`,
+   dropped guard clauses), each re-running the suite. A surviving mutant is
+   not a refactor failure; it is a measured oracle blind spot.
+
+### Mutation contract (proposed MUTATION.SENSITIVITY.001 — not yet spec)
+
+Mutation testing measures oracle sensitivity. It does not establish
+architectural correctness, discover module boundaries, or independently
+prove behavioral equivalence.
+
+Required only when risk triggers it:
+
+- **T1 — a refactor edits executable semantics inside a moved or owned
+  definition** (conditionals, state transitions, normalization,
+  authorization, retry, provider matching, evidence admission): differential
+  mutation on the touched surface. Mechanical relocation — imports and paths
+  only, zero semantic edits — requires none; the six clauses suffice.
+- **T2 — a new or modified oracle/gate lands** (verification, authorization,
+  state-transition, evidence-binding, provider-admission,
+  scheduler-concurrency code): mutate the gate itself. The question is:
+  when this gate is deliberately broken, does anything turn red?
+- **T3 — first establishment of a failure-class guard**: mutate the guard's
+  predicate (invert it, drop one classification, skip one AST shape) and
+  require detection — upgrading the guard from one planted literal to
+  sensitivity evidence.
+
+Disposition, never score:
+
+- Every surviving mutant is DISPOSITIONED, never required dead:
+  `KILLED | EQUIVALENT | NON_OBSERVABLE_BY_CONTRACT | OUT_OF_SCOPE` — the
+  last two with bounded machine-readable reasons, never free prose.
+- No global mutation score may ever become a merge gate. A scalar objective
+  gets optimized as a scalar (the line-count ratchet that acquired merge
+  authority is this machine's own receipt); demanding all-mutants-killed
+  produces pointless tests, implementation distortion, and mutation gaming.
+- Differential scoping (changed semantic surfaces only) is an optimization
+  only: it must not change the meaning of killed, survived, or error.
+
+### The formal shape
+
+```
+RefactorSafe(B, C) :=
+    Observable(B) == Observable(C)
+    AND Sensitivity(C) >= Sensitivity(B)
+    AND ArchitectureInvariants(C) == PASS
+```
+
+Observable is decided by the suite, physical feature oracles, provider
+readback, and planted controls. Sensitivity by mutation, fault injection,
+property tests, and negative controls. ArchitectureInvariants by ownership,
+dependency direction, component surface, single-writer, and provider
+authority. code-intel appears nowhere in RefactorSafe: it only reduces the
+time to find the candidate seam. Its single necessity is R6, where the
+zero-consumer claim of a deletion-type refactor is one architecture
+invariant whose only sufficient evidence is the symbol graph plus the
+open-issue ledger — evidence for one invariant in one refactor type, never
+an oracle of equivalence.
+
+### Sources (primary)
+
+- Uncle Bob × Matt Pocock transcript — mutation mechanics; agents make the
+  overnight run cheap: <https://sozai.app/transcript/uncle-bob-software-fundamentals-ai/>
+- SwarmForge — cleaner (behavior-preserving) / architect (structure) /
+  hardener (mutation) / QA (executable acceptance) are separate concerns:
+  <https://github.com/unclebob/swarm-forge>
+- mutate4java — differential mutation by declaration fingerprint:
+  <https://github.com/unclebob/mutate4java>
+- Acceptance Pipeline mutator spec — "Differential mutation is an
+  optimization only": <https://github.com/unclebob/Acceptance-Pipeline-Specification/blob/main/mutator-spec.md>
+
 ## Applicability table (fill per atom)
 
 | clause | applies? | control instantiated at |
@@ -78,6 +168,7 @@ surface and the open-issue sweep.
 | R4 intermediate states | | |
 | R5 reversibility | | |
 | R6 deletion proof | | |
+| Sensitivity trigger T1–T3 | | |
 
 ## Receipts behind the clauses (pointers, not authority)
 
@@ -92,6 +183,10 @@ not wait for. Dispatcher ledger materials, 2026-09-01 through 09-03.
 
 The gravity-well drain atom is this contract's first consumer: its acceptance
 already instantiates R1–R5 and declares R6 inapplicable (move-type, no
-deletions). Each clause graduates when some atom's landed acceptance carries
-it as an executable control that a later atom can cite by path; the file
-retires when all six have landed carriers.
+deletions); for the same reason trigger T1 does not fire for it — mechanical
+relocation adds no sensitivity obligation. Each clause graduates when some
+atom's landed acceptance carries it as an executable control that a later
+atom can cite by path. The sensitivity layer graduates when the mutation
+contract lands in the specification with an executable differential-mutation
+carrier; until then it binds nothing. The file retires when the six clauses
+and the sensitivity layer all have landed carriers.
