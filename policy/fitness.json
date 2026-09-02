@@ -15,6 +15,7 @@
   },
   "max_unowned_top_level_definitions": 145,
   "max_workflows": 5,
+  "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",
   "required_codex_task_profiles": {
     "schedule": {

@@ -117,9 +117,15 @@ RATE_LIMIT_RESET_MARGIN_SECONDS = 60.0
 # constraint: declares the wait in one exact line and every deadline above it reads that line
 # constraint: rather than re-deriving a wait nobody else can observe.
 DECLARED_QUOTA_WAIT_RE = re.compile(r"NOODLES_GH_QUOTA_WAIT:[^\n]*?recoverable-wait[ \t]+(\d+)s")
+# constraint: ed3c/noodles#323 - the same shape as the quota declaration above and for the same
+# constraint: reason: per-subject attempt history is observable only inside the generation, so the
+# constraint: generation declares it in one exact line instead of the supervisor re-deriving it.
+# constraint: schedule_domain owns both halves of that line so the emitter and this reader cannot
+# constraint: drift apart in two files.
 CYCLE_STATUS_MEANINGS = {
     "ok": "the generation exited zero and the bucket never refused it",
     "quota_wait": "the generation stopped on a declared provider quota wait; recoverable, backoff runs until the bucket's own reset",
+    "struggle_detected": "the generation declared a subject whose attempts stopped producing evidence; the receipt names the repeated signature and the response strategy stays the dispatcher's",
     "failed": "the generation exited non-zero for a reason the provider budget does not explain",
 }
 # constraint: ed3c/noodles#292 - one pointed query on GraphQL's separate point budget in place of
@@ -3390,6 +3396,12 @@ def start_unattended(
     codex_isolation.codex_surface_canary(root, error_cls=GateError)
     policy = protection_policy(root)
     protection_readback(policy["repository"], policy["default_branch"], policy["required_check"])
+    # constraint: ed3c/noodles#323 - the repetition bound is a policy value, read once at start so a
+    # constraint: policy that does not declare one fails the generation closed here rather than at the
+    # constraint: first repair receipt, hours into a burn.
+    struggle_threshold = int(load_json(root / "policy/fitness.json").get("struggle_same_signature_attempts") or 0)
+    if struggle_threshold < 2:
+        raise GateError("policy/fitness.json must declare struggle_same_signature_attempts of at least 2")
     project = runtime_contract.noodle_project_root(root, error_cls=GateError)
     daemon_lease.reject_existing_lease(project, error_cls=GateError)
     env = os.environ.copy()
@@ -3413,12 +3425,46 @@ def start_unattended(
 
     old_int = signal.signal(signal.SIGINT, stop)
     old_term = signal.signal(signal.SIGTERM, stop)
+    # constraint: ed3c/noodles#323 - per-subject, per-generation and nowhere else: this is the only
+    # constraint: seam every attempt crosses, and struggle state deliberately does not outlive the
+    # constraint: generation that observed it.
+    attempted: dict[str, list[schedule_domain.RepairAttempt]] = {}
+    counted: set[tuple[str, int]] = set()
+    struggling: dict[str, schedule_domain.StruggleVerdict] = {}
     try:
         while process.poll() is None:
+            repaired: Any = []
             try:
-                repair_pending_reviews(root, control_url)
+                repaired = repair_pending_reviews(root, control_url)
             except GateError as exc:
                 print(f"repair: {exc}", file=sys.stderr)
+            # constraint: ed3c/noodles#323 - repair_pending_reviews declares list[dict] and is
+            # constraint: re-derived every poll over the same pending reviews, so an attempt is
+            # constraint: counted once per repair.attempt rather than once per poll; anything that is
+            # constraint: not that declared shape is a stub, not evidence, and contributes no attempt.
+            for receipt in repaired if isinstance(repaired, list) else ():
+                subject = str(receipt.get("issue_subject") or "")
+                attempt_number = int((receipt.get("repair") or {}).get("attempt") or 0)
+                if not subject or subject in struggling or (subject, attempt_number) in counted:
+                    continue
+                counted.add((subject, attempt_number))
+                job = receipt.get("failed_job") or {}
+                run = receipt.get("failed_workflow_run") or {}
+                history = attempted.setdefault(subject, [])
+                history.append(schedule_domain.RepairAttempt(
+                    subject=subject,
+                    diagnostics=(str(run.get("conclusion") or ""), str(job.get("conclusion") or "")),
+                    failing_controls=(str(job.get("name") or ""),),
+                    head=str(receipt.get("head_sha") or ""),
+                ))
+                verdict = schedule_domain.struggle_verdict(history, struggle_threshold)
+                if verdict is not None:
+                    # constraint: the loop stops cleanly for THIS subject only - it is dropped from
+                    # constraint: further attempts for the rest of the generation while every other
+                    # constraint: subject keeps running, and choosing what to do about it (reset the
+                    # constraint: context, narrow the atom, escalate) stays a dispatcher judgment.
+                    struggling[subject] = verdict
+                    print(schedule_domain.struggle_declaration(verdict), file=sys.stderr)
             try:
                 for outcome in sweep_dead_claims(root):
                     if outcome.get("action") in ("adopted", "released", "held"):
@@ -3547,14 +3593,24 @@ def cycle_status(
 
     ed3c/noodles#291 - a depleted bucket is a schedulable wait, not a defect. A generation that
     stopped on the provider's own budget gets its own status and backs off until that budget's
-    reset; only a generation the budget does not explain is a failure."""
-    if receipt["returncode"] == 0 and receipt["reason"] == "exited":
+    reset; only a generation the budget does not explain is a failure.
+
+    ed3c/noodles#323 adds the repetition dimension as a third status, never as a shade of the other
+    two. A generation that stopped a struggling subject cleanly still exits zero, so the clean-exit
+    branch has to see the declaration: collapsing it into `ok` is exactly how nineteen no-evidence
+    cycles read as progress. A declared quota wait still outranks it, because that wait carries a
+    real reset the loop must honour before anything else - the struggle stays on the receipt either
+    way, and only a struggle the budget does not explain becomes the cycle's own status."""
+    struggles = list(receipt.get("declared_struggles") or ())
+    if receipt["returncode"] == 0 and receipt["reason"] == "exited" and not struggles:
         return "ok", 0.0
     declared = float(receipt.get("declared_quota_wait") or 0.0)
     if declared > 0:
         return "quota_wait", declared
     if receipt["returncode"] != 0 and RATE_LIMIT_TAIL_RE.search(receipt["tail"]):
         return "quota_wait", rate_limit_cooldown(read_rate_limit(), time.time())
+    if struggles:
+        return "struggle_detected", backoff_seconds
     if receipt["returncode"] != 0 and receipt["reason"] == "exited":
         return "failed", backoff_seconds
     return "failed", 0.0
@@ -3595,6 +3651,13 @@ def run_supervised_generation(
     reason = "exited"
     quota_wait_until = 0.0
     declared_quota_wait = 0.0
+    # constraint: ed3c/noodles#323 - collected live as well as off the tail, because a struggle
+    # constraint: declared early in a long generation scrolls out of SUPERVISE_TAIL_LINES and a
+    # constraint: declaration that scrolled away would read as a generation that never struggled.
+    # constraint: A declared struggle deliberately does NOT move quota_wait_until: a quota wait is
+    # constraint: provider-ordered silence, a struggle hold is not silence at all - the generation
+    # constraint: keeps working its other subjects - so it earns no reprieve from the wedge deadline.
+    struggles: dict[tuple[str, str], dict[str, Any]] = {}
     while process.poll() is None:
         ready, _, _ = select.select([process.stdout], [], [], SUPERVISE_POLL_SECONDS)
         now = now_fn()
@@ -3618,6 +3681,8 @@ def run_supervised_generation(
             if declared is not None:
                 declared_quota_wait = float(declared.group(1))
                 quota_wait_until = now + declared_quota_wait
+            for declaration in schedule_domain.parse_struggle_declarations(line):
+                struggles.setdefault((declaration["subject"], declaration["signature"]), declaration)
             continue
         try:
             process.wait(timeout=SUPERVISE_TERMINATE_GRACE)
@@ -3641,12 +3706,15 @@ def run_supervised_generation(
     process.stdout.close()
     joined = "\n".join(tail)
     trailing = DECLARED_QUOTA_WAIT_RE.findall(joined)
+    for declaration in schedule_domain.parse_struggle_declarations(joined):
+        struggles.setdefault((declaration["subject"], declaration["signature"]), declaration)
     return {
         "reason": reason,
         "returncode": int(process.returncode if process.returncode is not None else -1),
         "seconds": round(now_fn() - started, 3),
         "tail": joined,
         "declared_quota_wait": max([declared_quota_wait, *(float(value) for value in trailing)] or [0.0]),
+        "declared_struggles": list(struggles.values()),
     }
 
 

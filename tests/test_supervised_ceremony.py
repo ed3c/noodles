@@ -257,7 +257,17 @@ class SupervisedGenerationTests(ControlCheckoutFixture):
         )
         self.assertEqual(noodles.cycle_status(broken, refuse, 180.0), ("failed", 180.0))
         self.assertEqual(noodles.cycle_status(clean, refuse, 180.0), ("ok", 0.0))
-        self.assertEqual(sorted(noodles.CYCLE_STATUS_MEANINGS), ["failed", "ok", "quota_wait"])
+        # constraint: ed3c/noodles#323 - stays a strict equality, and this is the measured reason
+        # constraint: rather than the assumed one. It looks like the ed3c/noodles#285 trusted-transition
+        # constraint: deadlock (main's copy of this module judging a candidate that adds a status), but
+        # constraint: `.github/workflows/verify.yml` sets PYTHONPATH to `.trusted`, so a trusted module
+        # constraint: imports the TRUSTED engine and reads the candidate only as data through
+        # constraint: CANDIDATE_ROOT. This line therefore judges main's own vocabulary against main's
+        # constraint: own literal and can never deadlock a candidate. Physically confirmed:
+        # constraint: `./noodles verify --trusted-preview` on the candidate that added
+        # constraint: `struggle_detected` reported would_red=[]. Keep it exact - a floor here would
+        # constraint: stop catching an accidentally added status and buy nothing.
+        self.assertEqual(sorted(noodles.CYCLE_STATUS_MEANINGS), ["failed", "ok", "quota_wait", "struggle_detected"])
 
     def test_supervise_receipt_records_the_quota_wait_status_and_backs_off_until_reset(self) -> None:
         slept: list[float] = []
@@ -279,6 +289,102 @@ class SupervisedGenerationTests(ControlCheckoutFixture):
         self.assertEqual(slept, [240.0])
         ledger = (self.control / noodles.SUPERVISE_LOG_RELATIVE).read_text(encoding="utf-8").splitlines()
         self.assertEqual(json.loads(ledger[-1])["status"], "quota_wait")
+
+    STRUGGLE_SIGNATURE = "controls=[verify] diagnostics=[repository verification failed]"
+
+    def declaring_child(self, *, subject: str, tail: str = "raise SystemExit(0)\n") -> list[str]:
+        line = (
+            f"NOODLES_STRUGGLE_DETECTED: subject {subject} attempts 3 reason same_signature "
+            f"signature {self.STRUGGLE_SIGNATURE}"
+        )
+        return self.child(f"print({line!r}, flush=True)\n{tail}")
+
+    def test_cycle_status_separates_a_declared_struggle_from_a_failure_a_wait_and_a_clean_exit(self) -> None:
+        """ed3c/noodles#323 - the status is a sibling of quota_wait, never a shade of `failed`, and
+        never collapsed into `ok`: a generation that stopped a struggling subject cleanly exits zero,
+        which is exactly how nineteen no-evidence cycles read as progress."""
+        def refuse() -> object:
+            self.fail("a declared struggle carries no provider wait; no live bucket read is admitted")
+
+        struggle = [{"subject": "ed3c/noodles#900", "attempts": 3, "reason": "same_signature", "signature": self.STRUGGLE_SIGNATURE}]
+        clean_hold = {"returncode": 0, "reason": "exited", "tail": "", "declared_quota_wait": 0.0, "declared_struggles": struggle}
+        failed_hold = {"returncode": 1, "reason": "exited", "tail": "", "declared_quota_wait": 0.0, "declared_struggles": struggle}
+        no_hold = {"returncode": 1, "reason": "exited", "tail": "", "declared_quota_wait": 0.0, "declared_struggles": []}
+
+        self.assertEqual(noodles.cycle_status(clean_hold, refuse, 180.0), ("struggle_detected", 180.0))
+        self.assertEqual(noodles.cycle_status(failed_hold, refuse, 180.0), ("struggle_detected", 180.0))
+        self.assertEqual(noodles.cycle_status(no_hold, refuse, 180.0), ("failed", 180.0))
+        self.assertIn("struggle_detected", noodles.CYCLE_STATUS_MEANINGS)
+        self.assertNotEqual(
+            noodles.CYCLE_STATUS_MEANINGS["struggle_detected"], noodles.CYCLE_STATUS_MEANINGS["failed"]
+        )
+
+    def test_supervise_receipt_records_the_struggle_status_and_names_the_repeated_signature(self) -> None:
+        slept: list[float] = []
+        receipts = noodles.supervise(
+            self.control,
+            "http://127.0.0.1:3210",
+            generations=1,
+            child_argv=self.declaring_child(subject="ed3c/noodles#900"),
+            backoff_seconds=90.0,
+            sleep_fn=slept.append,
+            rate_limit_fn=lambda: self.fail("a declared struggle must not spend a call reading the bucket"),
+        )
+
+        self.assertEqual((receipts[0]["status"], receipts[0]["cooldown"]), ("struggle_detected", 90.0))
+        self.assertEqual(receipts[0]["meaning"], noodles.CYCLE_STATUS_MEANINGS["struggle_detected"])
+        self.assertEqual(receipts[0]["declared_struggles"], [{
+            "subject": "ed3c/noodles#900",
+            "attempts": 3,
+            "reason": "same_signature",
+            "signature": self.STRUGGLE_SIGNATURE,
+        }])
+        ledger = json.loads((self.control / noodles.SUPERVISE_LOG_RELATIVE).read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(ledger["status"], "struggle_detected")
+        self.assertEqual(ledger["declared_struggles"][0]["signature"], self.STRUGGLE_SIGNATURE)
+
+    def test_a_generation_that_never_declares_carries_no_struggle_and_keeps_its_ordinary_status(self) -> None:
+        """Planted negative control - the seam must stay silent unless a struggle was declared, or
+        every ordinary failure would arrive dressed as an exhausted lane."""
+        outcome = noodles.run_supervised_generation(
+            self.control,
+            self.child("print('repair: attempt 1 of 3 failed', flush=True)\nraise SystemExit(1)"),
+            wedge_seconds=30.0,
+            rotate_after_seconds=30.0,
+        )
+
+        self.assertEqual(outcome["declared_struggles"], [])
+        self.assertEqual(noodles.cycle_status(outcome, lambda: self.fail("no bucket read"), 180.0), ("failed", 180.0))
+
+    def test_a_declared_hold_lets_other_subjects_finish_but_never_licenses_silence(self) -> None:
+        """Both directions, mirroring ed3c/noodles#291 by contrast. A quota wait is provider-ordered
+        SILENCE and earns a reprieve from the wedge deadline. A struggle hold is not silence: the
+        generation drops one subject and keeps working the others, so it must reach its own exit
+        untouched - and a generation that declares a hold and then goes quiet is still killed on the
+        ordinary clock, because the hold was never a licence to stop producing output."""
+        continuing = noodles.run_supervised_generation(
+            self.control,
+            self.declaring_child(
+                subject="ed3c/noodles#900",
+                tail="import time\nfor _ in range(4):\n    print('subject ed3c/noodles#901 progressing', flush=True)\n    time.sleep(0.5)\nraise SystemExit(0)\n",
+            ),
+            wedge_seconds=2.0,
+            rotate_after_seconds=120.0,
+        )
+        silent = noodles.run_supervised_generation(
+            self.control,
+            self.declaring_child(subject="ed3c/noodles#900", tail="import time\ntime.sleep(6)\n"),
+            wedge_seconds=2.0,
+            rotate_after_seconds=120.0,
+        )
+
+        self.assertEqual(continuing["reason"], "exited")
+        self.assertEqual(continuing["returncode"], 0)
+        self.assertIn("ed3c/noodles#901 progressing", continuing["tail"])
+        self.assertEqual(len(continuing["declared_struggles"]), 1)
+        self.assertEqual(silent["reason"], "wedge")
+        self.assertEqual(len(silent["declared_struggles"]), 1)
+        self.assertLess(silent["seconds"], continuing["seconds"] + 4.0)
 
     def test_chatty_generation_is_bounded_by_the_rotation_deadline(self) -> None:
         outcome = noodles.run_supervised_generation(
