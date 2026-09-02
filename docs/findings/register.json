@@ -99,8 +99,8 @@
         "reproduce: add one entry to policy/component-owners.json, then PYTHONPATH=. python3 -m unittest tests.test_component_surface -> `AssertionError: 19 != 18`"
       ],
       "owner_component": "verify",
-      "status": "open",
-      "chain": "72737a406f9f6838e1d5c474b19e6e32482da7e4a8d930fa9c311c561933dddc"
+      "status": "retired",
+      "chain": "c6d829827a19c964b529a574750ee82e14c32d76880ffa31eae66331ad213369"
     },
     {
       "id": 8,
@@ -114,7 +114,7 @@
       ],
       "owner_component": "schedule",
       "status": "open",
-      "chain": "f0926c59c44c05c7438ec247d87c5eb57bfbed9c9e5cc851900aa7a1e8a29002"
+      "chain": "0461abccd6cb45d0e3a2e7d65c0601889cafe2b1fa19c38955a993789264dfe2"
     }
   ]
 }

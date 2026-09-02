@@ -566,12 +566,25 @@ class ComponentOwnerMapTests(unittest.TestCase):
         regression this ratchet exists for (an accidental deletion shrinking the count) while
         admitting legitimate growth. ed3c/noodles#278 owns building the fully self-computed version of
         this ratchet (and the separate `contract` glob "*" bypass); this floor is the narrower, urgent
-        unblock only."""
+        unblock only.
+
+        ed3c/noodles#326, findings register entry 7: the sibling assertion below carried the mirror
+        image of that same deadlock in the opposite direction. `assertEqual(len(owned), 18)` pinned
+        the owner map's SIZE, and trusted verify runs this file from the default branch against the
+        candidate's `policy/component-owners.json`, so a candidate that added even one owner entry
+        measured 19 against a literal only `main` could hold and could never merge to update it -
+        reproduced when ed3c/noodles#272 tried to declare `claimed_boundary_widening`'s owner and had
+        to drop the entry instead. Widening it to the same monotonic floor keeps the regression this
+        assertion exists for - an owner entry silently deleted, which shrinks the count - while
+        admitting the dispositions ed3c/noodles#326 drains into the map. This is the widen half of a
+        staged transition: the flip that asserts the drained floor is `unowned == 0` (see
+        `UnownedDefinitionRatchetTests`), and it can only land on a default branch carrying this
+        widening."""
         source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
         defs = noodles.top_level_definitions(source, "noodles.py")
         owned = self.owners.get("noodles.py", {})
         self.assertGreaterEqual(len(defs), 139)
-        self.assertEqual(len(owned), 18)
+        self.assertGreaterEqual(len(owned), 18)
 
     def test_absent_map_is_inert_rather_than_red(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -667,9 +680,19 @@ class ComponentOwnerGateTests(unittest.TestCase):
     def plant(self, definition: str) -> None:
         (self.candidate / "noodles.py").write_text(mutate_definition(self.source, definition), encoding="utf-8")
 
-    def errors(self, component: str, changed: list[str] | None = None) -> list[str]:
+    def errors(
+        self,
+        component: str,
+        changed: list[str] | None = None,
+        owners: dict[str, dict[str, tuple[str, ...]]] | None = None,
+    ) -> list[str]:
         return noodles.component_owner_errors(
-            component, self.components, changed or ["noodles.py"], self.owners, CANDIDATE_ROOT, self.candidate
+            component,
+            self.components,
+            changed or ["noodles.py"],
+            self.owners if owners is None else owners,
+            CANDIDATE_ROOT,
+            self.candidate,
         )
 
     def test_planted_negative_verify_atom_touching_schedule_dispatch_fails_closed(self) -> None:
@@ -689,10 +712,34 @@ class ComponentOwnerGateTests(unittest.TestCase):
         self.assertEqual(self.errors("verify"), [])
 
     def test_unowned_definition_is_not_judged_and_owned_neighbours_stay_silent(self) -> None:
+        """Both halves of the ownership question, each built from the shipped map instead of read
+        out of whatever it currently says.
+
+        ed3c/noodles#326 is why. This planted `verify_pull_request` and passed the shipped map
+        straight through, so it asserted "this definition is unowned" - a statement about the map's
+        contents, not about the gate. Trusted verify runs THIS copy against the candidate's map, so
+        the moment a candidate gave that definition an owner the assertion reddened on the default
+        branch's terms and no drain could ever land. Constructing both states keeps the same
+        production path and the same planted definition, holds the invariant the gate is actually
+        built on - absent from the map is silent, present and undeclared reds - and is true of a
+        map that owns it and a map that does not."""
         self.plant("verify_pull_request")
+        without = {
+            path: {name: owning for name, owning in entries.items() if name != "verify_pull_request"}
+            for path, entries in self.owners.items()
+        }
+        owned = {path: dict(entries) for path, entries in self.owners.items()}
+        owned["noodles.py"]["verify_pull_request"] = ("verify",)
+        self.assertNotIn("verify_pull_request", without["noodles.py"])
         for component in ("verify", "carrier", "schedule"):
             with self.subTest(component=component):
-                self.assertEqual(self.errors(component), [])
+                self.assertEqual(self.errors(component, owners=without), [])
+                self.assertEqual(
+                    self.errors(component, owners=owned),
+                    []
+                    if component == "verify"
+                    else [f"noodles.py:verify_pull_request is owned by verify but this candidate declares {component!r}"],
+                )
 
     def test_whole_repository_component_admits_every_definition(self) -> None:
         self.plant("schedule_publish")
