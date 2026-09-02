@@ -61,6 +61,8 @@ class RepositoryGateTests(unittest.TestCase):
                 "markdown_share": policy["max_markdown_share"],
                 "normalized_line_entropy": policy["min_normalized_entropy"],
                 "test_to_executable_ratio": policy["min_test_to_executable_ratio"],
+                "unowned_top_level_definitions": policy["max_unowned_top_level_definitions"],
+                "cross_surface_import_edges": dict(policy["max_cross_surface_import_edges"]),
             }
         )
         return metrics
