@@ -140,3 +140,5 @@ separate permission. These observations are research notes, not legal advice.
   worktree owner, merge owner, retry engine, or observability backend is changed.
 - This document cannot be used as a verification receipt, landing gate, or completion
   proof.
+- The existing provider lander remains the sole merge authority; this decision creates
+  no alternative landing path.
