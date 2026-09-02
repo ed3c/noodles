@@ -1,0 +1,627 @@
+{
+  "schema_version": 1,
+  "converted": [
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_runtime_lock_pins_expected_release",
+      "was": "the whole policy/runtime.lock.json `runtime` object as a literal dict",
+      "now": "tests/support.runtime_lock_shape_errors - repository identity, v-semver release, 40-hex commit, 64-hex digests, exact field sets, and each platform's asset name derived from its own key"
+    }
+  ],
+  "dispositions": [
+    {
+      "path": "tests/test_agent_friendly_architecture.py",
+      "test": "AgentFriendlyArchitectureTests.test_document_route_and_agent_friendly_spec_readback",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_agent_friendly_architecture.py",
+      "test": "AgentFriendlyArchitectureTests.test_system_specification_requirement_identity_and_mutable_state_controls",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_every_boundary_control_stays_red_inside_the_journey",
+      "literal": "['wrong_subject', 'stale_source', 'wrong_adapter', 'wrong_path', 'wrong_range']",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_journey_resolves_a_python_candidate_to_one_exact_subject_evidence_row",
+      "literal": "'P'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_journey_resolves_a_python_candidate_to_one_exact_subject_evidence_row",
+      "literal": "'ed3c/noodles#900009'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_journey_resolves_a_python_candidate_to_one_exact_subject_evidence_row",
+      "literal": "'evidence_ledger.py'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Names the tracked path `evidence_ledger.py`. The journey echoes the test's own input, but a candidate that renames or retires that module reds this trusted module and cannot edit it; the cure is to derive the probe target from the candidate tree rather than name it."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_journey_resolves_a_python_candidate_to_one_exact_subject_evidence_row",
+      "literal": "'source_digest'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Names the tracked definition `source_digest` for the same reason as the sibling path literal on line 198; a candidate that renames the definition deadlocks."
+    },
+    {
+      "path": "tests/test_code_intel_canary.py",
+      "test": "LiveCanaryJourneyTests.test_journey_resolves_a_python_candidate_to_one_exact_subject_evidence_row",
+      "literal": "[0, 25, 0]",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The parser grammar semantic version is a durable pin in `policy/parser.lock.json`. A candidate that bumps the grammar computes a new triple and is compared against one only `main` holds - the deadlock in its pure form."
+    },
+    {
+      "path": "tests/test_component_introduction.py",
+      "test": "SpecificationBindingTests.test_specification_owns_the_two_question_requirement",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentMapTests.test_candidate_component_map_is_valid_and_names_expected_components",
+      "literal": "{'schedule', 'verify', 'carrier', 'contract', 'docs'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The component name set is `policy/components.json` current state. A candidate that legitimately introduces a component reds this trusted assertion and cannot edit it; the cure is to judge the map's shape and its use by the three surface gates instead of its membership."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentMarkerParseTests.test_durable_corpus_carries_a_component_declaring_ready_shape",
+      "literal": "'ready'",
+      "disposition": "invariant",
+      "reason": "The durable ready-backlog corpus is candidate-owned, and its migration is already governed: `tests/support.assert_candidate_preserves_or_migrates_ready_backlog` makes a candidate that changes the corpus own the migration in the same atom, so this literal is bound to a transition surface rather than to a frozen number."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentMarkerParseTests.test_durable_corpus_carries_a_component_declaring_ready_shape",
+      "literal": "'verify'",
+      "disposition": "invariant",
+      "reason": "Same durable-corpus migration surface as the sibling state marker on line 68."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentOwnerMapTests.test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure",
+      "literal": "18",
+      "disposition": "deferred",
+      "owner": "finding-7",
+      "reason": "Register finding 7 already owns this exact instance: `assertEqual(len(owned), 18)` blocks any candidate that adds an owner entry to `policy/component-owners.json`, the deadlock ed3c/noodles#285 widened out of the sibling assertion in the same method. Left to that entry and counted here."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentSurfaceGateTests.test_missing_component_declaration_fails_closed",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentSurfaceGateTests.test_planted_negative_candidate_touching_second_component_surface_fails",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ComponentSurfaceGateTests.test_undeclared_component_name_fails_closed_naming_admitted_components",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ImportTargetReadbackTests.test_repo_module_target_prefers_a_tree_that_provides_the_module",
+      "literal": "'issue_contract.py'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Pins the tracked path a module name resolves to; a candidate that renames `issue_contract.py` deadlocks. The resolver's rule is the invariant; the target file name is candidate state."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "ImportTargetReadbackTests.test_repo_module_target_prefers_a_tree_that_provides_the_module",
+      "literal": "'tests/support.py'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Same module-name-to-tracked-path pin as line 287, for `tests/support.py`."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "UnownedDefinitionRatchetTests.test_direct_readback_verify_json_reports_the_unowned_count",
+      "literal": "('ok', 'max_unowned_top_level_definitions')",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "UnownedDefinitionRatchetTests.test_planted_negative_one_undeclared_definition_raises_the_count",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "VerifyPullRequestComponentGateTests.test_positive_control_a_whole_repository_declaration_that_really_spans_still_lands",
+      "literal": "'contract'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_component_surface.py",
+      "test": "VerifyPullRequestComponentGateTests.test_within_surface_candidate_receives_component_surface_receipt",
+      "literal": "'docs'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationAuthorityTests.test_no_merge_or_closure_path_reads_the_publication",
+      "literal": "{'land_pull_request', 'post_receipt_anchor', 'execute_handoff', 'landing_train', 'train_select'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A function-name inventory of the candidate's own `noodles.py`, same class as line 299."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationAuthorityTests.test_only_the_trusted_verify_path_calls_the_publisher",
+      "literal": "{'verify_pull_request'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A caller inventory of the candidate's own `noodles.py`. The non-claim it defends (only the trusted verify path publishes) is real, but the literal is the current caller set: a candidate that legitimately adds a caller reds and cannot edit this module. The cure is to assert the property - every caller resolves to the trusted verify path - rather than the membership."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationAuthorityTests.test_the_custody_root_literal_lives_in_exactly_one_executable_constant",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationAuthorityTests.test_the_custody_root_literal_lives_in_exactly_one_executable_constant",
+      "literal": "{'noodles.py', 'tests/test_evidence_publication.py'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A tracked-path inventory of where the custody root literal occurs; a candidate that adds a legitimate reader reds."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationProducerTests.test_absent_run_identity_is_its_own_reported_state_not_a_publication",
+      "literal": "'run_identity_absent'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationProducerTests.test_positive_control_a_real_run_identity_packages_and_reads_back_the_candidate",
+      "literal": "'custody_unadmitted'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "PublicationProducerTests.test_positive_control_a_real_run_identity_packages_and_reads_back_the_candidate",
+      "literal": "64",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_evidence_publication.py",
+      "test": "VerifyPullRequestEvidenceGateTests.test_positive_control_receipt_carries_the_publication_bound_to_the_exact_head",
+      "literal": "'custody_unadmitted'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_feature_journey_route.py",
+      "test": "HandoffRouteIsNotTheLandingRouteTests.test_the_journey_gate_has_exactly_one_home_and_it_is_the_landing_route",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_feature_journey_route.py",
+      "test": "HandoffVerbCustodyTests.test_i2_still_names_the_planted_negatives_keeping_the_verb_keeps",
+      "literal": "5",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Pins the current number of planted negatives recorded in `policy/concurrency-proof.json`; a candidate that adds one reds. The invariant is that each named negative is present, not that there are exactly five."
+    },
+    {
+      "path": "tests/test_feature_journey_route.py",
+      "test": "HandoffVerbCustodyTests.test_planted_negative_the_pre_atom_state_no_recorded_custody_is_refused",
+      "literal": "['policy/concurrency-proof.json invariant I2 records no custody for its admission']",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_findings_register.py",
+      "test": "FindingsRegisterReaderTests.test_open_entries_surface_as_read_only_backlog_lines",
+      "literal": "'finding'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_findings_register.py",
+      "test": "FindingsRegisterReaderTests.test_open_entries_surface_as_read_only_backlog_lines",
+      "literal": "'open'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_gh_pacing.py",
+      "test": "GhPacingCarrierTests.test_carrier_passes_argv_stdout_stderr_and_exit_code_byte_faithfully",
+      "literal": "7",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_gh_pacing.py",
+      "test": "GhPacingCarrierTests.test_carrier_passes_argv_stdout_stderr_and_exit_code_byte_faithfully",
+      "literal": "b'\\x00binary\\xffbody'",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_gh_pacing.py",
+      "test": "GhPacingCarrierTests.test_carrier_passes_stdin_through_to_the_real_binary",
+      "literal": "b'{\"body\":\"\\xf0\\x9f\\x8d\\x9c\"}'",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_gh_pacing.py",
+      "test": "GhPacingCarrierTests.test_mutation_secondary_limit_403_never_auto_retries",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_gh_pacing.py",
+      "test": "GhPacingCarrierTests.test_read_only_secondary_limit_403_retries_once_after_retry_after",
+      "literal": "b'ok\\n'",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_gha_execution.py",
+      "test": "CrossRepositoryDispatchTests.test_planted_negative_a_foreign_sender_is_refused_while_the_target_holds_the_phase",
+      "literal": "'gha_cross_repository_held'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "GhAwLockPositiveControlTests.test_the_agent_job_holds_read_only_scope_and_the_apply_job_holds_only_the_three_writes",
+      "literal": "{'contents': 'read'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The hosted agent job's permission map, read out of the compiled workflow the candidate carries; a legitimate recompilation that changes scope deadlocks."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "GhAwLockPositiveControlTests.test_the_agent_job_holds_read_only_scope_and_the_apply_job_holds_only_the_three_writes",
+      "literal": "{'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The hosted apply job's permission map, same class as line 811."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "GhAwLockPositiveControlTests.test_the_tracked_tree_reads_back_the_pinned_compiler_and_every_action_commit",
+      "literal": "'48e5fa3ff52294d91d97715017a9f8693a48387f'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The gh-aw compiler commit, same durable pin as line 789."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "GhAwLockPositiveControlTests.test_the_tracked_tree_reads_back_the_pinned_compiler_and_every_action_commit",
+      "literal": "'v0.86.2'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The gh-aw compiler release pinned in `.github/aw/actions-lock.json` and the compiled lock workflow. A candidate that recompiles the hosted lane against a newer compiler reds this trusted assertion and cannot edit it - the same shape ed3c/noodles#311 cured for the workflow declaration."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "GhAwLockPositiveControlTests.test_the_tracked_tree_reads_back_the_pinned_compiler_and_every_action_commit",
+      "literal": "{'actions/checkout': '11d5960a326750d5838078e36cf38b85af677262', 'actions/create-github-app-token': 'bcd2ba49218906704ab6c1aa796996da409d3eb1', 'oven-sh/setup-bun': '0c5077e51419868618aeaa5fe8019c62421857d6'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The whole action-pin map. A candidate that bumps any pinned action commit reds against a map only `main` holds."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "ProtectionContractTests.test_model_eval_cli_entrypoint_rejects_direct_gh_api_before_spawn",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "ProtectionContractTests.test_model_eval_direct_gh_fixture_command_preserves_frozen_shim_read_path",
+      "literal": "'gh'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "ProtectionContractTests.test_model_eval_positive_fixture_path_is_private_and_parent_surface_is_unchanged",
+      "literal": "2",
+      "disposition": "invariant",
+      "reason": "A shape or size invariant (digest length, refusal count, surface size), not a current value: it holds for every legal candidate."
+    },
+    {
+      "path": "tests/test_github_protection.py",
+      "test": "ProtectionContractTests.test_model_eval_positive_fixture_path_is_private_and_parent_surface_is_unchanged",
+      "literal": "{'GH_TOKEN': 'parent-gh-token', 'GITHUB_TOKEN': 'parent-github-token'}",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_handoff_and_reconcile.py",
+      "test": "ReconcileTests.test_physical_behind_checkout_fast_forwards_cleanly_before_control_ack",
+      "literal": "['ed3c/noodles#33']",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_handoff_and_reconcile.py",
+      "test": "ReconcileTests.test_provider_landed_sends_exact_merge_control_and_accepts_status_ack",
+      "literal": "['ed3c/noodles#33']",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "IntakeNormalizerTests.test_issue_template_file_normalizes_markers_but_stays_incomplete_until_authored",
+      "literal": "'ed3c/noodles#900'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "IntakeNormalizerTests.test_issue_template_file_normalizes_markers_but_stays_incomplete_until_authored",
+      "literal": "'ready'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "IntakeNormalizerTests.test_issue_template_file_normalizes_markers_but_stays_incomplete_until_authored",
+      "literal": "['PATCH']",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "RequirementBindingTests.test_identities_come_from_the_specification_headings_through_the_declared_route",
+      "literal": "3",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The declared agent-document route length is `policy/fitness.json` current state (`agent_document_route`, `max_agent_document_hops`). A candidate that legitimately changes the route reds; the invariant is the hop ceiling, which `skill_contract.validate_agent_document_route` already judges from the candidate's own policy."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "SchedulabilityTests.test_landed_predecessor_makes_dependent_schedulable_without_a_manual_marker",
+      "literal": "{'schedulable': True, 'reasons': []}",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_land_receipt_anchor.py",
+      "test": "LandReceiptAnchorTests.test_anchor_is_n_class_no_admission_path_reads_it",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_land_receipt_anchor.py",
+      "test": "LandReceiptAnchorTests.test_anchor_is_n_class_no_admission_path_reads_it",
+      "literal": "{'post_receipt_anchor'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A reader inventory of the candidate's own `noodles.py`; a candidate that adds a legitimate reader of the anchor marker reds."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_adapter_sync_keeps_marker_free_and_uncurable_issues_visible",
+      "literal": "['ready', 'ready', 'blocked']",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_codex_task_profiles_are_exact",
+      "literal": "'.agents/bin'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Pins the tracked directory the Codex carrier lives in, out of the candidate's own `.noodle.toml`; a candidate that relocates the carrier reds."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_execute_skill_unsupported_route_refusal_transition",
+      "literal": "1",
+      "disposition": "invariant",
+      "reason": "A `count(...) == 1` uniqueness check: the invariant is that the identity appears exactly once, not what its current value is. A candidate that adds, renames or removes an identity moves neither side of this comparison."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_metrics_readback_preserves_metrics_and_reports_warning_metadata",
+      "literal": "['architecture warning max_file_lines=1001 exceeds 1000']",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_provider_lock_pins_expected_external_skills",
+      "literal": "'https://github.com/ed3c/plugins.git'",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The pstack provider source URL out of `policy/providers.lock.json`. ed3c/noodles#304 already had to widen the sibling entry-list assertion in this same method for exactly this reason, and #301 is the retirement half; this scalar is the residue of that instance."
+    },
+    {
+      "path": "tests/test_noodles.py",
+      "test": "RepositoryGateTests.test_report_only_architecture_thresholds_emit_warnings_without_failing_verify",
+      "literal": "['unowned_top_level_definitions']",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "Pins the current set of report-only architecture metrics outside the classic fitness limits; a candidate that adds a report-only metric reds. ed3c/noodles#355's metrics normalization is the neighbouring instance of this same list."
+    },
+    {
+      "path": "tests/test_repair.py",
+      "test": "RepairOpenPrCorrelationTests.test_readback_find_open_pr_for_subject_carries_no_correlation_predicate_of_its_own",
+      "literal": "{'matching_open_pull_requests', 'GateError'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A reachability inventory over the candidate's own source; a candidate that adds a legitimately reachable name reds."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_nested_prefix_boundaries_intersect_and_reject",
+      "literal": "'boundary_conflict'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_nested_prefix_boundaries_intersect_and_reject",
+      "literal": "'docs/design/plan.md'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_overlapping_write_boundaries_admit_only_the_first",
+      "literal": "'boundary_conflict'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_overlapping_write_boundaries_admit_only_the_first",
+      "literal": "'claimed'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_overlapping_write_boundaries_admit_only_the_first",
+      "literal": "'schedule_domain.py'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_widening_state_is_visibly_distinct_from_admission_refusal_and_from_blocked",
+      "literal": "'boundary_conflict'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_widening_state_is_visibly_distinct_from_admission_refusal_and_from_blocked",
+      "literal": "'claimed_boundary_widened'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_write_boundary_widened_after_claim_into_live_conflict_is_named_distinctly",
+      "literal": "'claimed'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_write_boundary_widened_after_claim_into_live_conflict_is_named_distinctly",
+      "literal": "'claimed_boundary_widened'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_claim.py",
+      "test": "SchedulePublishTests.test_write_boundary_widened_after_claim_into_live_conflict_is_named_distinctly",
+      "literal": "'noodles.py'",
+      "disposition": "invariant",
+      "reason": "The value is this test's own synthetic input echoed back through production; both halves are authored in the trusted module, so no candidate tree change can move one without the other."
+    },
+    {
+      "path": "tests/test_schedule_contract.py",
+      "test": "ScheduleContractTests.test_codex_carrier_rejects_reasoning_override_before_spawn",
+      "literal": "2",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_schedule_contract.py",
+      "test": "ScheduleContractTests.test_codex_carrier_rejects_unadmitted_or_ambiguous_model_before_spawn",
+      "literal": "2",
+      "disposition": "invariant",
+      "reason": "A process exit code or byte-faithful stream from a fixture binary the test itself writes; it is a behaviour contract, not a value the candidate tree carries."
+    },
+    {
+      "path": "tests/test_schedule_contract.py",
+      "test": "ScheduleContractTests.test_pinned_runtime_promotion_seam_covers_schema_not_semantic_authority",
+      "literal": "'execute'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_schedule_contract.py",
+      "test": "ScheduleContractTests.test_pinned_runtime_promotion_seam_covers_schema_not_semantic_authority",
+      "literal": "'next'",
+      "disposition": "invariant",
+      "reason": "A production vocabulary token the candidate's own code defines and this test asserts the code emits; it moves only when the code path itself is rewritten, in which case the same atom owns both sides."
+    },
+    {
+      "path": "tests/test_skill_eval_sweep.py",
+      "test": "NonClaimTests.test_no_admission_path_reads_the_sweep_manifest_name",
+      "literal": "{'sweep_skill_eval'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A reader inventory of the candidate's own source, same class as line 355."
+    },
+    {
+      "path": "tests/test_skill_eval_sweep.py",
+      "test": "NonClaimTests.test_no_executable_surface_outside_the_sweep_and_its_test_names_the_sweep",
+      "literal": "{'noodles.py', 'runtime_contract.py', 'tests/test_skill_eval_sweep.py'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A tracked-path inventory of every executable surface naming the sweep; a candidate that adds a legitimate one reds."
+    },
+    {
+      "path": "tests/test_skill_eval_sweep.py",
+      "test": "NonClaimTests.test_only_the_cli_entrypoint_reaches_the_sweep_no_schedule_verify_or_land_path_does",
+      "literal": "{'build_parser', 'main'}",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "A caller inventory of the candidate's own source, same class as line 355."
+    },
+    {
+      "path": "tests/test_structural_contract.py",
+      "test": "LiveStructuralReadbackTests.test_cli_parses_the_real_repository_and_every_control_stays_red",
+      "literal": "[0, 25, 0]",
+      "disposition": "deferred",
+      "owner": "finding-9",
+      "reason": "The parser grammar semantic version pinned in `policy/parser.lock.json`; a candidate that bumps the grammar reds. Same instance as tests/test_code_intel_canary.py:207 seen through the CLI readback."
+    }
+  ]
+}

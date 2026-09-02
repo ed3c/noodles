@@ -115,6 +115,21 @@
       "owner_component": "schedule",
       "status": "open",
       "chain": "f0926c59c44c05c7438ec247d87c5eb57bfbed9c9e5cc851900aa7a1e8a29002"
+    },
+    {
+      "id": 9,
+      "date": "2026-09-02",
+      "severity": "S3",
+      "finding": "ed3c/noodles#315's sweep dispositioned every strict-equal literal of a candidate-derived value in the trusted suite - 84 rows in policy/trusted-literals.json, 58 written up as invariants; 25 of them defer to this entry as genuine instances of the trusted-transition deadlock that this atom did not convert, each pinning a durable value the candidate legally owns - the gh-aw compiler release/commit and action-pin map, the hosted job permission maps, the parser grammar semantic version (twice), the pstack provider source, the component name set, the agent-document route length, the Codex carrier path, the report-only metric list, the concurrency-proof planted-negative count, five caller/reader/path inventories over the candidate's own source, and three tracked-path pins in the code-intel canary. Each reds every candidate that legitimately moves its value and can only be cured by an out-of-band trusted-side atom. They are recorded rather than converted because each conversion is its own disclosure design; policy/trusted-literals.json names them individually and the guard refuses any NEW one.",
+      "receipts": [
+        "policy/trusted-literals.json - every row whose disposition is `deferred` and whose owner is this entry",
+        "tests/test_trusted_literals.py::TrustedLiteralSweepTests - the sweep and the guard share one detection rule, so this list cannot drift from the code",
+        "tests/support.runtime_lock_shape_errors - the one instance this atom did convert, with its fixture-pair deadlock control in ConvertedValueDeadlockTests",
+        "reproduce: PYTHONPATH=. python3 -c \"from pathlib import Path; import tests.test_trusted_literals as g; print(len(g.sweep(Path('.'))))\""
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "5b43d299dd27238ebbb4e57c762941232b15baa359e7b6be0c1cffd785b53a59"
     }
   ]
 }

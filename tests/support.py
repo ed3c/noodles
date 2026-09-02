@@ -721,6 +721,47 @@ def write_skill_discovery_fixture(
     return "\n".join(output_lines) + "\n"
 
 
+RUNTIME_LOCK_FIELDS = {"repository", "release", "commit", "command", "platforms"}
+RUNTIME_PLATFORM_FIELDS = {"asset_name", "asset_sha256", "binary_sha256"}
+
+
+def runtime_lock_shape_errors(root: Path) -> list[str]:
+    """ed3c/noodles#315 - judge `root`'s runtime pin by shape, derivation and internal consistency.
+
+    This replaced a strict-equal literal of the whole `runtime` object in
+    `tests/test_noodles.py::test_runtime_lock_pins_expected_release`. That literal lived in a module
+    `pull_request_target` supplies from the DEFAULT BRANCH while the value it compared came from the
+    candidate, so a candidate that legitimately bumped the Noodle release computed new bytes, was
+    compared against a dict only `main` could hold, and could never merge to update it.
+
+    Trusted authority is kept, not weakened: `runtime_contract.validate_runtime_lock` is the shipped
+    judge of repository identity, v-semver release, 40-hex commit and 64-hex digests, so it is
+    delegated to rather than restated. Added here is only what the literal was carrying that the
+    production judge does not - the exact field sets, and the derivation that ties each platform's
+    asset name to its own platform key, which is the internal consistency a copy-pasted platform
+    block breaks and a whole-object literal could only catch by memorizing the answer."""
+    errors = list(runtime_contract.validate_runtime_lock(root))
+    try:
+        runtime = json.loads((root / "policy/runtime.lock.json").read_text(encoding="utf-8"))["runtime"]
+        platforms = runtime["platforms"]
+        items = sorted(platforms.items())
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+        return [*errors, f"runtime lock is unreadable as a runtime object: {exc}"]
+    if set(runtime) != RUNTIME_LOCK_FIELDS:
+        errors.append(f"runtime field set is {sorted(runtime)}, expected exactly {sorted(RUNTIME_LOCK_FIELDS)}")
+    for platform_key, item in items:
+        if not isinstance(item, dict) or set(item) != RUNTIME_PLATFORM_FIELDS:
+            errors.append(f"runtime platform {platform_key} field set is wrong, expected exactly {sorted(RUNTIME_PLATFORM_FIELDS)}")
+            continue
+        expected_asset = f"noodle_{platform_key}.tar.gz"
+        if item["asset_name"] != expected_asset:
+            errors.append(
+                f"runtime platform {platform_key} asset_name {item['asset_name']!r} is not derived "
+                f"from its own key: expected {expected_asset!r}"
+            )
+    return errors
+
+
 def runtime_release_reader(release: str, commit: str, asset_name: str, asset_sha256: str):
     def read(endpoint: str) -> dict:
         if endpoint == f"repos/poteto/noodle/releases/tags/{release}":
