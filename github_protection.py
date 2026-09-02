@@ -674,7 +674,7 @@ def workflow_boundary_readback(
     else:
         if not _workflow_enabled(candidate_job): errors.append("candidate-self-tests job must stay enabled")
         _workflow_checks(errors, [(candidate_job.get("permissions"), EXPECTED_CANDIDATE_JOB_PERMISSIONS, "candidate-self-tests job permissions must stay contents: read"), (candidate_job.get("runs-on"), "ubuntu-latest", "candidate-self-tests job runs-on drifted from ubuntu-latest")])
-        if candidate_job.get("timeout-minutes") not in (10, 15): errors.append("candidate-self-tests timeout must stay within the admitted 10-to-15-minute transition")
+        _workflow_checks(errors, [(candidate_job.get("timeout-minutes"), 15, "candidate-self-tests timeout must stay 15 minutes")])
         checkout = _workflow_step(candidate_job, "Checkout exact candidate head without credentials", errors, "candidate-self-tests job missing exact candidate checkout step", "candidate-self-tests exact candidate checkout step must stay enabled")
         if checkout is not None: _workflow_checkout(checkout, errors, prefix="candidate-self-tests checkout", ref="${{ github.event.pull_request.head.sha }}", path=".candidate", repo="${{ github.event.pull_request.head.repo.full_name }}")
         self_tests = _workflow_step(candidate_job, "Run candidate self-tests", errors, "candidate-self-tests job missing self-test execution step", "candidate-self-tests self-test execution step must stay enabled")
