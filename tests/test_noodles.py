@@ -774,18 +774,19 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("trusted boundary" in item for item in result["errors"]))
 
-    def test_trusted_verify_requires_candidate_job_dependency(self) -> None:
+    def test_trusted_verify_rejects_unadmitted_dependency(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
         path = root / ".github/workflows/verify.yml"
         workflow = path.read_text()
-        dependency = "    needs: candidate-self-tests\n"
-        self.assertIn(dependency, workflow)
-        path.write_text(workflow.replace(dependency, "", 1))
+        admitted = "  verify:\n    needs: candidate-self-tests\n"
+        planted = "  verify:\n    needs: foreign-job\n"
+        self.assertIn(admitted, workflow)
+        path.write_text(workflow.replace(admitted, planted, 1))
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
-        self.assertIn("trusted verify job must depend only on candidate-self-tests", result["errors"])
+        self.assertTrue(any("trusted verify job" in item for item in result["errors"]), result["errors"])
 
     def test_trusted_verify_rejects_candidate_script_execution(self) -> None:
         temp, root = self.mutated_copy()
