@@ -137,6 +137,67 @@ class ComponentSurfaceGateTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class WholeRepositoryComponentTests(unittest.TestCase):
+    """ed3c/noodles#278 bypass 1: `contract`'s glob "*" is short-circuited by
+    component_import_edge_errors and component_owner_errors and matched by every path in
+    component_surface_errors, and nothing restricted which Issue could declare it. The token is real
+    and load-bearing, so what is checkable is whether the whole-repository surface was NEEDED."""
+
+    SPANNING = ["schedule_domain.py", "github_protection.py", "runtime_contract.py"]
+    HISTORICAL_7B3ADC5 = [
+        "contracts/system-v1.md",
+        "noodles.py",
+        "policy/components.json",
+        "tests/fixtures/issue-contract-ready-backlog.json",
+        "tests/test_component_surface.py",
+    ]
+
+    def setUp(self) -> None:
+        self.components = noodles.component_map(CANDIDATE_ROOT)
+
+    def errors(self, component: str, changed: list[str]) -> list[str]:
+        return noodles.contract_component_bypass_errors(component, self.components, changed)
+
+    def test_positive_control_a_genuinely_spanning_diff_still_passes(self) -> None:
+        """One schedule-only, one verify-only and one carrier-only module: no ordinary component
+        admits all three, so the whole-repository surface is the only declaration that fits."""
+        for component, globs in self.components.items():
+            if "*" in globs:
+                continue
+            with self.subTest(component=component):
+                self.assertTrue(any(not any(fnmatch.fnmatchcase(p, g) for g in globs) for p in self.SPANNING))
+        self.assertEqual(self.errors("contract", self.SPANNING), [])
+
+    def test_planted_negative_a_diff_one_ordinary_component_already_admits_fails_closed(self) -> None:
+        errors = self.errors("contract", ["noodles.py", "policy/components.json", "tests/test_component_surface.py"])
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("declares whole-repository component 'contract'", errors[0])
+        self.assertIn("skips the component-surface, component-import-edge and component-ownership gates", errors[0])
+        self.assertIn("Supported path", errors[0])
+
+    def test_the_refusal_keys_on_the_whole_repository_glob_not_on_the_name(self) -> None:
+        renamed = {"everything": ["*"], "docs": ["docs/*"]}
+
+        self.assertEqual(len(noodles.contract_component_bypass_errors("everything", renamed, ["docs/a.md"])), 1)
+        self.assertEqual(noodles.contract_component_bypass_errors("docs", renamed, ["docs/a.md"]), [])
+
+    def test_an_ordinary_component_declaration_is_never_touched_by_this_check(self) -> None:
+        self.assertEqual(self.errors("verify", ["noodles.py"]), [])
+        self.assertEqual(self.errors("verify", self.SPANNING), [])
+
+    def test_the_historical_use_this_issue_cites_would_not_pass_under_todays_map(self) -> None:
+        """ed3c/noodles#278 names 7b3adc5 as the legitimate use to protect. That commit CREATED
+        policy/components.json, so no component could have admitted it - but under the map it
+        introduced, every one of its files fits `verify` alone. It is therefore the category's
+        example, not a fixture that must pass; the positive control above is a diff that really does
+        span. This asserts that divergence instead of leaving it as prose."""
+        errors = self.errors("contract", self.HISTORICAL_7B3ADC5)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("verify", errors[0])
+
+
 class ComponentImportEdgeGateTests(unittest.TestCase):
     """ed3c/noodles#257: the file glob bounds which files change, not what they start importing."""
 
@@ -489,8 +550,9 @@ class ComponentOwnerMapTests(unittest.TestCase):
                     self.assertTrue(set(owning) <= set(self.components), owning)
 
     def test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure(self) -> None:
-        """ed3c/noodles#278: nothing else reds when this count grows, so AGENTS.md's "139 total, 18
-        owned, 121 unowned" would otherwise silently go stale. If this breaks because you legitimately
+        """ed3c/noodles#278 landed the mechanical half of this: `unowned_top_level_definitions` is
+        now a reported, report-only-ratcheted metric, so growth is visible on the verify readback and
+        this floor only has to hold the AGENTS.md sentence honest. If this breaks because you legitimately
         added or renamed a top-level definition, update the floor here AND the sentence in AGENTS.md
         that quotes the current true count in the same commit. (It already caught this drift twice:
         132→136 from landing-train traffic on main adding findings-register functions, then 136→139
@@ -514,6 +576,65 @@ class ComponentOwnerMapTests(unittest.TestCase):
     def test_absent_map_is_inert_rather_than_red(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             self.assertEqual(noodles.component_owner_map(Path(temp)), {})
+
+
+class UnownedDefinitionRatchetTests(unittest.TestCase):
+    """ed3c/noodles#278 bypass 2: component_owner_errors stays silent on an unowned definition by
+    design, so the unowned count could only grow and nothing on any record noticed. It is now a
+    reported, ratcheted number - and still report-only, because a refusing threshold read from the
+    trusted default branch deadlocks every candidate that legitimately adds a definition."""
+
+    def owned_tree(self, source: str, owners: dict[str, list[str]]) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-unowned-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        (root / "policy/component-owners.json").write_text(
+            json.dumps({"schema_version": 1, "owners": {"target.py": owners}}), encoding="utf-8"
+        )
+        (root / "target.py").write_text(source, encoding="utf-8")
+        return root
+
+    def test_the_count_is_definitions_present_minus_definitions_owned(self) -> None:
+        root = self.owned_tree("def a() -> None:\n    pass\n\n\ndef b() -> None:\n    pass\n", {"a": ["verify"]})
+
+        self.assertEqual(noodles.unowned_top_level_definitions(root), 1)
+
+    def test_planted_negative_one_undeclared_definition_raises_the_count(self) -> None:
+        owners = {"a": ["verify"]}
+        before = self.owned_tree("def a() -> None:\n    pass\n", owners)
+        after = self.owned_tree("def a() -> None:\n    pass\n\n\ndef planted() -> None:\n    pass\n", owners)
+
+        self.assertEqual(noodles.unowned_top_level_definitions(before), 0)
+        self.assertEqual(noodles.unowned_top_level_definitions(after), 1)
+
+    def test_planted_negative_a_threshold_below_the_count_reports_a_warning(self) -> None:
+        entry = noodles.unowned_definition_readback(136, {"max_unowned_top_level_definitions": 135})
+
+        self.assertEqual(entry["status"], "warning")
+        self.assertEqual(entry["message"], "architecture warning unowned_top_level_definitions=136 exceeds 135")
+        self.assertEqual((entry["classification"], entry["authority"]), ("report-only", "N"))
+
+    def test_a_count_at_the_ceiling_is_ok_and_carries_no_message(self) -> None:
+        entry = noodles.unowned_definition_readback(135, {"max_unowned_top_level_definitions": 135})
+
+        self.assertEqual((entry["status"], entry["message"]), ("ok", None))
+
+    def test_an_owner_entry_for_an_absent_file_fails_closed_rather_than_counting_zero(self) -> None:
+        root = self.owned_tree("def a() -> None:\n    pass\n", {"a": ["verify"]})
+        (root / "target.py").unlink()
+
+        with self.assertRaisesRegex(noodles.GateError, "owns target.py, which this tree does not carry"):
+            noodles.unowned_top_level_definitions(root)
+
+    def test_direct_readback_verify_json_reports_the_unowned_count(self) -> None:
+        result = noodles.verify_repository(CANDIDATE_ROOT)
+        owners = noodles.component_owner_map(CANDIDATE_ROOT)["noodles.py"]
+        defs = noodles.top_level_definitions((CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8"), "noodles.py")
+
+        self.assertEqual(result["metrics"]["unowned_top_level_definitions"], len(set(defs) - set(owners)))
+        entry = next(item for item in result["warning_readback"] if item["metric"] == "unowned_top_level_definitions")
+        self.assertEqual((entry["status"], entry["policy_key"]), ("ok", "max_unowned_top_level_definitions"))
 
     def test_wrong_schema_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -662,6 +783,25 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
             receipt = noodles.verify_pull_request(CANDIDATE_ROOT, event_path, base, receipt_path)
         self.assertEqual(compare.call_args, mock.call("ed3c/noodles", "main", HEAD_SHA))
         return receipt_path, receipt
+
+    def test_planted_negative_a_whole_repository_declaration_that_buys_nothing_fails_closed(self) -> None:
+        """ed3c/noodles#278: the refusal runs at the same confluence the surface gate does, so a
+        candidate cannot reach a landing receipt by declaring `contract` to skip all three gates."""
+        body = issue_body(component="contract", state="awaiting_land")
+
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify(body, ["noodles.py", "policy/components.json"])
+
+        diagnostic = str(raised.exception)
+        self.assertIn("candidate whole-repository-component gate failed", diagnostic)
+        self.assertIn("every changed file already fits", diagnostic)
+
+    def test_positive_control_a_whole_repository_declaration_that_really_spans_still_lands(self) -> None:
+        body = issue_body(component="contract", state="awaiting_land")
+
+        _, receipt = self.run_verify(body, WholeRepositoryComponentTests.SPANNING)
+
+        self.assertEqual(receipt["component"], "contract")
 
     def test_within_surface_candidate_receives_component_surface_receipt(self) -> None:
         body = issue_body(component="docs", state="awaiting_land")
