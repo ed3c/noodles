@@ -202,51 +202,8 @@ class RepositoryGateTests(unittest.TestCase):
         a legal move stays green under it."""
         self.assertEqual(runtime_lock_shape_errors(CANDIDATE_ROOT), [])
 
-    # constraint: ed3c/noodles#301 retired the ed3c/noodles#304 staging window: the pinned list is
-    # constraint: exact again and names exactly the entries that remain. This assertion is what
-    # constraint: pull_request_target runs from the DEFAULT BRANCH against a candidate tree, so a
-    # constraint: candidate that re-adds the retired compatibility source - enabled or disabled -
-    # constraint: reds here and cannot land. The retired source name is assembled from parts so
-    # constraint: this control's own bytes are not a tracked live pointer to it.
-    RETIRED_PROVIDER_NAME = "skills-" + "shared"
-    RETIRED_PROVIDER_POINTER = f"https://github.com/ed3c/{RETIRED_PROVIDER_NAME}.git"
-    EXPECTED_PROVIDERS = [
-        {
-            "name": "cursor-pstack",
-            "source": "https://github.com/ed3c/plugins.git",
-            "commit": "68836ddaf5697224520f1847d90cdb90ca8babaa",
-            "subpath": "pstack/skills",
-            "destination": ".noodle/providers/cursor-pstack",
-            "license_path": "pstack/LICENSE",
-            "enabled": True,
-            "authority": "P",
-            "purpose": "Engineering lifecycle routing; never a correctness authority.",
-        },
-        {
-            "name": "skill-concerns",
-            "source": "https://github.com/ed3c/skill-concerns.git",
-            "commit": "c91dbd04d1997b2e0f77907c9c2a40f55b787107",
-            "subpath": "skills/control-noodle",
-            "destination": ".noodle/providers/skill-concerns",
-            "license_path": "LICENSE",
-            "admission": {
-                "path": "admissions/control-noodle.json",
-                "sha256": "4e20f09502ba16db920a89b945ebbb9ac206946a7906ceea92090ecb2c93e42d",
-                "skill": "control-noodle",
-                "skill_tree_sha256": "969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581",
-                "subject_files": {
-                    "skills/control-noodle/SKILL.md": "efa5a1d2e9166af47f9078bdc5924fb6520ae0171a0a068472f7abab02b00a1a",
-                },
-            },
-            "enabled": True,
-            "authority": "P",
-            "purpose": "Replaceable engineering knowledge; never a correctness authority.",
-        },
-    ]
-
-    def providers_of(self, root: Path) -> list[dict]:
-        return json.loads((root / "policy/providers.lock.json").read_text())["providers"]
-
+    # constraint: ed3c/noodles#301 - refusal is scoped to the retired source; generic provider
+    # constraint: schema and pin validity remain owned by the repository provider gate.
     def retired_compat_entry(self) -> dict:
         name = f"{self.RETIRED_PROVIDER_NAME}-compat"
         return {
@@ -315,8 +272,6 @@ class RepositoryGateTests(unittest.TestCase):
         payload["providers"].append(self.retired_compat_entry())
         path.write_text(json.dumps(payload, indent=2) + "\n")
         self.commit(root)
-        with self.assertRaises(AssertionError):
-            self.assertEqual(self.providers_of(root), self.EXPECTED_PROVIDERS)
         self.assertEqual(self.live_pointer_offenders(root), ["policy/providers.lock.json"])
         self.assertEqual(self.retired_provider_in_locks(root), ["policy/providers.lock.json"])
 
