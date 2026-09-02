@@ -56,8 +56,6 @@ The admitted upstream Noodle runtime is pinned in `policy/runtime.lock.json` to 
 
 Enabled providers are fetched outside Git history under `.noodle/providers/` and locked to immutable commits. `policy/providers.lock.json` is the sole owner of every source, commit, subpath, and admission digest, and `./noodles providers check` reads them back from the live remotes. This file copies none of those values: the copy that lived here had drifted to the wrong source repository while still showing a matching commit, which is exactly the failure a second writer produces.
 
-`ed3c/skills-shared` appears in that lock as a disabled compatibility source, not a Golden Path dependency.
-
 ## Candidate-only retrieval
 
 `policy/retrieval.lock.json` pins the grepai executable, its exact version and binary digest, the full

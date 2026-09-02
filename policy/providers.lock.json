@@ -31,17 +31,6 @@
       "enabled": true,
       "authority": "P",
       "purpose": "Replaceable engineering knowledge; never a correctness authority."
-    },
-    {
-      "name": "skills-shared-compat",
-      "source": "https://github.com/ed3c/skills-shared.git",
-      "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
-      "subpath": ".",
-      "destination": ".noodle/providers/skills-shared-compat",
-      "license_path": "LICENSE",
-      "enabled": false,
-      "authority": "P",
-      "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency."
     }
   ]
 }
