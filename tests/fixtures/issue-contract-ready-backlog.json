@@ -75,6 +75,16 @@
       "id": "executor-local-drive-evidence",
       "subject": "ed3c/noodles#900017",
       "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900017 -->\n<!-- noodles-state: ready -->\n<!-- noodles-component: schedule -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-write-boundary: none -->\n<!-- noodles-executor: local-noodle -->\n<!-- noodles-runtime: shell -->\n<!-- noodles-evidence: drive-full-v1 -->\n\n## Goal\n\nAdmit one local lane whose evidence policy needs host-only credentials.\n\n## Physical acceptance\n\n- Executor admission classifies this exact issue as `local-noodle` and emits one idempotent provider-backed handoff task.\n\n## Non-claims\n\n- Executor admission does not prove implementation correctness.\n"
+    },
+    {
+      "id": "ready-evidence-markers-honest-none",
+      "subject": "ed3c/noodles#900020",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900020 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-observer: none -->\n<!-- noodles-capability-probe: none -->\n\n## Physical trigger\n\nA design atom whose trigger claims no absence and prescribes no external tool behavior.\n\n## Goal\n\nPreserve a ready repository atom that declares both evidence markers as an honest `none`.\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom.\n\n## Non-claims\n\n- This fixture is not a mirror of current provider state.\n"
+    },
+    {
+      "id": "ready-observer-demonstration-both-directions",
+      "subject": "ed3c/noodles#900021",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900021 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-observer: git status --porcelain --ignored -->\n<!-- noodles-capability-probe: none -->\n\n## Physical trigger\n\nThe zero-residue clause claims `.noodle/` runtime state is absent after the run.\n\n## Goal\n\nPreserve a ready repository atom carrying a two-direction observer demonstration.\n\n## Observer demonstration\n\nGREEN (clean subject):\n\n```\n$ git status --porcelain --ignored\n(no output)\n```\n\nRED (planted violation, `.noodle/state.json` written):\n\n```\n$ git status --porcelain --ignored\n!! .noodle/state.json\n```\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom.\n\n## Non-claims\n\n- This fixture is not a mirror of current provider state.\n"
     }
   ]
 }

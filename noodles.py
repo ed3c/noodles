@@ -84,6 +84,8 @@ MARKER_PATTERNS = {
     "evidence": re.compile(r"<!--\s*noodles-evidence:\s*([^>]+?)\s*-->", re.I),
     "blocker": re.compile(r"<!--\s*noodles-blocker:\s*([^>]+?)\s*-->", re.I),
     "relation": re.compile(r"<!--\s*noodles-relation:\s*([^>]+?)\s*-->", re.I),
+    "observer": re.compile(r"<!--\s*noodles-observer:\s*([^>]+?)\s*-->", re.I),
+    "capability_probe": re.compile(r"<!--\s*noodles-capability-probe:\s*([^>]+?)\s*-->", re.I),
     "normalized": re.compile(r"<!--\s*noodles-normalized:\s*([0-9a-f]{64})\s*-->", re.I),
     "landed_pr": re.compile(r"<!--\s*noodles-landed-pr:\s*([^>]+?)\s*-->", re.I),
     "head": re.compile(r"<!--\s*noodles-head:\s*([0-9a-f]{40})\s*-->", re.I),
@@ -323,6 +325,14 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     # constraint: optional (most atoms supersede nothing) and exact (a malformed one fails closed
     # constraint: rather than reading as "no relation" and silently re-admitting a held duplicate).
     relation = issue_contract.parse_relation(one_marker(body, "relation", required=False), subject.value, error_cls=GateError)
+    # constraint: ed3c/noodles#317 - qualified evidence is bounded multiplicity's sibling problem: a
+    # constraint: missing or half-demonstrated marker must reach the frontier as a NAMED reason, not
+    # constraint: as an exception that drops the Issue out of every readback, so these parse into
+    # constraint: reasons here exactly the way requirement_errors does.
+    declared_evidence = {
+        marker: one_marker(body, marker.replace("-", "_"), required=False)
+        for marker, _heading, _key, _directions in issue_contract.EVIDENCE_SECTIONS
+    }
     # constraint: ed3c/noodles#120 - bounded multiplicity, so this marker parses into ids plus named
     # constraint: diagnostics instead of raising: a malformed declaration must reach the frontier as
     # constraint: an unschedulable Issue with an exact reason, never as an Issue schedule_snapshot
@@ -345,6 +355,9 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "admission": issue_contract.executor_admission(executor, runtime_token, evidence),
         "blocker": blocker,
         "relation": relation,
+        "observer": declared_evidence["observer"],
+        "capability_probe": declared_evidence["capability-probe"],
+        "evidence_reasons": issue_contract.evidence_reasons(body, declared_evidence),
     }
 
 
@@ -2869,7 +2882,13 @@ def issue_template(repo: str, number: int, title: str) -> str:
         f"<!-- noodles-target: {repo} -->\n"
         f"<!-- noodles-subject: {subject} -->\n"
         "<!-- noodles-state: ready -->\n"
-        "<!-- noodles-depends-on: none -->\n\n"
+        "<!-- noodles-depends-on: none -->\n"
+        # constraint: ed3c/noodles#317 - both evidence markers are in the canonical shape the intake
+        # constraint: comment hands an author, and `none` is a value they must revisit rather than a
+        # constraint: default that hides the question: a dishonest `none` is a lie a monitor catches,
+        # constraint: which is exactly the residual this gate declares it does not cover.
+        "<!-- noodles-observer: none -->\n"
+        "<!-- noodles-capability-probe: none -->\n\n"
         f"## Goal\n\n{title}\n\n"
         "## Physical acceptance\n\n- Exact-subject positive and planted-negative controls pass.\n"
         "- Direct source/provider readback proves only the stated claim.\n"
