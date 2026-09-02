@@ -26,6 +26,11 @@
       "reasoning_effort": "high"
     }
   },
+  "task_profile_literal_exempt_paths": [
+    ".noodle.toml",
+    "github_protection.py",
+    "policy/fitness.json"
+  ],
   "max_agent_document_hops": 3,
   "agent_document_route": [
     "AGENTS.md",

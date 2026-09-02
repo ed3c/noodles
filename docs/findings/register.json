@@ -115,6 +115,21 @@
       "owner_component": "schedule",
       "status": "open",
       "chain": "f0926c59c44c05c7438ec247d87c5eb57bfbed9c9e5cc851900aa7a1e8a29002"
+    },
+    {
+      "id": 9,
+      "date": "2026-09-02",
+      "severity": "S3",
+      "finding": "ed3c/noodles#325 retired noodles.validate_task_profile_single_source into the ownership-key registry, but its policy/fitness.json key `task_profile_literal_exempt_paths` has to outlive it for one staging window: pull_request_target runs the DEFAULT BRANCH's copy of that function, which subscripts the key out of the CANDIDATE's own policy document, so a candidate that deletes the key raises KeyError inside the trusted verifier and reds every test that calls verify_repository. `./noodles verify --trusted-preview` reproduced exactly that on this atom's first head. The key now has no reader in the tree, so it is dead policy surface that policy/fitness.json still declares; the retirement atom deletes it once a default branch carrying skill_contract.validate_ownership_registry is what judges candidates (step 3 of widen -> flip -> retire). Until then a reader could re-appear and quietly become the second implementation the subsumption removed.",
+      "receipts": [
+        "policy/fitness.json - `task_profile_literal_exempt_paths` retained with no tracked .py reader",
+        "skill_contract.py - the `# constraint: ed3c/noodles#325 staging window` block beside OWNERSHIP_REGISTRY_PATH is what keeps validate_policy_key_consumption green on a key nobody reads",
+        "tests/test_agent_friendly_architecture.py::OwnershipRegistryTests::test_the_subsumed_task_profile_rule_leaves_exactly_one_implementation - asserts noodles.py names neither the function nor the key",
+        "reproduce the deadlock: remove the key from policy/fitness.json, commit, then ./noodles verify --trusted-preview -> `test_codex_task_model_map_is_exact_and_drift_is_rejected` and `test_direct_readback_verify_json_reports_the_per_component_count` red with KeyError"
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "7ee8b97572f4beff8f1b423be6ccf70011819f5aeae3955e13d2bd509792a74f"
     }
   ]
 }

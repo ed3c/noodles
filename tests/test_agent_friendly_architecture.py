@@ -174,10 +174,18 @@ class OwnershipRegistryTests(unittest.TestCase):
 
     def test_the_subsumed_task_profile_rule_leaves_exactly_one_implementation(self) -> None:
         """Readback for "subsumed or wired through the same detector, leaving one implementation":
-        the retired function is gone from the tree, its policy exemption key with it, and the class
-        that replaced it names the same owner and the same value locator."""
-        self.assertNotIn("validate_task_profile_single_source", (CANDIDATE_ROOT / "noodles.py").read_text())
-        self.assertNotIn("task_profile_literal_exempt_paths", (CANDIDATE_ROOT / skill_contract.POLICY_FITNESS_PATH).read_text())
+        the retired function is gone from the tree and the class that replaced it names the same
+        owner and the same value locator.
+
+        Its `task_profile_literal_exempt_paths` policy key deliberately outlives it for one staging
+        window. `pull_request_target` runs the DEFAULT BRANCH's `validate_task_profile_single_source`
+        against the candidate's own policy, so deleting the key raises KeyError inside the trusted
+        verifier - `./noodles verify --trusted-preview` reproduced exactly that as two reds no rerun
+        could clear. The key has no reader in this tree, which is asserted here so the residue cannot
+        quietly become a second writer; the retirement is filed as findings-register entry 9."""
+        source = (CANDIDATE_ROOT / "noodles.py").read_text()
+        self.assertNotIn("validate_task_profile_single_source", source)
+        self.assertNotIn("task_profile_literal_exempt_paths", source)
         classes = {entry["id"]: entry for entry in self.registry()["classes"]}
         self.assertEqual(classes["task-profile-model"]["owner"], skill_contract.POLICY_FITNESS_PATH)
         self.assertEqual(classes["task-profile-model"]["select"], ["required_codex_task_profiles", "*", "model"])
