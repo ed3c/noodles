@@ -1,0 +1,176 @@
+name: verified-batch-canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_1:
+        description: First PR number
+        required: true
+        type: string
+      pr_2:
+        description: Second PR number
+        required: true
+        type: string
+      pr_3:
+        description: Third PR number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: verified-batch-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted default branch without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Resolve exact member heads and construct local batch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBERS: '["${{ inputs.pr_1 }}","${{ inputs.pr_2 }}","${{ inputs.pr_3 }}"]'
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          import verified_batch
+
+          def run(*argv):
+              completed = subprocess.run(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              if completed.returncode:
+                  raise SystemExit(completed.stderr or completed.stdout)
+              return completed.stdout.strip()
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          numbers = json.loads(os.environ["PR_NUMBERS"])
+          if len(numbers) != 3 or any(not value.isdecimal() or int(value) <= 0 for value in numbers):
+              raise SystemExit("exactly three positive PR numbers are required")
+          if len(set(numbers)) != 3:
+              raise SystemExit("duplicate PR number")
+
+          members = []
+          provider_heads = {}
+          for raw in numbers:
+              number = int(raw)
+              payload = json.loads(run("gh", "api", f"repos/{repository}/pulls/{number}"))
+              if payload["state"] != "open" or payload["base"]["ref"] != default_branch:
+                  raise SystemExit(f"PR #{number} is not open against {default_branch}")
+              head = payload["head"]["sha"]
+              clone_url = payload["head"]["repo"]["clone_url"]
+              run("git", "fetch", "--no-tags", "--depth=1", clone_url, head)
+              members.append(verified_batch.BatchMember(number, head))
+              provider_heads[str(number)] = head
+
+          base = run("git", "rev-parse", "HEAD")
+          refs_before = run("git", "for-each-ref", "--format=%(refname) %(objectname)")
+          manifest = verified_batch.construct_batch(".", base, members)
+          verified_batch.verify_candidate_identity(".", manifest)
+          refs_after = run("git", "for-each-ref", "--format=%(refname) %(objectname)")
+          if refs_before != refs_after:
+              raise SystemExit("batch construction changed a local ref")
+
+          Path("verified-batch-manifest.json").write_text(
+              verified_batch.canonical_manifest(manifest), encoding="utf-8"
+          )
+          Path("verified-batch-provider-heads.json").write_text(
+              json.dumps(provider_heads, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"batch_sha={manifest['batch_sha']}\n")
+          PY
+        id: construct
+
+      - name: Run one exact batch test suite
+        env:
+          BATCH_SHA: ${{ steps.construct.outputs.batch_sha }}
+          NOODLES_OFFLINE_TESTS: '1'
+        run: |
+          started="$(date +%s)"
+          git worktree add --detach .batch "$BATCH_SHA"
+          trap 'git worktree remove --force .batch >/dev/null 2>&1 || true' EXIT
+          .batch/tests/run.sh
+          finished="$(date +%s)"
+          printf '%s\n' "$((finished - started))" > verified-batch-test-seconds.txt
+
+      - name: Re-read member heads and write non-authorizing receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBERS: '["${{ inputs.pr_1 }}","${{ inputs.pr_2 }}","${{ inputs.pr_3 }}"]'
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          import verified_batch
+
+          manifest = json.loads(Path("verified-batch-manifest.json").read_text(encoding="utf-8"))
+          verified_batch.verify_candidate_identity(".", manifest)
+          before = json.loads(Path("verified-batch-provider-heads.json").read_text(encoding="utf-8"))
+          repository = os.environ["GITHUB_REPOSITORY"]
+          after = {}
+          for raw in json.loads(os.environ["PR_NUMBERS"]):
+              number = int(raw)
+              completed = subprocess.run(
+                  ["gh", "api", f"repos/{repository}/pulls/{number}", "--jq", ".head.sha"],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+              )
+              if completed.returncode:
+                  raise SystemExit(completed.stderr or completed.stdout)
+              after[str(number)] = completed.stdout.strip()
+          if before != after:
+              raise SystemExit("batch member became stale during canary")
+
+          receipt = {
+              "mode": "verified-batch-canary",
+              "authorizes_landing": False,
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "base_sha": manifest["base_sha"],
+              "members": manifest["members"],
+              "batch_sha": manifest["batch_sha"],
+              "member_heads_still_current": True,
+              "exact_identity_verified": True,
+              "test_wall_seconds": int(Path("verified-batch-test-seconds.txt").read_text()),
+          }
+          Path("verified-batch-canary.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload canary evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-batch-canary-receipt
+          path: |
+            verified-batch-canary.json
+            verified-batch-manifest.json
+          if-no-files-found: error
+          retention-days: 7
