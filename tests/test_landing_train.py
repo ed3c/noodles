@@ -26,13 +26,13 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def issue_body(number: int, state: str = "awaiting_land") -> str:
+def issue_body(number: int, state: str = "awaiting_land", depends: str = "none") -> str:
     return (
         "<!-- noodles-role: repository-mutating-atom -->\n"
         "<!-- noodles-target: ed3c/noodles -->\n"
         f"<!-- noodles-subject: ed3c/noodles#{number} -->\n"
         f"<!-- noodles-state: {state} -->\n"
-        "<!-- noodles-depends-on: none -->\n"
+        f"<!-- noodles-depends-on: {depends} -->\n"
     )
 
 
@@ -82,6 +82,49 @@ def seed_train_remote(base: Path, *, conflict: bool) -> dict[str, str]:
     return {"origin": str(origin), "head": head_sha, "main": main_sha}
 
 
+def seed_dependency_chain(base: Path, refs: list[str]) -> dict[str, str]:
+    """One predecessor landed on `main` past every successor branch cut from the shared base.
+
+    This is the physical shape the nudge exists for: the merge that closes the predecessor is the same
+    merge that leaves every open successor head behind, so `behind_by` is never asserted as a literal in
+    these controls - it is measured from this remote."""
+    origin = base / "origin.git"
+    noodles.run(["git", "init", "--bare", "--quiet", "--initial-branch", "main", str(origin)])
+    seed = base / "seed"
+    seed.mkdir()
+
+    def g(*args: str) -> str:
+        return noodles.run(["git", *GIT_IDENTITY, *args], cwd=seed).stdout.strip()
+
+    noodles.run(["git", "init", "--quiet", "--initial-branch", "main"], cwd=seed)
+    (seed / "a.txt").write_text("base\n", encoding="utf-8")
+    g("add", ".")
+    g("commit", "--quiet", "-m", "shared base")
+    heads: dict[str, str] = {}
+    for ref in refs:
+        g("checkout", "--quiet", "-B", ref, "main")
+        (seed / f"{ref}.txt").write_text(f"{ref}\n", encoding="utf-8")
+        g("add", ".")
+        g("commit", "--quiet", "-m", f"{ref} work")
+        heads[ref] = g("rev-parse", "HEAD")
+    g("checkout", "--quiet", "main")
+    (seed / "predecessor.txt").write_text("landed\n", encoding="utf-8")
+    g("add", ".")
+    g("commit", "--quiet", "-m", "predecessor landed and closed its issue")
+    heads["main"] = g("rev-parse", "HEAD")
+    g("push", "--quiet", str(origin), "main", *refs)
+    return {"origin": str(origin), **heads}
+
+
+def remote_head(origin: str, ref: str) -> str:
+    return noodles.run(["git", "-C", origin, "rev-parse", f"refs/heads/{ref}"]).stdout.strip()
+
+
+def measured_behind(origin: str, head_sha: str) -> int:
+    """`behind_by` exactly as the provider defines it: default-branch commits this head does not carry."""
+    return int(noodles.run(["git", "-C", origin, "rev-list", "--count", f"{head_sha}..refs/heads/main"]).stdout.strip())
+
+
 def verify_run(sha: str, status: str, conclusion: str | None, *, run_id: int = 1) -> dict:
     # constraint: id/run_attempt/pull_requests are the fields `workflow_runs_for_head` (the shared,
     # constraint: already-owned runs-API normalizer) requires present before a run survives its filter.
@@ -109,6 +152,8 @@ def train_api(
     def fake(endpoint: str, *, method: str = "GET", payload: object | None = None, token: str | None = None) -> object:
         if endpoint.startswith("repos/ed3c/noodles/pulls?"):
             return pulls
+        if endpoint.startswith("repos/ed3c/noodles/issues?state=open"):
+            return [dict(issue, number=number) for number, issue in sorted(issues.items())]
         if endpoint.startswith("repos/ed3c/noodles/actions/runs?head_sha="):
             sha = endpoint.split("head_sha=", 1)[1].split("&", 1)[0]
             return {"workflow_runs": (runs or {}).get(sha, [])}
@@ -488,6 +533,7 @@ class LandingTrainBoundaryTests(unittest.TestCase):
                 "        env:\n"
                 "          GH_TOKEN: ${{ github.token }}\n"
                 "          NOODLES_TRAIN_PUSH_TOKEN: ${{ steps.train-token.outputs.token }}\n"
+                "          NOODLES_LAND_RECEIPT: ${{ github.workspace }}/receipt/noodles-receipt.json\n"
                 "        run: python3 noodles.py github train\n"
             )
             self.assertIn(step, workflow)
@@ -525,6 +571,24 @@ class LandingTrainBoundaryTests(unittest.TestCase):
         errors, _evidence = self.workflow_boundary(mutate)
         self.assertIn("land workflow must pass the train push token only to the landing-train step", errors)
 
+    def test_boundary_rejects_a_train_step_that_drops_the_land_receipt(self) -> None:
+        # constraint: ed3c/noodles#332 - the closure subject the nudge keys on reaches the train only
+        # constraint: through this argument, so silently dropping it would park every dependency-red head
+        # constraint: again while the step still looks present and enabled.
+        def mutate(land_path: Path) -> None:
+            land_path.write_text(
+                land_path.read_text(encoding="utf-8").replace(
+                    "          NOODLES_LAND_RECEIPT: ${{ github.workspace }}/receipt/noodles-receipt.json\n", "", 1
+                ),
+                encoding="utf-8",
+            )
+
+        errors, _evidence = self.workflow_boundary(mutate)
+        self.assertIn(
+            "landing-train rebase step must receive the exact land receipt whose issue_subject names the closure to nudge dependents of",
+            errors,
+        )
+
     def test_boundary_rejects_widened_train_token_scope(self) -> None:
         def mutate(land_path: Path) -> None:
             land_path.write_text(
@@ -538,6 +602,160 @@ class LandingTrainBoundaryTests(unittest.TestCase):
 
         errors, _evidence = self.workflow_boundary(mutate)
         self.assertIn("landing-train push token must be scoped to Contents: write", errors)
+
+
+class LandingTrainNudgeTests(unittest.TestCase):
+    """ed3c/noodles#332 - the predecessor closure re-admits exactly the heads it unblocked.
+
+    Every control below runs against a real git remote, and `behind_by` is measured from that remote
+    rather than declared, so the boundedness claim ("a nudged head is no longer behind, therefore the
+    same closure event cannot push it twice") is read off the same physical fact the provider reports."""
+
+    CLOSED = "ed3c/noodles#620"
+
+    def nudge(
+        self,
+        fixture: dict[str, str],
+        refs: dict[str, tuple[int, int, str]],
+        *,
+        closed_subject: str | None,
+        red: bool = True,
+        heads: dict[str, str] | None = None,
+        recorder: list[str] | None = None,
+    ) -> dict:
+        """Run one train over `refs` (branch -> pr number, issue number, declared dependency)."""
+        heads = heads or {ref: fixture[ref] for ref in refs}
+        pulls = [
+            pr_fixture(pr_number, issue_number, heads[ref], ref, f"2026-09-01T0{index}:00:00Z")
+            for index, (ref, (pr_number, issue_number, _depends)) in enumerate(refs.items())
+        ]
+        issues = {
+            issue_number: {"state": "open", "body": issue_body(issue_number, depends=depends)}
+            for _ref, (_pr_number, issue_number, depends) in refs.items()
+        }
+        behind = {heads[ref]: measured_behind(fixture["origin"], heads[ref]) for ref in refs}
+        runs = {heads[ref]: [verify_run(heads[ref], "completed", "failure")] for ref in refs} if red else {}
+        api = train_api(pulls, issues, behind, {}, [], runs)
+
+        def recorded(endpoint: str, **kwargs: object) -> object:
+            if recorder is not None:
+                recorder.append(endpoint)
+            return api(endpoint, **kwargs)
+
+        with mock.patch.object(noodles, "gh_api", side_effect=recorded):
+            return noodles.landing_train(ENGINE_ROOT, remote_url=fixture["origin"], closed_subject=closed_subject)
+
+    def test_chain_control_a_declared_dependent_is_nudged_once_onto_the_closing_merge(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            self.assertEqual(measured_behind(fixture["origin"], fixture["successor"]), 1)
+            result = self.nudge(fixture, {"successor": (21, 621, self.CLOSED)}, closed_subject=self.CLOSED)
+            self.assertEqual(len(result["nudged"]), 1)
+            nudge = result["nudged"][0]
+            self.assertEqual((nudge["action"], nudge["pr_number"], nudge["nudged_for"]), ("rebased", 21, self.CLOSED))
+            self.assertEqual(nudge["old_head"], fixture["successor"])
+            pushed = remote_head(fixture["origin"], "successor")
+            self.assertEqual(pushed, nudge["new_head"])
+            self.assertNotEqual(pushed, fixture["successor"])
+            # constraint: the fresh head is a real head on the closing merge - this is what re-arms verify.
+            parent = noodles.run(["git", "-C", fixture["origin"], "rev-parse", f"{pushed}^"]).stdout.strip()
+            self.assertEqual(parent, fixture["main"])
+            self.assertEqual(measured_behind(fixture["origin"], pushed), 0)
+            # constraint: the ordinary selection is withheld from a PR this run already pushed, because the
+            # constraint: listing that feeds it still names the pre-nudge head and would fail head-drift closed.
+            self.assertEqual(result["action"], "idle")
+
+    def test_planted_negative_a_red_head_declaring_another_predecessor_is_left_parked(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            result = self.nudge(fixture, {"successor": (21, 621, "ed3c/noodles#999")}, closed_subject=self.CLOSED)
+            self.assertEqual(result["nudged"], [])
+            self.assertEqual(result["action"], "idle")
+            self.assertEqual(remote_head(fixture["origin"], "successor"), fixture["successor"])
+
+    def test_planted_negative_a_dependency_free_red_head_is_left_parked(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            result = self.nudge(fixture, {"successor": (21, 621, "none")}, closed_subject=self.CLOSED)
+            self.assertEqual(result["nudged"], [])
+            self.assertEqual(result["action"], "idle")
+            self.assertEqual(remote_head(fixture["origin"], "successor"), fixture["successor"])
+
+    def test_cardinality_two_declared_dependents_get_one_nudge_each_and_a_replay_gets_none(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["first", "second"])
+            refs = {"first": (21, 621, self.CLOSED), "second": (22, 622, self.CLOSED)}
+            result = self.nudge(fixture, refs, closed_subject=self.CLOSED)
+            self.assertEqual([nudge["action"] for nudge in result["nudged"]], ["rebased", "rebased"])
+            self.assertEqual(sorted(nudge["pr_number"] for nudge in result["nudged"]), [21, 22])
+            fresh = {ref: remote_head(fixture["origin"], ref) for ref in refs}
+            for ref, head in fresh.items():
+                self.assertNotEqual(head, fixture[ref])
+            # constraint: replaying the same closure event over the heads it produced. Nothing is asserted
+            # constraint: about a marker or a counter: the measured behind_by is what stops the second push.
+            self.assertEqual({measured_behind(fixture["origin"], head) for head in fresh.values()}, {0})
+            replay = self.nudge(fixture, refs, closed_subject=self.CLOSED, heads=fresh)
+            self.assertEqual(replay["nudged"], [])
+            self.assertEqual({ref: remote_head(fixture["origin"], ref) for ref in refs}, fresh)
+
+    def test_a_nudged_head_that_fails_verify_again_is_not_nudged_again_by_the_same_closure(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            refs = {"successor": (21, 621, self.CLOSED)}
+            first = self.nudge(fixture, refs, closed_subject=self.CLOSED)
+            fresh = remote_head(fixture["origin"], "successor")
+            self.assertEqual(first["nudged"][0]["new_head"], fresh)
+            # constraint: the fresh head is red too - the nudge is one bounded action, not a retry loop.
+            again = self.nudge(fixture, refs, closed_subject=self.CLOSED, heads={"successor": fresh}, red=True)
+            self.assertEqual(again["nudged"], [])
+            self.assertEqual(again["action"], "idle")
+            self.assertEqual(remote_head(fixture["origin"], "successor"), fresh)
+
+    def test_the_train_entry_point_carries_the_land_receipt_subject_and_fails_closed_without_one(self) -> None:
+        # constraint: the closure identity crosses one process boundary, so both directions of that
+        # constraint: crossing are held here: a receipt naming a subject reaches landing_train as that
+        # constraint: exact subject, and a receipt naming none is a FATAL, never a silent no-nudge train.
+        with tempfile.TemporaryDirectory(prefix="noodles-train-cli-") as temp_name:
+            receipt = Path(temp_name) / "noodles-receipt.json"
+            receipt.write_text(json.dumps({"issue_subject": self.CLOSED}), encoding="utf-8")
+            environment = {"NOODLES_LAND_RECEIPT": str(receipt)}
+            with mock.patch.dict(noodles.os.environ, environment), mock.patch.object(noodles, "landing_train", return_value={"action": "idle"}) as train:
+                self.assertEqual(noodles.main(["github", "train"]), 0)
+            self.assertEqual(train.call_args.kwargs["closed_subject"], self.CLOSED)
+
+            receipt.write_text(json.dumps({"pr_number": 21}), encoding="utf-8")
+            with mock.patch.dict(noodles.os.environ, environment), mock.patch.object(noodles, "landing_train", return_value={"action": "idle"}) as train:
+                self.assertEqual(noodles.main(["github", "train"]), 1)
+            train.assert_not_called()
+
+            # constraint: no receipt in the environment is a train run outside the land job, not a defect.
+            with mock.patch.dict(noodles.os.environ, {"NOODLES_LAND_RECEIPT": ""}), mock.patch.object(noodles, "landing_train", return_value={"action": "idle"}) as train:
+                self.assertEqual(noodles.main(["github", "train"]), 0)
+            self.assertIsNone(train.call_args.kwargs["closed_subject"])
+
+    def test_a_green_dependent_this_run_nudged_is_withheld_from_its_own_ordinary_selection(self) -> None:
+        # constraint: a declared dependent need not be red - a behind, green one is nudgeable and also
+        # constraint: ordinarily selectable. The listing that feeds the selection still names its pre-nudge
+        # constraint: head, so without the withhold the same run rebases it twice and the second attempt
+        # constraint: fails the whole train closed on head drift.
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            result = self.nudge(fixture, {"successor": (21, 621, self.CLOSED)}, closed_subject=self.CLOSED, red=False)
+            self.assertEqual([nudge["action"] for nudge in result["nudged"]], ["rebased"])
+            self.assertEqual(result["action"], "idle")
+            self.assertEqual(remote_head(fixture["origin"], "successor"), result["nudged"][0]["new_head"])
+
+    def test_a_closure_with_no_declared_dependent_costs_exactly_one_listing_and_nothing_else(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-train-nudge-") as temp_name:
+            fixture = seed_dependency_chain(Path(temp_name), ["successor"])
+            refs = {"successor": (21, 621, "none")}
+            without: list[str] = []
+            self.nudge(fixture, refs, closed_subject=None, recorder=without)
+            with_closure: list[str] = []
+            self.nudge(fixture, refs, closed_subject=self.CLOSED, recorder=with_closure)
+            listings = [call for call in with_closure if call.startswith("repos/ed3c/noodles/issues?state=open")]
+            self.assertEqual(len(listings), 1)
+            self.assertEqual([call for call in with_closure if call not in listings], without)
 
 
 if __name__ == "__main__":

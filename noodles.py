@@ -2632,49 +2632,126 @@ def train_rebase(workdir: Path, remote_url: str, default_branch: str, head_ref: 
     return {"rebased": True, "base_sha": base_sha, "new_head": new_head}
 
 
-def landing_train(root: Path, remote_url: str | None = None) -> dict[str, Any]:
+def landing_train(root: Path, remote_url: str | None = None, closed_subject: str | None = None) -> dict[str, Any]:
+    """The mechanical train, plus the predecessor-closure nudge when the same run just closed a subject.
+
+    A dependent is nudged only while it is genuinely behind the default branch, which is a provider fact
+    and the whole bound: the merge that closed the predecessor is the same merge that put every open head
+    behind, so every dependent is nudgeable exactly once for that closure, and the fresh head the nudge
+    pushes sits on the current tip - replaying the same closure event finds `behind_by == 0` and pushes
+    nothing. No marker, no counter, no state file. Nudged pull requests are withheld from the ordinary
+    selection because the listing that fed it still names their pre-nudge heads.
+
+    `dependents` and `push` are nested rather than module-level on purpose: each has exactly one caller,
+    and `unowned_top_level_definitions` ratchets this file's top-level count against a ceiling a candidate
+    cannot legally raise - that function's own docstring records the trusted-transition deadlock - so an
+    atom that must not move that number keeps its helpers inside the function that uses them."""
     policy = protection_policy(root)
     repository = str(policy["repository"])
     default_branch = str(policy["default_branch"])
     pulls = gh_api(f"repos/{repository}/pulls?state=open&base={default_branch}&sort=created&direction=asc&per_page=100")
     if not isinstance(pulls, list):
         raise GateError("landing train pull request listing readback failed")
-    selected = train_select(repository, default_branch, pulls, str(policy["required_check"]))
+
+    def dependents() -> list[dict[str, Any]]:
+        """Open PRs whose exact Issue contract declares `closed_subject` as a dependency.
+
+        `train_select` skips a completed-failed head forever and nothing else re-runs it, so a successor
+        red only because its declared predecessor was still open is parked with no event left to revive
+        it. The closure this run just read back is that event, and it re-admits exactly the heads it
+        unblocked - never redness in general.
+
+        The common case costs one provider listing and nothing more: `open_issues` already carries every
+        open body, so a closure with no declared dependent pays that single frontier read - no per-issue
+        contract read, no compare, no push - and the pull requests are the ones already listed above, so
+        correlating subject to PR is free. Eligibility mirrors `train_select` exactly (open, non-draft, on
+        the default branch, head in this repository, Issue open at `awaiting_land`); the verify-red skip is
+        the only one this path may override."""
+        by_subject: dict[str, dict[str, Any]] = {}
+        for pr in sorted(pulls, key=lambda item: (str(item.get("created_at") or ""), int(item.get("number") or 0))):
+            head = pr.get("head") or {}
+            if pr.get("state") != "open" or pr.get("draft"):
+                continue
+            if (pr.get("base") or {}).get("ref") != default_branch or (head.get("repo") or {}).get("full_name") != repository:
+                continue
+            try:
+                subject_value = parse_pr_reference(pr.get("body") or "")
+            except GateError:
+                continue
+            by_subject.setdefault(subject_value, pr)
+        declared: list[dict[str, Any]] = []
+        # constraint: the provider issue frontier also carries pull requests, and they need no filtering
+        # constraint: here: this map is keyed on the Issue subjects PR bodies name, and a repository never
+        # constraint: numbers a pull request the same as an Issue, so a PR entry can never match a key.
+        for issue in open_issues(repository):
+            pr = by_subject.get(f"{repository}#{issue.get('number')}")
+            if pr is None:
+                continue
+            try:
+                contract = parse_issue_contract(issue.get("body") or "", expected_subject=f"{repository}#{issue['number']}")
+            except GateError:
+                continue
+            if contract["state"] != "awaiting_land" or closed_subject not in (contract["dependencies"] or ()):
+                continue
+            declared.append(pr)
+        return declared
+
+    def push(pr: dict[str, Any]) -> dict[str, Any]:
+        """One mechanical rebase-push of one pull request, carrying the shipped fail-back diagnostic.
+
+        The push token is resolved here rather than by the caller so an idle train - and a train whose
+        nudge scan found nothing - still costs no token."""
+        nonlocal remote_url
+        head_ref = str(pr["head"]["ref"])
+        head_sha = str(pr["head"]["sha"])
+        pr_number = int(pr["number"])
+        if remote_url is None:
+            token = os.getenv("NOODLES_TRAIN_PUSH_TOKEN", "").strip()
+            if not token:
+                raise GateError("landing train push token absent: NOODLES_TRAIN_PUSH_TOKEN must carry the scoped Contents-write App token")
+            remote_url = f"https://x-access-token:{token}@github.com/{repository}"
+        with tempfile.TemporaryDirectory(prefix="noodles-train-") as temp_name:
+            outcome = train_rebase(Path(temp_name), remote_url, default_branch, head_ref, head_sha)
+        receipt = {
+            "repository": repository,
+            "pr_number": pr_number,
+            "head_ref": head_ref,
+            "old_head": head_sha,
+            "base_sha": outcome["base_sha"],
+        }
+        if not outcome["rebased"]:
+            named = ", ".join(outcome["conflicts"]) if outcome["conflicts"] else (outcome["detail"] or "unknown rebase failure")
+            gh_api(
+                f"repos/{repository}/issues/{pr_number}/comments",
+                method="POST",
+                payload={
+                    "body": (
+                        f"{train_failback_marker(head_sha)}\n"
+                        f"Landing train fail-back: mechanical rebase of `{head_ref}` ({head_sha}) onto `{default_branch}` "
+                        f"({outcome['base_sha']}) stopped on conflicts in: {named}. The train never auto-resolves content; "
+                        "rebase manually and push a new head to re-enter the queue."
+                    )
+                },
+            )
+            return {"action": "failback", "conflicts": outcome["conflicts"], **receipt}
+        return {"action": "rebased", "new_head": outcome["new_head"], **receipt}
+
+    nudged: list[dict[str, Any]] = []
+    for dependent in dependents() if closed_subject else ():
+        compare = gh_api(f"repos/{repository}/compare/{default_branch}...{str((dependent.get('head') or {}).get('sha') or '')}")
+        if int((compare or {}).get("behind_by") or 0) <= 0:
+            continue
+        nudged.append({"nudged_for": closed_subject, **push(dependent)})
+    nudged_numbers = {int(item["pr_number"]) for item in nudged}
+    selected = train_select(
+        repository,
+        default_branch,
+        [pr for pr in pulls if int(pr.get("number") or 0) not in nudged_numbers],
+        str(policy["required_check"]),
+    )
     if selected is None:
-        return {"action": "idle", "repository": repository, "selected": None}
-    head_ref = str(selected["head"]["ref"])
-    head_sha = str(selected["head"]["sha"])
-    pr_number = int(selected["number"])
-    if remote_url is None:
-        token = os.getenv("NOODLES_TRAIN_PUSH_TOKEN", "").strip()
-        if not token:
-            raise GateError("landing train push token absent: NOODLES_TRAIN_PUSH_TOKEN must carry the scoped Contents-write App token")
-        remote_url = f"https://x-access-token:{token}@github.com/{repository}"
-    with tempfile.TemporaryDirectory(prefix="noodles-train-") as temp_name:
-        outcome = train_rebase(Path(temp_name), remote_url, default_branch, head_ref, head_sha)
-    receipt = {
-        "repository": repository,
-        "pr_number": pr_number,
-        "head_ref": head_ref,
-        "old_head": head_sha,
-        "base_sha": outcome["base_sha"],
-    }
-    if not outcome["rebased"]:
-        named = ", ".join(outcome["conflicts"]) if outcome["conflicts"] else (outcome["detail"] or "unknown rebase failure")
-        gh_api(
-            f"repos/{repository}/issues/{pr_number}/comments",
-            method="POST",
-            payload={
-                "body": (
-                    f"{train_failback_marker(head_sha)}\n"
-                    f"Landing train fail-back: mechanical rebase of `{head_ref}` ({head_sha}) onto `{default_branch}` "
-                    f"({outcome['base_sha']}) stopped on conflicts in: {named}. The train never auto-resolves content; "
-                    "rebase manually and push a new head to re-enter the queue."
-                )
-            },
-        )
-        return {"action": "failback", "conflicts": outcome["conflicts"], **receipt}
-    return {"action": "rebased", "new_head": outcome["new_head"], **receipt}
+        return {"action": "idle", "repository": repository, "selected": None, "nudged": nudged}
+    return {"nudged": nudged, **push(selected)}
 
 
 def http_json(url: str, *, payload: Any | None = None) -> Any:
@@ -3950,7 +4027,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(result, indent=2, sort_keys=True))
                 return 0
             if args.github_action == "train":
-                print(json.dumps(landing_train(root), indent=2, sort_keys=True))
+                # constraint: ed3c/noodles#332 - the closure identity arrives by environment rather than by
+                # constraint: argv because the trusted default-branch boundary readback pins this step's
+                # constraint: `run:` bytes; changing them is the trusted-transition deadlock ed3c/noodles#285
+                # constraint: named, so the carrier that can move in one atom is the step's env. A failed land
+                # constraint: step skips this one, so a receipt reaching here means the trusted lander already
+                # constraint: merged that exact head and read its closure back.
+                land_receipt = os.getenv("NOODLES_LAND_RECEIPT", "").strip()
+                closed_subject = ""
+                if land_receipt:
+                    closed_subject = str(load_json(Path(land_receipt)).get("issue_subject") or "")
+                    if not closed_subject:
+                        raise GateError("landing train receipt carries no issue_subject; refusing to nudge dependents of an unnamed closure")
+                print(json.dumps(landing_train(root, closed_subject=closed_subject or None), indent=2, sort_keys=True))
                 return 0
         if args.command == "reconcile":
             if args.watch:
