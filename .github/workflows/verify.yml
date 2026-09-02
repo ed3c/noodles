@@ -52,7 +52,6 @@ jobs:
           python3 -m unittest discover -s tests -v
 
   verify:
-    needs: candidate-self-tests
     permissions:
       actions: read
       contents: read
