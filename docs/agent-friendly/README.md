@@ -48,7 +48,13 @@ resolved once, by hand, at import:
   `E-VERIFY-REPO`, `E-ISSUE-PARSER`, `E-FITNESS`, `E-COMPONENTS`, `E-AGENTS`, `E-PROVIDER`.
 - `E-SINGLE-PROFILE` is **wrong as written**: its `path` is `skill_contract.py`, but
   `validate_task_profile_single_source` is defined in `noodles.py`. It was wrong at the pinned
-  revision too, so this is an authoring defect in the imported manifest, not drift.
+  revision too, so this is an authoring defect in the imported manifest, not drift. As of
+  `ed3c/noodles#325` the locator resolves nowhere at all: that function is retired and its rule is
+  one row in `policy/ownership-keys.json`, judged by `skill_contract.validate_ownership_registry`
+  together with every other registered class. The manifest's stated limit for this entry ("not
+  repository-wide semantic duplicate-writer proof") is no longer the whole story either — the limit
+  is now the registry's enumerated classes. These bytes stay frozen per this directory's identity
+  claim; the correction lives here, and nothing recomputes it.
 - `context-pack.json`'s own `evidence_manifest` field still reads `"fixtures/noodles/evidence-manifest.json"`
   — its path inside the source PR before this retarget. The correct file is the sibling
   `evidence-manifest.json` in this same directory; `fixtures/noodles/` does not exist in this

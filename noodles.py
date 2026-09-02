@@ -722,26 +722,6 @@ def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
     return errors
 
 
-def validate_task_profile_single_source(root: Path, paths: set[str], policy: dict[str, Any], profiles: dict[str, dict[str, str]]) -> list[str]:
-    # constraint: an admitted task model may be written down only in policy/fitness.json and in the
-    # constraint: exempt surfaces that cannot read it (Noodle's own .noodle.toml, frozen provider
-    # constraint: fixtures); every other tracked file must derive it, so a sixth literal fails here.
-    errors: list[str] = []
-    exempt = set(policy["task_profile_literal_exempt_paths"])
-    for missing in sorted(exempt - paths):
-        errors.append(f"task profile literal exemption names an untracked path: {missing}")
-    models = sorted({profile["model"] for profile in profiles.values()})
-    for relative in sorted(paths - exempt):
-        try:
-            text = (root / relative).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for model in models:
-            if model in text:
-                errors.append(f"{relative} pins task model {model!r}; derive it from policy/fitness.json via skill_contract.task_profiles")
-    return errors
-
-
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
@@ -759,7 +739,14 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if mode not in allowed_modes:
             errors.append(f"forbidden git mode {mode}: {relative}")
     paths = {relative for _, relative in entries}
-    errors.extend(validate_task_profile_single_source(root, paths, policy, expected_task_profiles))
+    # constraint: ed3c/noodles#325 - the task-model single-source rule was this repository's one
+    # constraint: concrete instance of AF-03's one-writer law. It is now one registered class in
+    # constraint: policy/ownership-keys.json rather than its own function with its own exemption
+    # constraint: policy key, so every durable-value class the registry names is judged by one
+    # constraint: implementation. Reads the CANDIDATE's registry and owner documents, never
+    # constraint: policy_root's, for the reason ed3c/noodles#315 named: a trusted-side copy of a
+    # constraint: value the candidate legally owns deadlocks every candidate that moves it.
+    errors.extend(skill_contract.validate_ownership_registry(root, paths))
     errors.extend(validate_noodle_worktree_ignore(root, paths))
     errors.extend(validate_agent_document_route(root, paths, policy))
     # constraint: ed3c/noodles#277 - reads the CANDIDATE's own policy/fitness.json, not policy_root's:
