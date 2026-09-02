@@ -1868,6 +1868,7 @@ GHA_DISPATCH_EVENT_TYPE = "noodles-execution"
 # constraint: because the lock is only ever a compilation of it: leaving the source writable would
 # constraint: let the lane author the next recompilation of the gate that judges it.
 GHA_TRUSTED_WORKFLOW_PATHS = (
+    ".github/workflows/verified-batch-canary.yml",
     ".github/workflows/verify.yml",
     ".github/workflows/land.yml",
     ".github/workflows/noodles-hosted.md",
