@@ -622,6 +622,13 @@
       "disposition": "deferred",
       "owner": "finding-9",
       "reason": "The parser grammar semantic version pinned in `policy/parser.lock.json`; a candidate that bumps the grammar reds. Same instance as tests/test_code_intel_canary.py:207 seen through the CLI readback."
+    },
+    {
+      "path": "tests/test_issue_contract.py",
+      "test": "DefectFingerprintGateTests.test_the_cross_link_comment_is_written_once_and_a_resync_writes_nothing",
+      "literal": "[True, False]",
+      "disposition": "invariant",
+      "reason": "The two booleans describe the test's own fixed elder/duplicate fixture after two synchronizations: the elder remains schedulable and the duplicate remains structurally held. They are behavioral outcomes of synthetic inputs authored in this test, not a candidate-current repository inventory."
     }
   ]
 }
