@@ -5,6 +5,9 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
+import tarfile
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -490,3 +493,159 @@ def admit_acceptance_evidence(
     else:
         _admit_feature_payload(root, specialized_contract, specialized, head, error_cls=error_cls)
     return evidence
+
+
+# constraint: ed3c/noodles#302 - the one inventory of what noodles.verify_pull_request gates. The
+# constraint: receipt it stamps and the local preview's coverage enumeration read the same tuple, so a
+# constraint: gate added to CI without a disposition below reds in preview_coverage_errors instead of
+# constraint: silently widening the half of the surface the preview never simulates.
+VERIFY_PR_GATES = (
+    "trusted-inventory",
+    "positive-controls",
+    "negative-controls",
+    "issue-contract",
+    "exact-head",
+    "component-surface",
+    "component-import-edges",
+    "component-ownership",
+    "component-introduction",
+    "feature-journey",
+    "evidence-publication",
+)
+PREVIEW_COVERED_GATES = ("feature-journey",)
+# constraint: ed3c/noodles#302 - one named reason per verify-pr gate the local preview cannot
+# constraint: reproduce offline. A preview tool's green is an oracle claim about what CI will do;
+# constraint: every entry here is a surface that green does NOT cover, printed with the receipt.
+PREVIEW_UNCOVERED_REASONS = {
+    "trusted-inventory": "re-runs the trusted verify_repository over the candidate checkout CI builds; the preview runs the trusted test modules instead",
+    "positive-controls": "same trusted verify_repository re-run inside the receipt step, not the trusted suite the preview executes",
+    "negative-controls": "same trusted verify_repository re-run; a candidate-only planted negative is judged there",
+    "issue-contract": "requires a live provider read of the Issue body, its open state and its awaiting_land marker",
+    "exact-head": "compares the pull_request_target event head against the pushed candidate; no event exists before the push",
+    "component-surface": "judged against the provider compare readback of base..head, not a local diff",
+    "component-import-edges": "the same provider compare readback supplies the changed-file set this gate walks",
+    "component-ownership": "the same provider compare readback, plus the trusted policy/component-owners.json",
+    "component-introduction": "requires the live Issue body to answer both introduction questions",
+    "evidence-publication": "publishes into the receipt CI writes; no receipt path exists locally",
+}
+JOURNEY_PREVIEW_UNDECLARED = (
+    "journey-compilation gate NOT simulated: pass --feature with the Issue's exact noodles-feature "
+    "marker value (empty string when the Issue declares none) to cover it"
+)
+JOURNEY_PREVIEW_DIAGNOSTIC = (
+    "journey-compilation gate would red at CI (verify_pull_request feature-journey gate): {error}. "
+    "Supported path: change the declared feature's code surface in this candidate, land the feature "
+    "contract before the candidate that declares it, or drop the noodles-feature marker from the Issue"
+)
+# constraint: ed3c/noodles#302 - the compiler must be the TRUSTED tree's, never the candidate's: CI
+# constraint: runs the default branch's feature_contract over the candidate as data, so a candidate
+# constraint: that widens its own ADMITTED_FEATURES must not be able to preview itself green.
+_JOURNEY_DRIVER = (
+    "import json,sys,feature_contract\n"
+    "feature,changed=sys.argv[1],json.loads(sys.argv[2])\n"
+    "try:\n"
+    "    compiled=feature_contract.compile_handoff_feature_map(feature,changed,error_cls=RuntimeError)\n"
+    "    print(json.dumps({'ok':True,'map':compiled}))\n"
+    "except Exception as exc:\n"
+    "    print(json.dumps({'ok':False,'error':str(exc)}))\n"
+)
+
+
+def preview_coverage_errors(gates: Sequence[str]) -> list[str]:
+    """Every verify-pr gate is either previewed or carries a printed reason it is not - never neither."""
+    covered = set(PREVIEW_COVERED_GATES)
+    return [
+        f"verify-pr gate {gate!r} is neither previewed nor named in PREVIEW_UNCOVERED_REASONS"
+        for gate in gates
+        if gate not in covered and gate not in PREVIEW_UNCOVERED_REASONS
+    ]
+
+
+def preview_coverage(declared_feature: str | None) -> dict[str, Any]:
+    covered = [gate for gate in PREVIEW_COVERED_GATES if declared_feature is not None]
+    uncovered = [
+        {"gate": gate, "reason": PREVIEW_UNCOVERED_REASONS[gate]}
+        for gate in VERIFY_PR_GATES
+        if gate not in set(PREVIEW_COVERED_GATES)
+    ]
+    if declared_feature is None:
+        uncovered.append({"gate": "feature-journey", "reason": JOURNEY_PREVIEW_UNDECLARED})
+    return {"covered": covered, "uncovered": uncovered}
+
+
+def _preview_git(root: Path, argv: list[str], *, error_cls: type[Exception], what: str) -> str:
+    result = subprocess.run(["git", *argv], cwd=str(root), text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise error_cls(f"journey preview cannot {what}: {(result.stderr or result.stdout).strip()}")
+    return result.stdout.strip()
+
+
+def preview_journey_gate(
+    root: Path,
+    *,
+    trusted_ref: str,
+    declared_feature: str | None,
+    error_cls: type[Exception],
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    """Run CI's journey-compilation gate locally: the trusted tree's compiler over this candidate.
+
+    `declared_feature` is the Issue's exact `noodles-feature` marker value - `""` for an Issue that
+    declares none, which is what `noodles.verify_pull_request` itself sees in that case. `None` means
+    the caller declared nothing, and the gate is then reported as an uncovered surface rather than as
+    a pass: silent partial coverage is the defect this exists to remove.
+
+    Ceiling: the changed-file set is the committed `merge-base..HEAD` diff, standing in for CI's
+    provider compare readback of `base...head`. Uncommitted work is invisible here exactly as to CI."""
+    root = Path(root).resolve()
+    inventory_errors = preview_coverage_errors(VERIFY_PR_GATES)
+    if inventory_errors:
+        raise error_cls("; ".join(inventory_errors))
+    coverage = preview_coverage(declared_feature)
+    sha = _preview_git(root, ["rev-parse", f"{trusted_ref}^{{commit}}"], error_cls=error_cls, what=f"resolve trusted ref {trusted_ref!r}")
+    head = _preview_git(root, ["rev-parse", "HEAD"], error_cls=error_cls, what="resolve the candidate head")
+    receipt: dict[str, Any] = {
+        "ok": True,
+        "simulated": declared_feature is not None,
+        "trusted_ref": trusted_ref,
+        "trusted_sha": sha,
+        "candidate_head": head,
+        "declared_feature": None if declared_feature is None else declared_feature.strip(),
+        "changed_files": [],
+        "feature_map": None,
+        "diagnostic": None,
+        "coverage": coverage,
+    }
+    if declared_feature is None:
+        return receipt
+    merge_base = _preview_git(root, ["merge-base", sha, head], error_cls=error_cls, what=f"find the merge base of {trusted_ref} and HEAD")
+    receipt["changed_files"] = sorted(
+        line for line in _preview_git(root, ["diff", "--name-only", merge_base, head], error_cls=error_cls, what="diff the candidate against its merge base").splitlines() if line
+    )
+    if not receipt["declared_feature"]:
+        return receipt
+    with tempfile.TemporaryDirectory(prefix="noodles-journey-preview-") as name:
+        trusted = Path(name) / "trusted"
+        trusted.mkdir()
+        archive = Path(name) / "trusted.tar"
+        _preview_git(root, ["archive", "--format=tar", "-o", str(archive), sha], error_cls=error_cls, what=f"export the trusted tree at {sha}")
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(trusted, filter="data")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(trusted)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        argv = [sys.executable, "-c", _JOURNEY_DRIVER, receipt["declared_feature"], json.dumps(receipt["changed_files"])]
+        try:
+            completed = subprocess.run(argv, cwd=str(trusted), env=env, text=True, capture_output=True, timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise error_cls(f"journey preview could not run the trusted compiler at {sha}: {exc}") from exc
+    if completed.returncode != 0:
+        raise error_cls(f"journey preview trusted compiler at {sha} exited {completed.returncode}: {(completed.stderr or completed.stdout).strip()}")
+    try:
+        outcome = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise error_cls(f"journey preview trusted compiler at {sha} produced unreadable output: {exc}") from exc
+    receipt["ok"] = bool(outcome.get("ok"))
+    receipt["feature_map"] = outcome.get("map") if receipt["ok"] else None
+    receipt["diagnostic"] = None if receipt["ok"] else JOURNEY_PREVIEW_DIAGNOSTIC.format(error=outcome.get("error"))
+    return receipt

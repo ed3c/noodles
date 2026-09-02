@@ -2307,7 +2307,10 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         "feature_changed_node": feature_map["changed_node"] if feature_map else None,
         "feature_transitions": feature_map["transitions"] if feature_map else None,
         "feature_journeys": feature_map["journeys"] if feature_map else None,
-        "gates": ["trusted-inventory", "positive-controls", "negative-controls", "issue-contract", "exact-head", "component-surface", "component-import-edges", "component-ownership", "component-introduction", "feature-journey", "evidence-publication"],
+        # constraint: ed3c/noodles#302 - the gate inventory has one owner, feature_contract, because
+        # constraint: the local preview enumerates its own coverage against this exact tuple. A gate
+        # constraint: added here as a literal would be a surface the preview never learns it misses.
+        "gates": list(feature_contract.VERIFY_PR_GATES),
     }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,
@@ -3707,6 +3710,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--json", action="store_true")
     verify.add_argument("--trusted-preview", action="store_true", help="also run the default-branch test modules against this working tree, as the trusted CI job would")
     verify.add_argument("--trusted-ref", default="origin/main", help="ref the trusted preview treats as the default-branch tip")
+    verify.add_argument("--feature", default=None, help="the driving Issue's exact noodles-feature marker value (empty string when it declares none); omitted leaves CI's journey-compilation gate unsimulated and named as an uncovered surface")
     metrics = sub.add_parser("metrics")
     metrics.add_argument("--json", action="store_true")
     structural = sub.add_parser("structural")
@@ -3816,8 +3820,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not preview["ok"]:
                     result["ok"] = False
                     result["errors"] = [*result["errors"], *(f"trusted verify would red: {name}" for name in preview["would_red"]), preview["diagnostic"]]
+                # constraint: ed3c/noodles#302 - the would-red comparison above previews only the
+                # constraint: trusted test modules; CI's receipt step also compiles the declared
+                # constraint: feature's journey. Simulating it here is what stops a stale marker from
+                # constraint: costing an Actions run, and the coverage list below is what stops this
+                # constraint: green from being read as coverage of the gates neither half simulates.
+                journey = feature_contract.preview_journey_gate(root, trusted_ref=args.trusted_ref, declared_feature=args.feature, error_cls=GateError)
+                result["journey_preview"] = journey
+                if not journey["ok"]:
+                    result["ok"] = False
+                    result["errors"] = [*result["errors"], journey["diagnostic"]]
                 if not args.json:
                     print(f"trusted-preview {preview['trusted_ref']}@{preview['trusted_sha'][:12]} ({preview['fetch']}): {'PASS' if preview['ok'] else 'FAIL'}")
+                    print(f"journey-preview {journey['trusted_ref']}@{journey['trusted_sha'][:12]} feature={journey['declared_feature']!r}: {'PASS' if journey['ok'] else 'FAIL'}")
+                    for gap in journey["coverage"]["uncovered"]:
+                        print(f"  not previewed: {gap['gate']} - {gap['reason']}")
             print(json.dumps(result, indent=2, sort_keys=True) if args.json else ("PASS" if result["ok"] else "FAIL"))
             if not result["ok"]:
                 for error in result["errors"]:
