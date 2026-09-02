@@ -28,6 +28,7 @@
       "github_protection.py",
       "skill_contract.py",
       "repair_contract.py",
+      "verified_batch.py",
       "issue_contract.py",
       ".github/*"
     ],
