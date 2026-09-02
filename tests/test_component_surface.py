@@ -572,9 +572,13 @@ class ComponentOwnerMapTests(unittest.TestCase):
         image of that same deadlock in the opposite direction. `assertEqual(len(owned), 18)` pinned
         the owner map's SIZE, and trusted verify runs this file from the default branch against the
         candidate's `policy/component-owners.json`, so a candidate that added even one owner entry
-        measured 19 against a literal only `main` could hold and could never merge to update it -
-        reproduced when ed3c/noodles#272 tried to declare `claimed_boundary_widening`'s owner and had
-        to drop the entry instead. Widening it to the same monotonic floor keeps the regression this
+        measured 19 against a literal only `main` could hold and could never merge to update it. The
+        receipt for that is the register entry's own runnable reproduction - add one entry to
+        `policy/component-owners.json`, run this module, read `AssertionError: 19 != 18` - and this
+        docstring cites only that. The entry also narrates an abandoned attempt inside the
+        ed3c/noodles#272 lane; that half is not carried here, because a dropped attempt leaves no
+        trace in the merged diff or the Issue body and nothing outside that session can check it.
+        Widening the pin to the same monotonic floor keeps the regression this
         assertion exists for - an owner entry silently deleted, which shrinks the count - while
         admitting the dispositions ed3c/noodles#326 drains into the map. This is the widen half of a
         staged transition: the flip that asserts the drained floor is `unowned == 0` (see
