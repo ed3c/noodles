@@ -170,12 +170,38 @@ class RepositoryGateTests(unittest.TestCase):
             },
         )
 
+    # constraint: ed3c/noodles#304 staging window - this assertion is what pull_request_target runs
+    # constraint: from the DEFAULT BRANCH against a candidate tree, so while it pins the whole list
+    # constraint: literally no candidate can ever remove the one disabled compatibility entry: the
+    # constraint: trusted verifier reds it and no rerun or rebase can turn that green. Acceptance is
+    # constraint: widened here first (step 1 of widen -> flip -> retire): the two enabled pins stay
+    # constraint: exact and the disabled entry is admitted as present-or-absent. The removal atom
+    # constraint: ed3c/noodles#301 is step 2; it retires this window and restores an exact list of
+    # constraint: exactly the entries that remain. #301 declares depends-on #304 so it cannot run first.
+    DISABLED_COMPAT_ENTRY = {
+        "name": "skills-shared-compat",
+        "source": "https://github.com/ed3c/skills-shared.git",
+        "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
+        "subpath": ".",
+        "destination": ".noodle/providers/skills-shared-compat",
+        "license_path": "LICENSE",
+        "enabled": False,
+        "authority": "P",
+        "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
+    }
+
     def test_provider_lock_pins_expected_external_skills(self) -> None:
         payload = json.loads((CANDIDATE_ROOT / "policy/providers.lock.json").read_text())
         pstack_source = payload["providers"][0].get("source")
         self.assertEqual(pstack_source, "https://github.com/ed3c/plugins.git")
+        # constraint: the window admits exactly one extra shape and nothing else - the strip is an
+        # constraint: exact compare, so an entry that merely resembles the disabled one is not
+        # constraint: stripped and still reds against the pinned list below.
+        observed = list(payload["providers"])
+        if observed[-1:] == [self.DISABLED_COMPAT_ENTRY]:
+            observed = observed[:-1]
         self.assertEqual(
-            payload["providers"],
+            observed,
             [
                 {
                     "name": "cursor-pstack",
@@ -207,17 +233,6 @@ class RepositoryGateTests(unittest.TestCase):
                     "enabled": True,
                     "authority": "P",
                     "purpose": "Replaceable engineering knowledge; never a correctness authority.",
-                },
-                {
-                    "name": "skills-shared-compat",
-                    "source": "https://github.com/ed3c/skills-shared.git",
-                    "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
-                    "subpath": ".",
-                    "destination": ".noodle/providers/skills-shared-compat",
-                    "license_path": "LICENSE",
-                    "enabled": False,
-                    "authority": "P",
-                    "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
                 },
             ],
         )
@@ -901,7 +916,20 @@ class RepositoryGateTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = root / "policy/providers.lock.json"
         payload = json.loads(path.read_text())
-        payload["providers"][2]["enabled"] = True
+        # constraint: ed3c/noodles#304 - the count control plants its own well-formed third entry. It
+        # constraint: used to flip the lock's one disabled compatibility entry, which coupled a
+        # constraint: provider-budget control to a retired source staying in the lock forever.
+        payload["providers"].append({
+            "name": "count-probe",
+            "source": "https://github.com/ed3c/count-probe.git",
+            "commit": "7" * 40,
+            "subpath": "skills",
+            "destination": ".noodle/providers/count-probe",
+            "license_path": "LICENSE",
+            "enabled": True,
+            "authority": "P",
+            "purpose": "Planted third enabled provider; exists only to exceed the budget.",
+        })
         path.write_text(json.dumps(payload))
         self.commit(root)
         with mock.patch.object(noodles, "repository_metrics", return_value=self.baseline_metrics()):
