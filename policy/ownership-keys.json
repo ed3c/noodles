@@ -25,7 +25,7 @@
       "projections": [
         {
           "path": "tests/test_noodles.py",
-          "why": "The trusted provider-lock assertion compares the candidate's entries against a pinned list. ed3c/noodles#304 widened it for the staged compat removal and ed3c/noodles#301 retires it; until then the test is the admitted second reader, not a second writer."
+          "why": "The trusted provider-lock assertion compares the candidate's entries against a pinned list, so it necessarily carries this lock's values verbatim. ed3c/noodles#304 widened that list into a present-or-absent window for the staged compat removal, and ed3c/noodles#301 closes the window by restoring an exact pin - a full literal mirror of the lock, larger than the widened form, not a retirement of it. The mirror is the point: it is what pull_request_target runs from the default branch against every candidate, so this projection is the mechanical carrier of the refusal and stays a permanent read-only reader rather than a second writer."
         }
       ]
     },
@@ -33,7 +33,7 @@
       "id": "provider-commit",
       "owner": "policy/providers.lock.json",
       "select": ["providers", "*", "commit"],
-      "why": "The exact 40-hex commit is what makes a provider pinned rather than floating. A copy that stops resolving to a live entry is the exact failure this detector exists to name.",
+      "why": "The exact 40-hex commit is what makes a provider pinned rather than floating. What this row refuses: a file outside the registry that writes one of the lock's commits, and an admitted projection that has fallen off the owner entirely by carrying none of its current commits. What it does NOT refuse, measured on this tree rather than assumed away: a projection citing several pins where only one moved still carries a live sibling value and stays green, because admission is per projection, not per value, and the registry declares no value SHAPE - so a stale 40-hex string inside an otherwise-current projection is invisible here. That partial staleness is the drift a README citing several pins actually produces, and it is a review concern until a per-value rule with a declared shape lands.",
       "projections": [
         {
           "path": "docs/design/context-closure/README.md",
@@ -45,7 +45,7 @@
         },
         {
           "path": "tests/test_noodles.py",
-          "why": "Same trusted provider-lock assertion as the provider-source row, owned by the ed3c/noodles#304 -> #301 staged transition."
+          "why": "Same trusted provider-lock assertion as the provider-source row: ed3c/noodles#301 closes the ed3c/noodles#304 window by restoring an exact literal mirror of this lock, so the projection grows rather than retires and stays the default branch's carrier of the pin."
         }
       ]
     },
