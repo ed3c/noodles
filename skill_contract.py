@@ -32,6 +32,16 @@ SCHEDULE_TASK_MODEL_POINTER = "required_codex_task_profiles.execute.model"
 SCHEDULE_ORDER_ID_FIELD = "`order_id`"
 POLICY_FITNESS_PATH = "policy/fitness.json"
 OWNERSHIP_REGISTRY_PATH = "policy/ownership-keys.json"
+# constraint: ed3c/noodles#325 staging window - `task_profile_literal_exempt_paths` has no reader in
+# constraint: this tree any more: `validate_ownership_registry` carries the task-model class and
+# constraint: names its admitted projections in policy/ownership-keys.json instead. The key stays in
+# constraint: policy/fitness.json only because `pull_request_target` runs the DEFAULT BRANCH's
+# constraint: `validate_task_profile_single_source`, which subscripts that key out of the CANDIDATE's
+# constraint: own policy document; deleting the key here raises
+# constraint: KeyError inside the trusted verifier, which `./noodles verify --trusted-preview`
+# constraint: reproduced as two reds no rerun could clear. This is step 1 of widen -> flip -> retire:
+# constraint: the retirement atom, filed as findings-register entry 9, deletes the key once a
+# constraint: default branch carrying the registry is what judges candidates.
 # constraint: ed3c/noodles#325 - a shorter owned value is not an identity a tracked tree can be
 # constraint: scanned for; it matches inside unrelated words and the registry would spend its rows
 # constraint: exempting the noise away instead of naming writers.
