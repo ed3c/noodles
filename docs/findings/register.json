@@ -115,6 +115,21 @@
       "owner_component": "schedule",
       "status": "open",
       "chain": "0461abccd6cb45d0e3a2e7d65c0601889cafe2b1fa19c38955a993789264dfe2"
+    },
+    {
+      "id": 9,
+      "date": "2026-09-02",
+      "severity": "S3",
+      "finding": "ed3c/noodles#326 requires that a new top-level module cite the disclosed edges justifying its seam in its own header, and that a length-only justification be refused. The atom created no module, so the rule shipped with a review fixture as its only carrier (tests/test_component_surface.py::NoMeasuredSeamTests, whose inputs are import edges and reference direction and cannot be made to read a line count). Nothing refuses it at gate time: `introduced_components` already names a new top-level module on the diff and `component_introduction_errors` already fires on exactly that event, so the hook exists and the check does not. It was left out because adding it is a new top-level definition in noodles.py, which the drain's own re-tightened ratchet reds unless the same commit dispositions it - which the drain now makes possible, so the cure is one atom that adds the check AND its owner entry together. Until then a future split is bounded by review, not by a refusal.",
+      "receipts": [
+        "tests/test_component_surface.py::NoMeasuredSeamTests - the whole carrier the rule has today",
+        "noodles.py:introduced_components - already names a new top-level module on the diff",
+        "noodles.py:component_introduction_errors - already refuses on that same event, with the Issue body as its subject",
+        "policy/fitness.json max_unowned_top_level_definitions: 0 - why the cure atom must own its own new definition in the same commit"
+      ],
+      "owner_component": "verify",
+      "status": "open",
+      "chain": "70c26f1d37ea61084286b82ace2e9ef26f2db933c96eb3407cd2e0676c045fa5"
     }
   ]
 }
