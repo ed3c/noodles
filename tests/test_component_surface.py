@@ -670,6 +670,265 @@ class UnownedDefinitionRatchetTests(unittest.TestCase):
                 noodles.component_owner_map(Path(temp))
 
 
+# constraint: ed3c/noodles#326 - same ed3c/noodles#306 discipline as the edge sentence above: the
+# constraint: three drained counts are parsed out of the candidate's own AGENTS.md rather than
+# constraint: restated here, so the paragraph is the ledger and a stale one is a red.
+DRAIN_DISCLOSURE_RE = re.compile(r"names every one of them: (\d+) owned-in-place, (\d+) engine-root, (\d+) unowned")
+
+
+def disclosed_drain_counts(root: Path) -> dict[str, int]:
+    """The drained disposition counts AGENTS.md discloses, or {} when that tree discloses nothing."""
+    match = DRAIN_DISCLOSURE_RE.search((root / "AGENTS.md").read_text(encoding="utf-8"))
+    if match is None:
+        return {}
+    return dict(zip(("owned-in-place", "engine-root", "unowned"), (int(value) for value in match.groups())))
+
+
+def detachable_definition_groups(source: str, targets: list[str]) -> dict[str, list[str]]:
+    """Per imported module, the definition group whose extraction would REMOVE that import edge.
+
+    ed3c/noodles#326's seam measurement. Lifting definitions out of a module only lowers a disclosed
+    `cross_surface_import_edges` count when the group that uses the target is closed in both
+    directions: nothing outside it reaches in (or the file still calls the new module, re-creating
+    the edge as `source -> new module` for exactly the components that did not admit the target),
+    and it reaches nothing outside (or the new module imports this one back). A target with no such
+    group has no seam to split at, whatever the file's size - size is not read here, and cannot be.
+
+    A target is found through every local name its import binds - the module alias for `import x`
+    AND each imported symbol for `from x import a, b` - because a `from` import leaves the module
+    name nowhere in the tree, and keying on it alone would report every such edge as having no
+    definitions behind it at all.
+
+    Ceiling: reference direction is read inside this one module, so a group nothing here reaches is
+    reported detachable even when an importer elsewhere calls it. That direction is safe for the
+    claim this measurement carries - it can only over-report seams, never hide one - and it reports
+    none on the live tree."""
+    tree = ast.parse(source)
+    definitions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    bound: dict[str, set[str]] = {target: set() for target in targets}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in bound:
+                    bound[alias.name].add((alias.asname or alias.name).partition(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module in bound:
+            bound[node.module] |= {alias.asname or alias.name for alias in node.names}
+
+    def names_in(node: ast.AST) -> set[str]:
+        found: set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name):
+                found.add(child.id)
+            elif isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name):
+                found.add(child.value.id)
+        return found
+
+    referenced = {name: names_in(node) for name, node in definitions.items()}
+    module_level: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_level |= names_in(node)
+
+    groups: dict[str, list[str]] = {}
+    for target in targets:
+        names = bound[target] or {target}
+        users = {name for name, seen in referenced.items() if seen & names}
+        if not users:
+            continue
+        group = set(users)
+        while group:
+            held = {
+                member
+                for member in group
+                if member in module_level or any(member in referenced[other] for other in set(definitions) - group)
+            }
+            if not held:
+                break
+            group -= held
+        escapes = {ref for member in group for ref in referenced[member] if ref in definitions} - group
+        if group and users <= group and not escapes:
+            groups[target] = sorted(group)
+    return groups
+
+
+class DrainedOwnershipTests(unittest.TestCase):
+    """ed3c/noodles#326: the unowned pool is drained, so `noodles.py` has no silent definitions left.
+
+    ed3c/noodles#278 turned "unowned" from a silence into a number and ratcheted it report-only. It
+    stayed 145 because it had nowhere to go: the trusted default branch pinned the owner map at
+    exactly 18 entries (findings entry 7), so no candidate could add one. With that pin widened to a
+    monotonic floor, this holds the drained state - every top-level definition dispositioned, the
+    ratchet re-tightened to the floor, and only two legal shapes for a disposition."""
+
+    def setUp(self) -> None:
+        self.components = noodles.component_map(CANDIDATE_ROOT)
+        self.owners = noodles.component_owner_map(CANDIDATE_ROOT)["noodles.py"]
+        self.source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        self.definitions = noodles.top_level_definitions(self.source, "noodles.py")
+        self.engine_root = tuple(
+            sorted(
+                name
+                for name, globs in self.components.items()
+                if "*" not in globs and any(fnmatch.fnmatchcase("noodles.py", glob) for glob in globs)
+            )
+        )
+
+    def test_every_top_level_definition_carries_a_disposition(self) -> None:
+        self.assertEqual(sorted(set(self.definitions) - set(self.owners)), [])
+        self.assertEqual(noodles.unowned_top_level_definitions(CANDIDATE_ROOT), 0)
+
+    def test_a_disposition_is_owned_in_place_or_engine_root_and_never_a_third_shape(self) -> None:
+        """The class is the entry's own shape, so it cannot be claimed in prose and contradicted in
+        data: one component is owned-in-place, and exactly the components that admit noodles.py at
+        once are engine-root. Any other list is a disposition nobody defined."""
+        self.assertGreater(len(self.engine_root), 1, self.engine_root)
+        for name, owning in sorted(self.owners.items()):
+            with self.subTest(definition=name):
+                self.assertTrue(
+                    len(owning) == 1 or tuple(sorted(owning)) == self.engine_root,
+                    f"{name} carries {list(owning)}, neither one component nor {list(self.engine_root)}",
+                )
+
+    def test_the_disclosed_class_counts_match_the_map(self) -> None:
+        disclosed = disclosed_drain_counts(CANDIDATE_ROOT)
+        self.assertTrue(disclosed, "AGENTS.md discloses no drained disposition counts to read")
+        measured = {
+            "owned-in-place": sum(1 for owning in self.owners.values() if len(owning) == 1),
+            "engine-root": sum(1 for owning in self.owners.values() if len(owning) > 1),
+            "unowned": len(set(self.definitions) - set(self.owners)),
+        }
+        self.assertEqual(measured, disclosed)
+
+    def test_a_stale_disclosed_class_count_is_a_red_rather_than_prose_nobody_reruns(self) -> None:
+        live = disclosed_drain_counts(CANDIDATE_ROOT)
+        self.assertTrue(live, "AGENTS.md discloses no drained disposition counts to read")
+        stale = DRAIN_DISCLOSURE_RE.sub(
+            lambda match: match.group(0).replace(
+                f"{live['engine-root']} engine-root", f"{live['engine-root'] + 1} engine-root"
+            ),
+            (CANDIDATE_ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+            count=1,
+        )
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "AGENTS.md").write_text(stale, encoding="utf-8")
+            self.assertEqual(disclosed_drain_counts(root)["engine-root"], live["engine-root"] + 1)
+
+    def test_the_ratchet_is_re_tightened_to_the_drained_floor(self) -> None:
+        policy = noodles.load_json(CANDIDATE_ROOT / "policy/fitness.json")
+        self.assertEqual(policy["max_unowned_top_level_definitions"], 0)
+        entry = noodles.unowned_definition_readback(0, policy)
+        self.assertEqual((entry["status"], entry["message"]), ("ok", None))
+
+    def test_planted_regrowth_one_undispositioned_definition_reds_the_re_tightened_ratchet(self) -> None:
+        """The pool refilling by one, against the candidate's own map and source rather than a
+        synthetic pair, so the fixture measures the thing the ratchet now guards."""
+        temp = tempfile.TemporaryDirectory(prefix="noodles-regrowth-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        (root / "policy/component-owners.json").write_text(
+            (CANDIDATE_ROOT / "policy/component-owners.json").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        (root / "noodles.py").write_text(self.source, encoding="utf-8")
+        self.assertEqual(noodles.unowned_top_level_definitions(root), 0)
+
+        (root / "noodles.py").write_text(f"{self.source}\n\ndef planted_regrowth() -> None:\n    pass\n", encoding="utf-8")
+        regrown = noodles.unowned_top_level_definitions(root)
+        entry = noodles.unowned_definition_readback(regrown, {"max_unowned_top_level_definitions": 0})
+
+        self.assertEqual(regrown, 1)
+        self.assertEqual(entry["status"], "warning")
+        self.assertEqual(entry["message"], "architecture warning unowned_top_level_definitions=1 exceeds 0")
+
+
+class NoMeasuredSeamTests(unittest.TestCase):
+    """ed3c/noodles#326: why the drain moved nothing, stated as a measurement instead of a claim.
+
+    A module split is admitted only where the disclosed edges show a seam. `detachable_definition_groups`
+    is that question in mechanical form, and its inputs are import edges and reference direction -
+    never a line count, which is why a length-only justification cannot move its answer."""
+
+    def cross_surface_targets(self) -> list[str]:
+        """Every repo module `noodles.py` imports that at least one component's globs exclude."""
+        components = noodles.component_map(CANDIDATE_ROOT)
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        targets = []
+        for dotted in sorted(noodles.python_import_targets(source, "noodles.py")):
+            path = noodles.repo_module_target(dotted, CANDIDATE_ROOT)
+            if not path or path == "noodles.py":
+                continue
+            if any(
+                "*" not in globs
+                and any(fnmatch.fnmatchcase("noodles.py", glob) for glob in globs)
+                and not any(fnmatch.fnmatchcase(path, glob) for glob in globs)
+                for globs in components.values()
+            ):
+                targets.append(dotted)
+        return targets
+
+    def test_no_cross_surface_target_of_the_engine_sits_behind_a_detachable_group(self) -> None:
+        targets = self.cross_surface_targets()
+        self.assertTrue(targets, "noodles.py imports no cross-surface module; the measurement has no subject")
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        self.assertEqual(detachable_definition_groups(source, targets), {})
+
+    def test_positive_control_a_genuinely_detachable_group_is_reported(self) -> None:
+        """Without this the empty result above would also be what a detector that never fires
+        returns."""
+        source = (
+            "import alpha\n"
+            "import beta\n\n\n"
+            "def spine() -> None:\n    alpha.go()\n\n\n"
+            "def leaf_one() -> None:\n    beta.go()\n    leaf_two()\n\n\n"
+            "def leaf_two() -> None:\n    beta.stop()\n\n\n"
+            "ENTRY = spine\n"
+        )
+        self.assertEqual(
+            detachable_definition_groups(source, ["alpha", "beta"]), {"beta": ["leaf_one", "leaf_two"]}
+        )
+
+    def test_a_from_import_binds_its_symbols_not_its_module_name(self) -> None:
+        """The hole this closes: `noodles.py` reaches claim_contract, disposition_contract and
+        repair_contract only through `from x import y`, so a detector keyed on the module name found
+        no definitions behind those three edges and reported a clean it had not measured."""
+        source = (
+            "from beta import go\n\n\n"
+            "def spine() -> None:\n    pass\n\n\n"
+            "def leaf() -> None:\n    go()\n\n\n"
+            "ENTRY = spine\n"
+        )
+        self.assertEqual(detachable_definition_groups(source, ["beta"]), {"beta": ["leaf"]})
+
+    def test_planted_negative_a_length_only_justification_moves_no_seam(self) -> None:
+        """The refused shape: "this file is enormous, split it". Padding the same tree with three
+        thousand lines of body leaves every group and every answer identical, because size is not
+        one of this measurement's inputs and cannot be made into one."""
+        source = (
+            "import alpha\n\n\n"
+            "def spine() -> None:\n    helper()\n\n\n"
+            "def helper() -> None:\n    alpha.go()\n"
+        )
+        padding = "\n".join(f"    _ = {index}" for index in range(3000))
+        padded = source.replace("def helper() -> None:\n", f"def helper() -> None:\n{padding}\n")
+
+        self.assertEqual(detachable_definition_groups(source, ["alpha"]), {})
+        self.assertEqual(detachable_definition_groups(padded, ["alpha"]), {})
+        self.assertGreater(len(padded.splitlines()), 100 * len(source.splitlines()))
+
+    def test_a_group_the_module_level_holds_is_not_detachable(self) -> None:
+        source = (
+            "import beta\n\n\n"
+            "def leaf() -> None:\n    beta.go()\n\n\n"
+            "REGISTRY = (leaf,)\n"
+        )
+        self.assertEqual(detachable_definition_groups(source, ["beta"]), {})
+
+
 class ComponentOwnerGateTests(unittest.TestCase):
     """The ed3c/noodles#189 crossing, replayed against the real map and the real noodles.py."""
 

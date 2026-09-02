@@ -517,16 +517,22 @@ def unowned_top_level_definitions(root: Path) -> int:
     this tree does not carry is a refusal rather than a skipped file: an owner map describing a file
     that is not here has already stopped describing this repository.
 
-    The ceiling this atom lands equals what this tree measures, 145, rather than sitting under it:
-    this atom's own three new definitions cannot be given owner entries here, because the trusted
-    default branch's `ComponentOwnerMapTests` asserts the candidate's map has exactly 18 entries, so
-    any candidate that adds one reds in CI and can never land the change that would let it pass. That
-    is the same trusted-transition deadlock ed3c/noodles#285 named and worked around with a monotonic
-    floor; shrinking the ceiling by owning these three is the staged transition after that assertion
-    moves. The number moved 135 -> 142 -> 143 -> 145 across three rebases onto `main` while this
-    branch waited, and is measured every time rather than carried: the ceiling is whatever the
-    candidate's own tree reports, so a rebase that gains definitions restates it here, in AGENTS.md,
-    and in policy/fitness.json together."""
+    ed3c/noodles#278 landed the ceiling at 145, the number its own tree measured, because it could
+    not go lower: the trusted default branch asserted the candidate's map had exactly 18 entries, so
+    no candidate could add one and none could merge to update the literal. ed3c/noodles#326 completed
+    that staged transition - the size pin is a monotonic floor now, every one of noodles.py's
+    top-level definitions is dispositioned, and policy/fitness.json holds the ceiling at the drained
+    floor of 0.
+
+    So the instruction that used to live here - a rebase that gains definitions restates the ceiling
+    in AGENTS.md and policy/fitness.json - is exactly the wrong move now, and following it would
+    refill the pool this drain emptied. Raise nothing. A candidate that adds a top-level definition
+    to a file this map covers gives it an owner entry in the same commit, which keeps the count at 0
+    and leaves this ceiling alone; the disposition-class counts AGENTS.md discloses move with it, the
+    same way the standing-edge sentence beside them moves, and `DrainedOwnershipTests` says which of
+    those numbers is stale instead of leaving it to be discovered. That is the whole point of a floor
+    at 0 rather than a ceiling that follows the tree: what a new definition costs is a disposition,
+    not a threshold edit."""
     total = 0
     for path, definitions in component_owner_map(root).items():
         source = root / path
