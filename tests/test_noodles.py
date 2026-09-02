@@ -30,6 +30,7 @@ from tests.support import (
     graphql_backlog_payload,
     handoff_fixture,
     provider_fixture,
+    runtime_lock_shape_errors,
     runtime_release_reader,
     assert_valid_start_entrypoint_receipt,
     script_mode_gateerror_identity,
@@ -188,24 +189,18 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any("untracked path: policy/absent.json" in item for item in result["errors"]), result["errors"])
 
-    def test_runtime_lock_pins_expected_release(self) -> None:
-        payload = json.loads((CANDIDATE_ROOT / "policy/runtime.lock.json").read_text())
-        self.assertEqual(
-            payload["runtime"],
-            {
-                "repository": "poteto/noodle",
-                "release": "v0.1.5",
-                "commit": "eaa1d5cce36f73e33e81d4855bb2fc47e33d0b24",
-                "command": "noodle",
-                "platforms": {
-                    "darwin_arm64": {
-                        "asset_name": "noodle_darwin_arm64.tar.gz",
-                        "asset_sha256": "d83f367b0afd933a6322b7fcf01888ff098f4df3c2c6ac058355cb652c078765",
-                        "binary_sha256": "56dfc5bbc05a45c41783715d01c24edab79a8e94f0ba777066325b9302a3f375",
-                    }
-                },
-            },
-        )
+    def test_runtime_lock_is_pinned_by_shape_derivation_and_internal_consistency(self) -> None:
+        """ed3c/noodles#315 converted this from a strict-equal literal of the whole `runtime` object.
+
+        The literal was the pattern's exact shape: this module is what `pull_request_target` runs
+        from the DEFAULT BRANCH against a candidate tree, so a candidate that legitimately bumped the
+        Noodle release was compared against bytes only `main` could hold and could never merge to
+        update them. The candidate carries its own release, commit and digests; the trusted side
+        keeps the invariant that they are exactly pinned, exactly shaped, and internally consistent -
+        `tests/support.runtime_lock_shape_errors` owns that judgement and
+        `tests/test_trusted_literals.py::ConvertedValueDeadlockTests` holds the fixture pair proving
+        a legal move stays green under it."""
+        self.assertEqual(runtime_lock_shape_errors(CANDIDATE_ROOT), [])
 
     # constraint: ed3c/noodles#304 staging window - this assertion is what pull_request_target runs
     # constraint: from the DEFAULT BRANCH against a candidate tree, so while it pins the whole list
