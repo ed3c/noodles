@@ -34,6 +34,10 @@ DEPENDENCY_DECLARATION_RE = re.compile(
 ISSUE_REFERENCE_RE = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[1-9][0-9]*)")
 NO_DEPENDENCY_WORDS = {"", "-", "n/a", "none", "nothing"}
 NO_DEPENDENCIES = "none"
+# constraint: ed3c/noodles#315 - the schedulable-state token is owned here, where derive_schedulability
+# constraint: consumes it, so the trusted corpus test asserts the vocabulary the code itself reads
+# constraint: instead of memorizing its spelling as a candidate-current literal.
+READY_STATE = "ready"
 # constraint: ed3c/noodles#120 - `ready` is necessary but not sufficient. `claim` joins the typed
 # constraint: sections a repository-mutating Issue must carry non-empty before it is schedulable.
 REQUIRED_SECTIONS = ("goal", "claim", "physical_acceptance", "non_claims")
@@ -710,7 +714,7 @@ def derive_schedulability(
     reasons: list[str] = []
     if provider_state != "open":
         reasons.append(f"issue provider state is {provider_state!r}, not open")
-    if contract.get("state") != "ready":
+    if contract.get("state") != READY_STATE:
         reasons.append(f"issue state marker is {contract.get('state')!r}, not ready")
     blocker = contract.get("blocker")
     if blocker:

@@ -144,10 +144,10 @@ class ReadyBacklogFixtureGateTests(unittest.TestCase):
         for fixture in (honest, demonstrated):
             with self.subTest(fixture=fixture.id):
                 contract = noodles.parse_issue_contract(fixture.body, fixture.subject)
-                self.assertEqual(contract["state"], "ready")
+                self.assertEqual(contract["state"], issue_contract.READY_STATE)
                 self.assertEqual(contract["evidence_reasons"], [])
-        self.assertEqual(noodles.parse_issue_contract(honest.body, honest.subject)["observer"], "none")
-        self.assertNotEqual(noodles.parse_issue_contract(demonstrated.body, demonstrated.subject)["observer"], "none")
+        self.assertEqual(noodles.parse_issue_contract(honest.body, honest.subject)["observer"], issue_contract.EVIDENCE_NONE)
+        self.assertNotEqual(noodles.parse_issue_contract(demonstrated.body, demonstrated.subject)["observer"], issue_contract.EVIDENCE_NONE)
 
     def test_planted_tightening_fails_even_when_generated_helper_changes(self) -> None:
         temp, root = self.tightened_candidate()
