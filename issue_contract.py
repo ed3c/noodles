@@ -86,16 +86,28 @@ FINGERPRINT_COMMENT = (
 # constraint: prescribes an external tool behavior nobody probed. Both markers are required and both
 # constraint: admit the literal `none`: the marker is the discriminator, authored explicitly, because
 # constraint: classifying a trigger from its prose would be exactly the guess this gate replaces.
+# constraint: ONE row per marker, carrying everything a reason needs: marker, heading, section key,
+# constraint: the honest-`none` claim, and the directions as (label, subject) pairs. Three tables
+# constraint: keyed on the same strings meant a marker added to one of them raised KeyError out of a
+# constraint: reason-GENERATING function - a crash where the whole design is to fail closed with a
+# constraint: named reason. A row is now complete or it does not parse.
 EVIDENCE_NONE = "none"
-EVIDENCE_SECTIONS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
-    ("observer", "Observer demonstration", "observer_demonstration", ("GREEN", "RED")),
-    ("capability-probe", "Capability probe", "capability_probe", ()),
+EVIDENCE_SECTIONS: tuple[tuple[str, str, str, str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "observer",
+        "Observer demonstration",
+        "observer_demonstration",
+        "makes no absence-or-failure observation claim",
+        (("GREEN", "clean subject"), ("RED", "planted violation")),
+    ),
+    (
+        "capability-probe",
+        "Capability probe",
+        "capability_probe",
+        "prescribes no external tool behavior in its acceptance",
+        (),
+    ),
 )
-EVIDENCE_CLAIM = {
-    "observer": "makes no absence-or-failure observation claim",
-    "capability-probe": "prescribes no external tool behavior in its acceptance",
-}
-DIRECTION_SUBJECT = {"GREEN": "clean subject", "RED": "planted violation"}
 PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
 PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
 NO_WRITE_BOUNDARY = "none"
@@ -463,12 +475,16 @@ def fingerprint_comment(elder: str, existing_comments: Sequence[str]) -> str | N
 def _direction_halves(section: str, directions: Sequence[str]) -> dict[str, str]:
     """Each declared direction label to the text under it, split at the next label.
 
-    The labels are a closed uppercase vocabulary matched on word boundaries, so `REDUCE` in prose is
-    not a RED direction and the split cannot be produced by accident."""
+    A direction label starts a LINE, optionally behind markdown decoration (`- `, `**`, `> `, `#`,
+    a backtick). Two things this rules out, and the second is why it is anchored: `REDUCE` in prose
+    is not a RED direction because the match is on a word boundary, and a sentence that MENTIONS the
+    labels - "the RED and GREEN runs below use the same command" - is not the start of a transcript.
+    Unanchored, that preamble put RED before GREEN, made the preamble itself the RED half, and the
+    issue was refused for a demonstration it had actually supplied."""
     found = {
         direction: match.start()
         for direction in directions
-        for match in [re.search(rf"\b{direction}\b", section)]
+        for match in [re.search(rf"(?m)^[^A-Za-z0-9]*{direction}\b", section)]
         if match
     }
     ordered = sorted(found.items(), key=lambda item: item[1])
@@ -503,17 +519,26 @@ def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, 
 
 
 def evidence_marker_reasons(
-    marker: str, value: str | None, heading: str, section: str | None, directions: Sequence[str]
+    marker: str,
+    value: str | None,
+    heading: str,
+    claim: str,
+    section: str | None,
+    directions: Sequence[tuple[str, str]],
 ) -> list[str]:
     """One deterministic reason per absent half of one evidence marker.
 
     A missing marker is its own reason; an honest `none` is complete and untouched; a non-`none`
     marker owes its section, every declared direction, the identical invocation inside each, and an
-    output under it. Each half is named separately so the author is told which one is absent."""
+    output under it. Each half is named separately so the author is told which one is absent.
+
+    Everything this needs arrives in the arguments - `claim` and each direction's subject come from
+    the marker's own EVIDENCE_SECTIONS row - so a row for a new marker cannot be half-declared into
+    a KeyError raised out of a function whose entire job is to return named reasons."""
     if value is None:
         return [
             f"issue declares no noodles-{marker} marker; write exactly {EVIDENCE_NONE!r} when the "
-            f"issue {EVIDENCE_CLAIM[marker]}, or the exact invocation plus a '## {heading}' section"
+            f"issue {claim}, or the exact invocation plus a '## {heading}' section"
         ]
     invocation = value.strip()
     if invocation == EVIDENCE_NONE:
@@ -524,27 +549,30 @@ def evidence_marker_reasons(
         ]
     if not directions:
         return _invocation_reasons(marker, heading, invocation, section or "", "section")
-    halves = _direction_halves(section or "", directions)
+    labels = [label for label, _subject in directions]
+    halves = _direction_halves(section or "", labels)
     reasons: list[str] = []
-    for direction in directions:
-        if direction not in halves:
+    for label, subject in directions:
+        if label not in halves:
             reasons.append(
-                f"'## {heading}' carries no {direction} direction ({DIRECTION_SUBJECT[direction]}) "
+                f"'## {heading}' carries no {label} direction ({subject}) "
                 f"for noodles-{marker} {invocation!r}"
             )
             continue
         reasons.extend(
-            _invocation_reasons(marker, heading, invocation, halves[direction], f"{direction} direction")
+            _invocation_reasons(marker, heading, invocation, halves[label], f"{label} direction")
         )
     # constraint: ed3c/noodles#317 - the second live blindness case was a probe whose planted
     # constraint: direction returned exactly what its clean direction returned. Structurally that is
     # constraint: an observer that did not discriminate, and it is checkable without judging either
-    # constraint: output's truth, so the pair is refused rather than read as a demonstration.
-    if not reasons and len(directions) == 2:
-        recorded = [_observed_output(halves[direction], invocation) for direction in directions]
-        if recorded[0] == recorded[1]:
+    # constraint: output's truth, so the pair is refused rather than read as a demonstration. Keyed
+    # constraint: on "more than one direction, all of them identical" rather than on exactly two, so
+    # constraint: a third direction narrows the check instead of silently switching it off.
+    if not reasons and len(labels) > 1:
+        recorded = [tuple(_observed_output(halves[label], invocation)) for label in labels]
+        if len(set(recorded)) == 1:
             reasons.append(
-                f"'## {heading}' records identical output for {directions[0]} and {directions[1]}; "
+                f"'## {heading}' records identical output for {' and '.join(labels)}; "
                 f"the declared noodles-{marker} invocation {invocation!r} did not discriminate the "
                 "planted violation from the clean subject, so it cannot observe what the trigger claims"
             )
@@ -556,9 +584,9 @@ def evidence_reasons(body: str, declared: Mapping[str, str | None]) -> list[str]
     demonstration = sections(body, keep_fences=True)
     return [
         reason
-        for marker, heading, key, directions in EVIDENCE_SECTIONS
+        for marker, heading, key, claim, directions in EVIDENCE_SECTIONS
         for reason in evidence_marker_reasons(
-            marker, declared.get(marker), heading, demonstration.get(key), directions
+            marker, declared.get(marker), heading, claim, demonstration.get(key), directions
         )
     ]
 

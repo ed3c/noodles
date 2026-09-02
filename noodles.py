@@ -331,7 +331,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     # constraint: reasons here exactly the way requirement_errors does.
     declared_evidence = {
         marker: one_marker(body, marker.replace("-", "_"), required=False)
-        for marker, _heading, _key, _directions in issue_contract.EVIDENCE_SECTIONS
+        for marker, *_row in issue_contract.EVIDENCE_SECTIONS
     }
     # constraint: ed3c/noodles#120 - bounded multiplicity, so this marker parses into ids plus named
     # constraint: diagnostics instead of raising: a malformed declaration must reach the frontier as

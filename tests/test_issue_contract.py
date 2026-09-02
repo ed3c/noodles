@@ -534,6 +534,29 @@ class QualifiedEvidenceTests(unittest.TestCase):
         self.assertEqual(self.reasons(body), [])
         self.assertTrue(self.schedulable(body))
 
+    def test_planted_negative_a_preamble_that_mentions_the_labels_is_not_a_direction(self) -> None:
+        """The false refusal an unanchored split produces, on an honest body.
+
+        `_direction_halves` orders the halves by where each label first appears. Searched anywhere in
+        the section, an ordinary preamble - "the RED and GREEN runs below use the same command" -
+        puts RED first, makes that sentence the entire RED half, finds no invocation inside it, and
+        refuses an issue whose demonstration sits right underneath. A direction label starts a line;
+        a sentence about the directions does not."""
+        section = demonstration(RESIDUE_OBSERVER, "(no output)\n", "!! .noodle/state.json\n")
+        preamble = "Both the RED and GREEN runs below use the same command and access path.\n\n"
+        body = self.observing_body(RESIDUE_OBSERVER, preamble + section)
+        self.assertEqual(self.reasons(body), [])
+        self.assertTrue(self.schedulable(body))
+
+    def test_a_decorated_direction_label_is_still_a_direction(self) -> None:
+        """Anchoring must not become a false refusal of its own: authors bold, bullet or quote the
+        label. Any run of non-alphanumerics may precede it on the line, and nothing else may."""
+        section = demonstration(RESIDUE_OBSERVER, "(no output)\n", "!! .noodle/state.json\n")
+        for decoration in ("**", "- ", "> ", "#### ", "`"):
+            with self.subTest(decoration=decoration):
+                decorated = re.sub(r"(?m)^(GREEN|RED)\b", lambda match: decoration + match.group(0), section)
+                self.assertEqual(self.reasons(self.observing_body(RESIDUE_OBSERVER, decorated)), [])
+
     def test_the_live_zero_residue_blindness_case_reds_on_its_own_planted_direction(self) -> None:
         """`git status` without the ignored-matching form structurally cannot see `.noodle/` residue,
         so the RED direction it would have to paste is silence. The gate refuses the silence, which
