@@ -779,10 +779,12 @@ class RepositoryGateTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         path = root / ".github/workflows/verify.yml"
         workflow = path.read_text()
-        admitted = "  verify:\n    needs: candidate-self-tests\n"
-        planted = "  verify:\n    needs: foreign-job\n"
-        self.assertIn(admitted, workflow)
-        path.write_text(workflow.replace(admitted, planted, 1))
+        job = "  verify:\n"
+        admitted = job + "    needs: candidate-self-tests\n"
+        planted = job + "    needs: foreign-job\n"
+        self.assertIn(job, workflow)
+        baseline = admitted if admitted in workflow else job
+        path.write_text(workflow.replace(baseline, planted, 1))
         self.commit(root)
         result = self.verify(root)
         self.assertFalse(result["ok"])
