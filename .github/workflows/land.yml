@@ -73,4 +73,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NOODLES_TRAIN_PUSH_TOKEN: ${{ steps.train-token.outputs.token }}
+          NOODLES_LAND_RECEIPT: ${{ github.workspace }}/receipt/noodles-receipt.json
         run: python3 noodles.py github train
