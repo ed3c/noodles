@@ -200,5 +200,80 @@ class CodexIsolationTests(unittest.TestCase):
                 codex_isolation.codex_surface_canary(root, error_cls=RuntimeError)
 
 
+class NoodleResidueObserverTests(unittest.TestCase):
+    """ed3c/noodles#313 - the zero-residue clause has never been evaluated, because the observer
+    every lane runs (`git status --porcelain --untracked-files=all`) cannot see a `.noodle/` path at
+    all: `.gitignore` carries `.noodle/*`. Both directions are asserted here - the blind observer
+    stays silent on a planted residue that this one names, and this one stays silent on the ignored
+    paths that are not runtime state, so it is neither `git status` under another name nor a check
+    that reds on everything and gets turned off."""
+
+    def tracked_copy(self) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-residue-observer-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        return root
+
+    def git_status_porcelain(self, root: Path) -> str:
+        return subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, text=True, stdout=subprocess.PIPE, check=True,
+        ).stdout
+
+    def test_a_planted_isolation_home_is_named_by_the_observer_and_invisible_to_git_status(self) -> None:
+        root = self.tracked_copy()
+        self.assertEqual(codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError), [])
+        (root / codex_isolation.ISOLATED_HOME).mkdir(parents=True)
+        self.assertEqual(self.git_status_porcelain(root), "")
+        self.assertIn(codex_isolation.ISOLATED_HOME, codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError))
+
+    def test_the_observer_names_a_written_file_under_an_ignored_directory(self) -> None:
+        root = self.tracked_copy()
+        auth = root / codex_isolation.ISOLATED_CODEX_HOME / "auth.json"
+        auth.parent.mkdir(parents=True)
+        auth.write_text("{}\n", encoding="utf-8")
+        self.assertEqual(self.git_status_porcelain(root), "")
+        self.assertIn(
+            f"{codex_isolation.ISOLATED_CODEX_HOME}/auth.json",
+            codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError),
+        )
+
+    def test_ignored_paths_outside_the_runtime_root_are_not_residue(self) -> None:
+        root = self.tracked_copy()
+        cache = root / "__pycache__"
+        cache.mkdir()
+        (cache / "noodles.cpython-314.pyc").write_bytes(b"\x00")
+        self.assertEqual(self.git_status_porcelain(root), "")
+        self.assertEqual(codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError), [])
+
+    def test_the_observer_fails_closed_where_there_is_no_repository_to_observe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-residue-nonrepo-") as temp:
+            with self.assertRaisesRegex(RuntimeError, "residue observer could not read git status"):
+                codex_isolation.noodle_runtime_residue(Path(temp), error_cls=RuntimeError)
+
+    def test_the_tracked_wrapper_writes_its_isolation_state_into_its_own_root_not_the_cwd(self) -> None:
+        """The root cause, asserted directly: `.agents/bin/codex` resolves its repository root from
+        its own `__file__`, so the wrapper a test invokes - not the cwd it is given - decides which
+        tree gains `.noodle/codex-isolation/`. That is why `run_carrier`'s old `root=CANDIDATE_ROOT`
+        default wrote into the live checkout while pointing its cwd wherever it liked."""
+        root = self.tracked_copy()
+        fake_bin = root.parent / "fake-bin"
+        fake_bin.mkdir()
+        write_fake_codex_stub(fake_bin / "codex")
+        elsewhere = root.parent / "elsewhere"
+        elsewhere.mkdir()
+        before = codex_isolation.noodle_runtime_residue(CANDIDATE_ROOT, error_cls=RuntimeError)
+        env = os.environ.copy()
+        env["HOME"] = str(root.parent / "user-home")
+        env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        subprocess.run(
+            [str(root / codex_isolation.CODEX_WRAPPER), "debug", "prompt-input", "probe"],
+            cwd=elsewhere, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+        )
+        self.assertIn(codex_isolation.ISOLATED_HOME, codex_isolation.noodle_runtime_residue(root, error_cls=RuntimeError))
+        self.assertEqual(codex_isolation.noodle_runtime_residue(CANDIDATE_ROOT, error_cls=RuntimeError), before)
+
+
 if __name__ == "__main__":
     unittest.main()

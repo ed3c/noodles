@@ -75,7 +75,25 @@ class ScheduleContractTests(unittest.TestCase):
         copy_tracked(CANDIDATE_ROOT, root)
         return temp, root
 
-    def run_carrier(self, argv: list[str], root: Path = CANDIDATE_ROOT) -> subprocess.CompletedProcess[str]:
+    _carrier_root: Path | None = None
+
+    @classmethod
+    def carrier_root(cls) -> Path:
+        # constraint: ed3c/noodles#313 - .agents/bin/codex resolves its repository root from its own
+        # constraint: __file__, never from cwd, so invoking the TRACKED wrapper mkdirs
+        # constraint: .noodle/codex-isolation/{home,codex-home} into the live checkout no matter what
+        # constraint: cwd it is given. One copied tree per class puts that runtime state in a
+        # constraint: temporary directory, which is where the zero-residue clause requires it.
+        if cls._carrier_root is None:
+            temp = tempfile.TemporaryDirectory(prefix="noodles-codex-carrier-root-")
+            cls.addClassCleanup(temp.cleanup)
+            root = Path(temp.name) / "repo"
+            copy_tracked(CANDIDATE_ROOT, root)
+            cls._carrier_root = root
+        return cls._carrier_root
+
+    def run_carrier(self, argv: list[str], root: Path | None = None) -> subprocess.CompletedProcess[str]:
+        root = self.carrier_root() if root is None else root
         with tempfile.TemporaryDirectory(prefix="noodles-codex-carrier-") as temp_name:
             fake_codex = Path(temp_name) / "codex"
             fake_codex.write_text(
