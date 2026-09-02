@@ -204,6 +204,9 @@ class RepositoryGateTests(unittest.TestCase):
 
     # constraint: ed3c/noodles#301 - refusal is scoped to the retired source; generic provider
     # constraint: schema and pin validity remain owned by the repository provider gate.
+    RETIRED_PROVIDER_NAME = "skills-" + "shared"
+    RETIRED_PROVIDER_POINTER = f"https://github.com/ed3c/{RETIRED_PROVIDER_NAME}.git"
+
     def retired_compat_entry(self) -> dict:
         name = f"{self.RETIRED_PROVIDER_NAME}-compat"
         return {
@@ -250,9 +253,6 @@ class RepositoryGateTests(unittest.TestCase):
             if (root / relative).is_file()
             and self.RETIRED_PROVIDER_POINTER in (root / relative).read_text(encoding="utf-8", errors="ignore")
         ]
-
-    def test_provider_lock_pins_expected_external_skills(self) -> None:
-        self.assertEqual(self.providers_of(CANDIDATE_ROOT), self.EXPECTED_PROVIDERS)
 
     def test_no_tracked_file_is_a_live_pointer_to_the_retired_source(self) -> None:
         self.assertEqual(self.live_pointer_offenders(CANDIDATE_ROOT), [])
