@@ -43,6 +43,41 @@ from tests.support import (
 )
 TASK_PROFILES = skill_contract.task_profiles(ENGINE_ROOT)
 EXECUTE_MODEL = TASK_PROFILES["execute"]["model"]
+# constraint: ed3c/noodles#253 - two Agent-facing procedure facts, one owner each, decided on the
+# constraint: two Skills' own bytes. `noodles.parse_issue_contract` raises `unsupported noodles-role`
+# constraint: for every value but `repository-mutating-atom`, so schedule admission may not offer a
+# constraint: second role the parser refuses; and the refusal rule behind ed3c/noodles#130's stable
+# constraint: prefix is a positive rule over the admitted route fixtures, so the branded inventory
+# constraint: ed3c/noodles#252 stopped requiring may not come back after that prefix either.
+RETIRED_ROLE_PROSE = "evidence-only audit atom"
+RETIRED_ROUTE_INVENTORY = (
+    "`control-ui`",
+    "Cursor `create-skill`",
+    "Cursor `/loop`",
+    "Graphite `gt`",
+    "cloud-agent infrastructure",
+    "standalone `goal`",
+)
+
+
+def agent_procedure_owner_errors(schedule_skill: str, execute_skill: str) -> list[str]:
+    """ed3c/noodles#253 - the pure predicate both the positive control and its planted negatives call,
+    so reinstating either historical drift is a red instead of a rewritten assertion."""
+    errors = [
+        f"schedule Skill admits the role {RETIRED_ROLE_PROSE!r}, which noodles.parse_issue_contract "
+        "refuses with `unsupported noodles-role`"
+    ] if RETIRED_ROLE_PROSE in schedule_skill else []
+    prefix = skill_contract.EXECUTE_UNSUPPORTED_PHRASE
+    rules = [line for line in execute_skill.splitlines() if line.startswith(prefix)]
+    if len(rules) != 1:
+        return [*errors, f"execute Skill must carry exactly one line starting with {prefix!r}, found {len(rules)}"]
+    errors.extend(
+        f"execute Skill unsupported route refusal names retired route inventory {item!r}; the rule "
+        "after the stable prefix is positive over the admitted route fixtures"
+        for item in RETIRED_ROUTE_INVENTORY
+        if item in rules[0]
+    )
+    return errors
 
 class RepositoryGateTests(unittest.TestCase):
     def verify(self, root: Path = CANDIDATE_ROOT) -> dict:
@@ -310,13 +345,17 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(any("project task skill 'execute'" in item for item in result["errors"]))
 
     def test_execute_skill_unsupported_route_refusal_transition(self) -> None:
-        """ed3c/noodles#252 - this control asserts the *shape* of the refusal rule and names no brand
-        inside it. Trusted verify runs the default branch's copy of this module over the candidate
-        tree (`.github/workflows/verify.yml`: `PYTHONPATH: .trusted`, `NOODLES_CANDIDATE_ROOT:
-        .candidate`), so a brand assertion here is `main` requiring every candidate to keep naming
-        that brand, and no edit inside the de-branding successor's own PR can clear it. What stays
+        """ed3c/noodles#252 asserts the *shape* of the refusal rule, never a brand it must contain.
+        Trusted verify runs the default branch's copy of this module over the candidate tree
+        (`.github/workflows/verify.yml`: `PYTHONPATH: .trusted`, `NOODLES_CANDIDATE_ROOT:
+        .candidate`), so a `keep this brand` assertion here is `main` requiring every candidate to
+        keep it, and no edit inside the de-branding successor's own PR can clear it. What stays
         load-bearing: the stable line-start prefix, exactly one rule line, that each replacement
-        really replaced the rule it names, and the same accept/reject verdicts as before."""
+        really replaced the rule it names, and the same accept/reject verdicts as before.
+
+        ed3c/noodles#253 landed the de-branding and retires the widened acceptance in the other
+        direction: the rule the Skill now carries is positive over the admitted route fixtures, so
+        the brand is refused rather than required and cannot silently return."""
         stable_refusal = "Unsupported routes fail closed:"
         self.assertEqual(skill_contract.EXECUTE_UNSUPPORTED_PHRASE, stable_refusal)
 
@@ -325,6 +364,7 @@ class RepositoryGateTests(unittest.TestCase):
         branded_content = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
         branded_rules = [line for line in branded_content.splitlines() if line.startswith(stable_refusal)]
         self.assertEqual(len(branded_rules), 1)
+        self.assertNotIn("`control-ui`", branded_rules[0])
 
         cases = (
             ("generic", "Unsupported routes fail closed: any route not explicitly admitted above.", True),
@@ -355,6 +395,45 @@ class RepositoryGateTests(unittest.TestCase):
                 self.assertEqual(result["ok"], accepted, result["errors"])
                 if not accepted:
                     self.assertTrue(any("unsupported route refusal" in item for item in result["errors"]))
+
+    def test_agent_facing_procedure_facts_have_exactly_one_owner(self) -> None:
+        """ed3c/noodles#253 - the two facts this atom gave back to their owners. Schedule admission
+        offered `evidence-only audit atom`, a role `noodles.parse_issue_contract` refuses, so an
+        Agent that read the Skill was told to admit something the CLI physically rejects. The execute
+        refusal rule inventoried brand names behind ed3c/noodles#130's stable prefix, so the admitted
+        set was stated twice and the two copies could drift. Each planted negative reinstates the
+        exact historical bytes."""
+        schedule_skill = (CANDIDATE_ROOT / ".agents/skills/schedule/SKILL.md").read_text()
+        execute_skill = (CANDIDATE_ROOT / ".agents/skills/execute/SKILL.md").read_text()
+        self.assertEqual(agent_procedure_owner_errors(schedule_skill, execute_skill), [])
+        self.assertEqual(schedule_skill.count(RETIRED_ROLE_PROSE), 0)
+
+        for label, planted_schedule, planted_execute, expected in (
+            (
+                "role the parser refuses",
+                schedule_skill.replace(
+                    "6. The Issue describes one repository-mutating atom.",
+                    f"6. The Issue describes one repository-mutating atom or one {RETIRED_ROLE_PROSE}.",
+                    1,
+                ),
+                execute_skill,
+                "unsupported noodles-role",
+            ),
+            (
+                "brand reintroduced after the stable prefix",
+                schedule_skill,
+                execute_skill.replace(
+                    skill_contract.EXECUTE_UNSUPPORTED_PHRASE,
+                    f"{skill_contract.EXECUTE_UNSUPPORTED_PHRASE} `control-ui`,",
+                    1,
+                ),
+                "retired route inventory",
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assertNotEqual((planted_schedule, planted_execute), (schedule_skill, execute_skill))
+                errors = agent_procedure_owner_errors(planted_schedule, planted_execute)
+                self.assertTrue(any(expected in error for error in errors), errors)
 
     def test_execute_skill_without_required_p_contract_is_rejected(self) -> None:
         cases = (
