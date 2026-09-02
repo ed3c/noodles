@@ -151,5 +151,42 @@ class VerifiedBatchTests(unittest.TestCase):
         self.assertEqual(before, self.refs())
 
 
+    def test_github_canary_is_manual_read_only_and_not_a_landing_receipt(self) -> None:
+        path = Path(__file__).parents[1] / ".github/workflows/verified-batch-canary.yml"
+        workflow = path.read_text(encoding="utf-8")
+        self.assertIn("\non:\n  workflow_dispatch:\n", workflow)
+        self.assertEqual(workflow.count("\n  workflow_dispatch:\n"), 1)
+        self.assertIn(
+            "\npermissions:\n  contents: read\n  pull-requests: read\n",
+            workflow,
+        )
+        self.assertIn(
+            "\n  canary:\n    permissions:\n      contents: read\n"
+            "      pull-requests: read\n    runs-on: ubuntu-latest\n"
+            "    timeout-minutes: 15\n",
+            workflow,
+        )
+        for forbidden in (
+            "contents: write",
+            "issues: write",
+            "pull-requests: write",
+            "workflow_run:",
+            "pull_request_target:",
+            "git push",
+            "github land",
+            "land.yml",
+            "noodles-receipt",
+            "secrets.",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
+        self.assertIn('"authorizes_landing": False', workflow)
+        self.assertIn("name: verified-batch-canary-receipt", workflow)
+        self.assertIn(
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            workflow,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

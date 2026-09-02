@@ -14,7 +14,7 @@
     "verify": 33
   },
   "max_unowned_top_level_definitions": 145,
-  "max_workflows": 4,
+  "max_workflows": 5,
   "required_noodle_mode": "supervised",
   "required_codex_task_profiles": {
     "schedule": {
@@ -48,6 +48,7 @@
     ".github/workflows/noodles-hosted.lock.yml",
     ".github/workflows/noodles-hosted.md",
     ".github/workflows/verify.yml",
+    ".github/workflows/verified-batch-canary.yml",
     ".noodle.toml",
     ".noodle/adapters/github",
     "AGENTS.md",
