@@ -674,6 +674,13 @@ class UnownedDefinitionRatchetTests(unittest.TestCase):
 # constraint: three drained counts are parsed out of the candidate's own AGENTS.md rather than
 # constraint: restated here, so the paragraph is the ledger and a stale one is a red.
 DRAIN_DISCLOSURE_RE = re.compile(r"names every one of them: (\d+) owned-in-place, (\d+) engine-root, (\d+) unowned")
+# constraint: ed3c/noodles#326 - the seam measurement is disclosed the same way and for a second
+# constraint: reason: asserting `detachable_definition_groups(...) == {}` would pin "no seam exists"
+# constraint: from the DEFAULT branch onto every candidate, so the first refactor that legitimately
+# constraint: makes a group detachable - with no obligation to extract it - reds on main's terms and
+# constraint: can never merge the sentence that would let it pass. That is register entry 7's
+# constraint: deadlock, and it would be in the file that cures it.
+SEAM_DISCLOSURE_RE = re.compile(r"(\d+) cross-surface targets, (\d+) of them behind a detachable group")
 
 
 def disclosed_drain_counts(root: Path) -> dict[str, int]:
@@ -682,6 +689,12 @@ def disclosed_drain_counts(root: Path) -> dict[str, int]:
     if match is None:
         return {}
     return dict(zip(("owned-in-place", "engine-root", "unowned"), (int(value) for value in match.groups())))
+
+
+def disclosed_seam_counts(root: Path) -> tuple[int, int] | None:
+    """AGENTS.md's disclosed (cross-surface targets, detachable groups), or None if it discloses none."""
+    match = SEAM_DISCLOSURE_RE.search((root / "AGENTS.md").read_text(encoding="utf-8"))
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 def detachable_definition_groups(source: str, targets: list[str]) -> dict[str, list[str]]:
@@ -793,17 +806,31 @@ class DrainedOwnershipTests(unittest.TestCase):
                     f"{name} carries {list(owning)}, neither one component nor {list(self.engine_root)}",
                 )
 
-    def test_the_disclosed_class_counts_match_the_map(self) -> None:
-        disclosed = disclosed_drain_counts(CANDIDATE_ROOT)
-        self.assertTrue(disclosed, "AGENTS.md discloses no drained disposition counts to read")
-        measured = {
+    def measured_class_counts(self) -> dict[str, int]:
+        """The three disposition classes, measured off the map and the source, in one place.
+
+        One producer for both directions: the positive control compares it against the candidate's
+        own disclosure, and the negative control compares the identical value against a tree whose
+        only difference is one wrong number. A control that recomputes the measurement differently
+        from the check it claims to falsify is not a control over that check."""
+        return {
             "owned-in-place": sum(1 for owning in self.owners.values() if len(owning) == 1),
             "engine-root": sum(1 for owning in self.owners.values() if len(owning) > 1),
             "unowned": len(set(self.definitions) - set(self.owners)),
         }
-        self.assertEqual(measured, disclosed)
+
+    def test_the_disclosed_class_counts_match_the_map(self) -> None:
+        disclosed = disclosed_drain_counts(CANDIDATE_ROOT)
+        self.assertTrue(disclosed, "AGENTS.md discloses no drained disposition counts to read")
+        self.assertEqual(self.measured_class_counts(), disclosed)
 
     def test_a_stale_disclosed_class_count_is_a_red_rather_than_prose_nobody_reruns(self) -> None:
+        """The named red, observed rather than described.
+
+        This used to write a stale AGENTS.md into a temp root and then assert that
+        `DRAIN_DISCLOSURE_RE` read back the number it had just written - a round-trip of the parser,
+        which is green whether or not the comparison above would ever fail. It now runs that
+        comparison against the stale tree and requires it to raise, naming the class that moved."""
         live = disclosed_drain_counts(CANDIDATE_ROOT)
         self.assertTrue(live, "AGENTS.md discloses no drained disposition counts to read")
         stale = DRAIN_DISCLOSURE_RE.sub(
@@ -816,7 +843,11 @@ class DrainedOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             (root / "AGENTS.md").write_text(stale, encoding="utf-8")
-            self.assertEqual(disclosed_drain_counts(root)["engine-root"], live["engine-root"] + 1)
+            stale_disclosure = disclosed_drain_counts(root)
+            self.assertEqual(stale_disclosure["engine-root"], live["engine-root"] + 1)
+            with self.assertRaises(AssertionError) as raised:
+                self.assertEqual(self.measured_class_counts(), stale_disclosure)
+            self.assertIn("engine-root", str(raised.exception))
 
     def test_the_ratchet_is_re_tightened_to_the_drained_floor(self) -> None:
         policy = noodles.load_json(CANDIDATE_ROOT / "policy/fitness.json")
@@ -871,11 +902,43 @@ class NoMeasuredSeamTests(unittest.TestCase):
                 targets.append(dotted)
         return targets
 
-    def test_no_cross_surface_target_of_the_engine_sits_behind_a_detachable_group(self) -> None:
+    def measured_seam_counts(self) -> tuple[int, int]:
         targets = self.cross_surface_targets()
         self.assertTrue(targets, "noodles.py imports no cross-surface module; the measurement has no subject")
         source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
-        self.assertEqual(detachable_definition_groups(source, targets), {})
+        return (len(targets), len(detachable_definition_groups(source, targets)))
+
+    def test_the_disclosed_seam_measurement_matches_the_engine(self) -> None:
+        """A disclosure, deliberately not `assertEqual(detachable_definition_groups(...), {})`.
+
+        Pinning the answer to empty would be read from the DEFAULT branch and applied to every
+        candidate, so a refactor that legitimately leaves one group detachable - with no obligation
+        to extract it, since the rule is only that a NEW MODULE cite its measured seam - would red
+        on main's terms and could never merge the line that would let it pass. That is exactly
+        findings register entry 7's deadlock, and putting it in the file that cures entry 7 would be
+        the joke this atom is not making. AGENTS.md carries both numbers, read from the candidate,
+        so a tree that changes them says so in the same commit."""
+        disclosed = disclosed_seam_counts(CANDIDATE_ROOT)
+        self.assertIsNotNone(disclosed, "AGENTS.md discloses no seam measurement to read")
+        self.assertEqual(self.measured_seam_counts(), disclosed)
+
+    def test_a_stale_disclosed_seam_count_is_a_red(self) -> None:
+        """Same shape as the class-count control: the comparison is run against the stale tree, not
+        the regex round-tripped against itself."""
+        live = disclosed_seam_counts(CANDIDATE_ROOT)
+        self.assertIsNotNone(live)
+        assert live is not None
+        stale = SEAM_DISCLOSURE_RE.sub(
+            f"{live[0]} cross-surface targets, {live[1] + 1} of them behind a detachable group",
+            (CANDIDATE_ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+            count=1,
+        )
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "AGENTS.md").write_text(stale, encoding="utf-8")
+            self.assertEqual(disclosed_seam_counts(root), (live[0], live[1] + 1))
+            with self.assertRaises(AssertionError):
+                self.assertEqual(self.measured_seam_counts(), disclosed_seam_counts(root))
 
     def test_positive_control_a_genuinely_detachable_group_is_reported(self) -> None:
         """Without this the empty result above would also be what a detector that never fires
