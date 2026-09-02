@@ -261,10 +261,32 @@ class RepositoryGateTests(unittest.TestCase):
             "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
         }
 
+    def retired_provider_in_locks(self, root: Path) -> list[str]:
+        # constraint: ed3c/noodles#301 - the refusing half of the readback, and the written ceiling on
+        # constraint: the prose half below. `provider_sync` fetches only what `policy/*.lock.json`
+        # constraint: names, and JSON carries no string concatenation, so a lock entry cannot hide the
+        # constraint: retired repository from a substring scan the way source can - which is exactly
+        # constraint: what RETIRED_PROVIDER_NAME's own `"skills-" + "shared"` demonstrates. A
+        # constraint: re-coupling that spells the name anywhere in a lock file, as a provider name or
+        # constraint: inside a source URL, reds here whatever it does elsewhere in the tree.
+        return sorted(
+            relative
+            for relative in cmd(["git", "ls-files", "policy"], root).splitlines()
+            if relative.endswith(".lock.json")
+            and (root / relative).is_file()
+            and self.RETIRED_PROVIDER_NAME in (root / relative).read_text(encoding="utf-8", errors="ignore")
+        )
+
     def live_pointer_offenders(self, root: Path) -> list[str]:
         # constraint: ed3c/noodles#301 repository-wide readback - historical-provenance documents may
         # constraint: still name the retired repository in prose; a clone URL is the only shape
         # constraint: provider sync can fetch, so it is the exact carrier of a live pointer.
+        # constraint: Non-claim, and not a small one: this matches one exact literal, so a tracked
+        # constraint: file that assembles the URL from parts is invisible to it. That is not
+        # constraint: hypothetical - RETIRED_PROVIDER_NAME above does exactly that, deliberately, so
+        # constraint: this control's own bytes are not an offender. Read this as prose hygiene over
+        # constraint: the tracked tree; `retired_provider_in_locks` is the check that refuses,
+        # constraint: because the one surface provider sync reads cannot concatenate.
         return [
             relative
             for relative in cmd(["git", "ls-files"], root).splitlines()
@@ -278,11 +300,14 @@ class RepositoryGateTests(unittest.TestCase):
     def test_no_tracked_file_is_a_live_pointer_to_the_retired_source(self) -> None:
         self.assertEqual(self.live_pointer_offenders(CANDIDATE_ROOT), [])
 
+    def test_no_policy_lock_names_the_retired_repository(self) -> None:
+        self.assertEqual(self.retired_provider_in_locks(CANDIDATE_ROOT), [])
+
     def test_readded_disabled_retired_provider_entry_reds_both_controls(self) -> None:
         # constraint: ed3c/noodles#301 planted negative - the re-coupling this atom removes costs one
         # constraint: boolean, so the control plants the cheapest re-addition (still enabled: false,
         # constraint: under the provider budget, well-formed for validate_provider_lock) and runs the
-        # constraint: two controls above against it. Disabled is not neutral: both red.
+        # constraint: three controls above against it. Disabled is not neutral: all three red.
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
         path = root / "policy/providers.lock.json"
@@ -293,6 +318,7 @@ class RepositoryGateTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assertEqual(self.providers_of(root), self.EXPECTED_PROVIDERS)
         self.assertEqual(self.live_pointer_offenders(root), ["policy/providers.lock.json"])
+        self.assertEqual(self.retired_provider_in_locks(root), ["policy/providers.lock.json"])
 
     def test_retired_codex_routing_model_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
