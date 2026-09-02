@@ -4037,6 +4037,38 @@ def boundary_admission_conflict(
     return None
 
 
+def claimed_boundary_widening(
+    reserved: Sequence[tuple[str, tuple[str, ...] | None]],
+) -> list[tuple[str, str, str]]:
+    """Live claims whose CURRENT declared boundary intersects an earlier live claim's.
+
+    ed3c/noodles#296 - a boundary is only as strong as its most recent check. I3 disjointness was
+    proven once, inside the claim cycle, against the boundaries the claimed Issues DECLARED at that
+    moment, and `boundary_admission_conflict` never runs again for an Issue already past claim. A
+    claimed Issue that then corrects or widens its own `noodles-write-boundary` marker converts that
+    edit into an unchecked widening, and the widening is invisible precisely to the sibling lanes it
+    endangers. Binding the invariant to the marker's current bytes needs no stored claim-time copy:
+    re-derive disjointness across the whole live claim set every cycle, from the same provider
+    readback `reserved_boundaries` is already built from, and report each intersecting pair as
+    (widened subject, sibling it intersects, intersecting prefix).
+
+    Order is the snapshot's own issue order, so the earlier claim is the one reported against and a
+    narrowing simply stops appearing here - there is no "was wider before" state to be refused for.
+    An undeclared (None) boundary is skipped: it already blocks every overlapping candidate closed
+    at admission, and pairing it against every sibling would report a conflict that is not a
+    widening at all."""
+    seen: list[tuple[str, tuple[str, ...] | None]] = []
+    widened: list[tuple[str, str, str]] = []
+    for subject, boundary in reserved:
+        if boundary is None:
+            continue
+        conflict = boundary_admission_conflict(boundary, seen)
+        if conflict is not None:
+            widened.append((subject, conflict[0], conflict[1]))
+        seen.append((subject, boundary))
+    return widened
+
+
 def local_handoff_body(subject_value: str, contract: dict[str, Any], boundary: tuple[str, ...]) -> str:
     return (
         f"<!-- noodles-local-handoff: {contract['body_sha256']} -->\n"
@@ -4121,7 +4153,17 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if issue.claimed:
             reserved_boundaries.setdefault(issue.repository, []).append((issue.subject, issue.write_boundary))
     claimed_orders: list[dict[str, Any]] = []
-    outcomes: list[dict[str, Any]] = []
+    # constraint: ed3c/noodles#296 - the same reservation set, re-judged against itself before any
+    # constraint: candidate is read: `reserved_boundaries` is rebuilt from the markers' CURRENT
+    # constraint: bytes every cycle, so a boundary widened after its own claim is caught here even
+    # constraint: though the claim cycle that admitted it will never run again. The outcome leads
+    # constraint: the receipt because it says the reservation set this cycle proved disjointness
+    # constraint: against is itself not disjoint.
+    outcomes: list[dict[str, Any]] = [
+        schedule_claim_outcome(subject_value, "claimed_boundary_widened", conflict_with=sibling, prefix=prefix)
+        for repository in sorted(reserved_boundaries)
+        for subject_value, sibling, prefix in claimed_boundary_widening(reserved_boundaries[repository])
+    ]
     default_branch = str(policy["default_branch"])
     for subject_value in sorted(order_by_subject, key=lambda value: (parse_subject(value).repo, parse_subject(value).number)):
         if subject_value not in initial_winners:

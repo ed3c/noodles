@@ -303,6 +303,84 @@ class SchedulePublishTests(unittest.TestCase):
         self.assertEqual(rejected["conflict_with"], f"{REPOSITORY}#82")
         self.assertEqual(rejected["prefix"], "docs/design/plan.md")
 
+    def claim(self, provider: FakeProvider, number: int) -> None:
+        provider.refs[f"refs/heads/{noodles.execute_branch(f'{REPOSITORY}#{number}')}"] = HEAD
+
+    def test_write_boundary_widened_after_claim_into_live_conflict_is_named_distinctly(self) -> None:
+        # constraint: ed3c/noodles#296 - the live case. #85 was claimed while its marker declared
+        # constraint: `none`, then corrected itself to real paths that already intersect the
+        # constraint: concurrently claimed #81. `boundary_admission_conflict` runs inside the claim
+        # constraint: cycle and never runs again for an Issue past claim, so nothing re-validated
+        # constraint: the widening. This receipt entry is the re-check binding to the marker's
+        # constraint: CURRENT bytes; without it the widening is invisible to #81's lane.
+        widened = issue(85, state="in_progress", write_boundary="noodles.py")
+        active = issue(81, state="in_progress", write_boundary="noodles.py")
+        candidate_issue = issue(82, write_boundary="daemon_lease.py")
+        provider = FakeProvider([active, candidate_issue, widened])
+        self.claim(provider, 81)
+        self.claim(provider, 85)
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        claims = {item["subject"]: item for item in brief["claims"]}
+        widening = claims[f"{REPOSITORY}#85"]
+        self.assertEqual(widening["status"], "claimed_boundary_widened")
+        self.assertEqual(widening["conflict_with"], f"{REPOSITORY}#81")
+        self.assertEqual(widening["prefix"], "noodles.py")
+        self.assertEqual(
+            widening["meaning"], skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["claimed_boundary_widened"]
+        )
+        # constraint: ed3c/noodles#296 non-claim - a candidate genuinely disjoint from every live
+        # constraint: claim is still admitted; an unsound pair among the claims does not make this
+        # constraint: candidate's own disjointness false.
+        self.assertEqual(claims[f"{REPOSITORY}#82"]["status"], "claimed")
+
+    def test_widening_state_is_visibly_distinct_from_admission_refusal_and_from_blocked(self) -> None:
+        # constraint: ed3c/noodles#296 - one cycle carrying all three shapes at once: the widened
+        # constraint: live claim, a candidate refused at admission over the same prefix, and an
+        # constraint: ordinary blocked Issue. A reader must tell them apart from the receipt alone,
+        # constraint: which is why the widening does not reuse the `boundary_conflict` status.
+        widened = issue(85, state="in_progress", write_boundary="noodles.py")
+        active = issue(81, state="in_progress", write_boundary="noodles.py")
+        blocked = issue(95)
+        blocked["body"] = blocked["body"].replace(
+            "<!-- noodles-state: ready -->",
+            "<!-- noodles-state: blocked -->\n<!-- noodles-blocker: ops: waiting on a human decision -->",
+        )
+        candidate_issue = issue(90, write_boundary="noodles.py")
+        provider = FakeProvider([active, widened, candidate_issue, blocked])
+        self.claim(provider, 81)
+        self.claim(provider, 85)
+        candidate = self.write_candidate([f"{REPOSITORY}#90"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        statuses = {item["subject"]: item["status"] for item in brief["claims"]}
+        self.assertEqual(statuses[f"{REPOSITORY}#85"], "claimed_boundary_widened")
+        self.assertEqual(statuses[f"{REPOSITORY}#90"], "boundary_conflict")
+        self.assertNotIn(f"{REPOSITORY}#95", statuses)
+        self.assertNotEqual(
+            skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["claimed_boundary_widened"],
+            skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS["boundary_conflict"],
+        )
+        self.assertNotIn("blocked", skill_contract.SCHEDULE_CLAIM_STATUS_MEANINGS)
+        self.assertEqual(provider.posts, 0)
+
+    def test_planted_negative_widening_that_stays_disjoint_passes_without_friction(self) -> None:
+        # constraint: ed3c/noodles#296 - the re-check must not tax an honest correction: a claimed
+        # constraint: Issue that widens its marker onto paths no live claim touches produces nothing.
+        widened = issue(85, state="in_progress", write_boundary="daemon_lease.py")
+        active = issue(81, state="in_progress", write_boundary="noodles.py")
+        candidate_issue = issue(82, write_boundary="docs")
+        provider = FakeProvider([active, candidate_issue, widened])
+        self.claim(provider, 81)
+        self.claim(provider, 85)
+        candidate = self.write_candidate([f"{REPOSITORY}#82"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            brief = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual([item for item in brief["claims"] if item["status"] == "claimed_boundary_widened"], [])
+        self.assertEqual({item["subject"]: item["status"] for item in brief["claims"]}, {f"{REPOSITORY}#82": "claimed"})
+        self.assertEqual(provider.posts, 1)
+
     def test_missing_write_boundary_fails_closed_before_provider_ref(self) -> None:
         undeclared = issue(82)
         undeclared["body"] = undeclared["body"].replace("<!-- noodles-write-boundary: none -->\n", "")
@@ -843,6 +921,68 @@ class StaleCycleReceiptRetirementTests(unittest.TestCase):
         self.assertIsNone(dated("not-an-object", schema_version=version))
         self.assertIn("predates", dated({"schema_version": version - 1}, schema_version=version) or "")
         self.assertIn("not_frontier", dated(json.loads(LIVE_STALE_CYCLE_RECEIPT), schema_version=version) or "")
+
+
+class ClaimedBoundaryWideningTests(unittest.TestCase):
+    """ed3c/noodles#296 - the re-check reads only the reservation set's CURRENT bytes.
+
+    Driving these through `schedule_publish` would prove the same rule through a provider double;
+    reading the rule directly is what lets a narrowing be shown as the same pair before and after,
+    which no single cycle can express.
+    """
+
+    def test_intersecting_live_claims_report_the_earlier_claim_and_the_prefix(self) -> None:
+        self.assertEqual(
+            noodles.claimed_boundary_widening([
+                (f"{REPOSITORY}#81", ("docs",)),
+                (f"{REPOSITORY}#85", ("docs/design",)),
+            ]),
+            [(f"{REPOSITORY}#85", f"{REPOSITORY}#81", "docs/design")],
+        )
+
+    def test_narrowing_the_same_pair_is_never_refused(self) -> None:
+        # constraint: ed3c/noodles#296 - the invariant binds to the marker's current bytes, so
+        # constraint: there is no stored claim-time boundary for a narrowed marker to be judged
+        # constraint: against: the pair that reported above simply stops reporting.
+        self.assertEqual(
+            noodles.claimed_boundary_widening([
+                (f"{REPOSITORY}#81", ("docs",)),
+                (f"{REPOSITORY}#85", ("noodles.py",)),
+            ]),
+            [],
+        )
+
+    def test_reserving_nothing_is_not_a_widening(self) -> None:
+        self.assertEqual(
+            noodles.claimed_boundary_widening([
+                (f"{REPOSITORY}#81", ("docs",)),
+                (f"{REPOSITORY}#85", ()),
+            ]),
+            [],
+        )
+
+    def test_planted_negative_an_undeclared_live_claim_is_not_reported_as_a_widening(self) -> None:
+        # constraint: ed3c/noodles#296 - an undeclared boundary already blocks every overlapping
+        # constraint: candidate closed at admission; pairing it against each sibling here would
+        # constraint: manufacture a "widening" out of an Issue whose marker never changed.
+        self.assertEqual(
+            noodles.claimed_boundary_widening([
+                (f"{REPOSITORY}#81", None),
+                (f"{REPOSITORY}#85", ("noodles.py",)),
+                (f"{REPOSITORY}#90", ("daemon_lease.py",)),
+            ]),
+            [],
+        )
+
+    def test_a_third_claim_is_judged_against_every_earlier_live_claim(self) -> None:
+        self.assertEqual(
+            noodles.claimed_boundary_widening([
+                (f"{REPOSITORY}#81", ("docs",)),
+                (f"{REPOSITORY}#85", ("noodles.py",)),
+                (f"{REPOSITORY}#90", ("noodles.py",)),
+            ]),
+            [(f"{REPOSITORY}#90", f"{REPOSITORY}#85", "noodles.py")],
+        )
 
 
 if __name__ == "__main__":
