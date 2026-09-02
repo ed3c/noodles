@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "classes": [
+    {
+      "id": "task-profile-model",
+      "owner": "policy/fitness.json",
+      "select": ["required_codex_task_profiles", "*", "model"],
+      "why": "ed3c/noodles#325 subsumes the repository's one concrete single-source rule. The admitted task model was previously guarded by noodles.validate_task_profile_single_source with an exemption list in policy/fitness.json; both are retired into this row, so one implementation judges every registered class.",
+      "projections": [
+        {
+          "path": ".noodle.toml",
+          "why": "Noodle reads its own routing default before any noodles code runs, so it cannot resolve the pointer; the literal is the handoff to a process that does not read this policy."
+        },
+        {
+          "path": "github_protection.py",
+          "why": "The model-eval boundary names the execute model in the argv it refuses to spawn; the refusal has to carry the exact token it is refusing."
+        }
+      ]
+    },
+    {
+      "id": "provider-source",
+      "owner": "policy/providers.lock.json",
+      "select": ["providers", "*", "source"],
+      "why": "The provider source URL is the identity half of a pinned external dependency. A second writer is how a retired provider survives in prose: the drift history this atom cites is provider pins copied into the README.",
+      "projections": [
+        {
+          "path": "tests/test_noodles.py",
+          "why": "The trusted provider-lock assertion compares the candidate's entries against a pinned list. ed3c/noodles#304 widened it for the staged compat removal and ed3c/noodles#301 retires it; until then the test is the admitted second reader, not a second writer."
+        }
+      ]
+    },
+    {
+      "id": "provider-commit",
+      "owner": "policy/providers.lock.json",
+      "select": ["providers", "*", "commit"],
+      "why": "The exact 40-hex commit is what makes a provider pinned rather than floating. A copy that stops resolving to a live entry is the exact failure this detector exists to name.",
+      "projections": [
+        {
+          "path": "docs/design/context-closure/README.md",
+          "why": "The context-closure source table cites the exact pinned bytes it read. It is a projection of the lock, and when the lock moves this row makes the citation say so instead of silently describing a commit nobody fetches."
+        },
+        {
+          "path": "migrations/skills-shared/ledger.json",
+          "why": "The migration ledger records which pinned commit the skills-shared disposition was taken against; it is derived from the lock entry that still carries that commit."
+        },
+        {
+          "path": "tests/test_noodles.py",
+          "why": "Same trusted provider-lock assertion as the provider-source row, owned by the ed3c/noodles#304 -> #301 staged transition."
+        }
+      ]
+    },
+    {
+      "id": "parser-commit",
+      "owner": "policy/parser.lock.json",
+      "select": ["parser", "*", "commit"],
+      "why": "The tree-sitter library and grammar commits. Registered with no projections on purpose: this class is the positive control that a clean class exists, so a green detector is not evidence that every class merely has a long exemption list.",
+      "projections": []
+    }
+  ]
+}

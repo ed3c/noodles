@@ -116,7 +116,6 @@
           "unowned_top_level_definitions",
           "unsaved_content_commits",
           "validate_comment_tags",
-          "validate_task_profile_single_source",
           "workflow_run_readback",
           "write_backlog_cycle",
           "write_json"

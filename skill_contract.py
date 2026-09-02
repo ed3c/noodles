@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,11 @@ SCHEDULE_TASK_MODEL_POINTER = "required_codex_task_profiles.execute.model"
 # constraint: section, so the task-model rule is anchored to structure rather than to a heading name.
 SCHEDULE_ORDER_ID_FIELD = "`order_id`"
 POLICY_FITNESS_PATH = "policy/fitness.json"
+OWNERSHIP_REGISTRY_PATH = "policy/ownership-keys.json"
+# constraint: ed3c/noodles#325 - a shorter owned value is not an identity a tracked tree can be
+# constraint: scanned for; it matches inside unrelated words and the registry would spend its rows
+# constraint: exempting the noise away instead of naming writers.
+MIN_OWNED_VALUE_LENGTH = 8
 _FENCE_RE = re.compile(r"(?ms)^```[^\n]*\n(?P<body>.*?)^```[ \t]*$")
 _HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 _SECTION_RE = re.compile(r"(?m)^##[ \t]+\S[^\n]*$")
@@ -284,6 +290,135 @@ def schedule_starvation_routing_errors(skill_name: str, section: str) -> list[st
             "ordered diagnostic: its action must chain at least three `->` separated steps"
         ]
     return []
+
+
+def _selected_values(payload: Any, steps: Sequence[str]) -> set[str]:
+    """Walk `steps` through `payload`, `*` meaning every member, and keep the searchable scalars.
+
+    A value shorter than `MIN_OWNED_VALUE_LENGTH` is not an identity a tree can be scanned for - it
+    would match inside unrelated words - so it is dropped here rather than producing noise the
+    registry would then have to exempt away."""
+    values: list[Any] = [payload]
+    for step in steps:
+        nxt: list[Any] = []
+        for value in values:
+            if step == "*":
+                if isinstance(value, dict):
+                    nxt.extend(value.values())
+                elif isinstance(value, list):
+                    nxt.extend(value)
+            elif isinstance(value, dict) and step in value:
+                nxt.append(value[step])
+        values = nxt
+    return {value for value in values if isinstance(value, str) and len(value) >= MIN_OWNED_VALUE_LENGTH}
+
+
+def validate_ownership_registry(root: Path, tracked_paths: set[str]) -> list[str]:
+    """ed3c/noodles#325 - AF-03's one-writer law as a readback over a finite ownership-key registry.
+
+    The system contract's own admission was that repository-wide duplicate-owner detection is not
+    mechanically proven "until a finite canonical document set and ownership-key seam exist". This is
+    that seam: `policy/ownership-keys.json` maps each registered durable-value class to the ONE path
+    that owns it and to the read-only projections admitted to carry a copy. For every class, the
+    detector recomputes the owner's current values from the owner document and scans the tracked tree:
+
+    * an occurrence in an unregistered file is a refusal naming the class, the owner and the path;
+    * a registered projection is derivation-checked, not string-compared alone - it must still carry
+      a value the owner currently holds, so a projection left behind by a pin that moved reds naming
+      itself, which is exactly the drift (provider pins copied into the README, since retired) the
+      prose law existed to prevent and could not catch.
+
+    Everything is read from the CANDIDATE tree - registry, owner documents, and the scanned files -
+    for the reason ed3c/noodles#285, #306 and #315 each paid for: a trusted-side copy of a value the
+    candidate legally owns deadlocks every candidate that moves it. Trusted code judges the rule
+    here; the candidate carries its own values and its own reviewed registry row.
+
+    Non-claims. Scope is the registry's enumerated classes, never arbitrary prose semantics - the
+    contract's caution about prose stands and this seam is its boundary. Occurrence is substring
+    containment, so a class whose values are short or word-like is not registrable, which is why
+    disclosed counts and state-vocabulary sets are named absent rather than implied present. A
+    projection carrying two of a class's values where only one went stale still resolves, so the
+    check catches a projection that fell off the owner entirely, not every partial staleness. And
+    nothing is auto-rewritten: the detector refuses, atoms and humans cure."""
+    path = root / OWNERSHIP_REGISTRY_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"{OWNERSHIP_REGISTRY_PATH} is unreadable: {exc}"]
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "classes"} or payload["schema_version"] != 1:
+        return [f"{OWNERSHIP_REGISTRY_PATH} must contain exactly schema_version 1 and a classes array"]
+    classes = payload["classes"]
+    if not isinstance(classes, list) or not classes:
+        return [f"{OWNERSHIP_REGISTRY_PATH} classes must be a non-empty array"]
+    errors: list[str] = []
+    sources: dict[str, str] = {}
+    for relative in sorted(tracked_paths):
+        try:
+            sources[relative] = (root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    seen: set[str] = set()
+    for index, entry in enumerate(classes, start=1):
+        label = f"{OWNERSHIP_REGISTRY_PATH} class {index}"
+        if not isinstance(entry, dict) or set(entry) != {"id", "owner", "select", "why", "projections"}:
+            errors.append(f"{label} must carry exactly id, owner, select, why and projections")
+            continue
+        label = f"{OWNERSHIP_REGISTRY_PATH} class {entry['id']!r}"
+        if entry["id"] in seen:
+            errors.append(f"{label} is declared twice")
+        seen.add(entry["id"])
+        if not isinstance(entry["why"], str) or not entry["why"].strip():
+            errors.append(f"{label} carries no written reason for existing")
+        owner = str(entry["owner"])
+        if owner not in tracked_paths:
+            errors.append(f"{label} names owner path {owner!r}, which this tree does not track")
+            continue
+        select = entry["select"]
+        if not isinstance(select, list) or not select or not all(isinstance(step, str) for step in select):
+            errors.append(f"{label} select must be a non-empty array of string steps")
+            continue
+        try:
+            owned = _selected_values(json.loads((root / owner).read_text(encoding="utf-8")), select)
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"{label} owner {owner} is unreadable: {exc}")
+            continue
+        if not owned:
+            errors.append(f"{label} selects no searchable value out of {owner}; the class describes nothing")
+            continue
+        projections = entry["projections"]
+        if not isinstance(projections, list):
+            errors.append(f"{label} projections must be an array")
+            continue
+        admitted: set[str] = set()
+        for position, projection in enumerate(projections, start=1):
+            if not isinstance(projection, dict) or set(projection) != {"path", "why"}:
+                errors.append(f"{label} projection {position} must carry exactly path and why")
+                continue
+            if not isinstance(projection["why"], str) or not projection["why"].strip():
+                errors.append(f"{label} projection {projection['path']!r} carries no written reason")
+            relative = str(projection["path"])
+            if relative == owner:
+                errors.append(f"{label} lists its own owner {owner} as a projection")
+                continue
+            if relative not in tracked_paths:
+                errors.append(f"{label} admits projection {relative!r}, which this tree does not track")
+                continue
+            admitted.add(relative)
+            carried = sorted(value for value in owned if value in sources.get(relative, ""))
+            if not carried:
+                errors.append(
+                    f"{label} admits {relative} as a projection of {owner}, but it carries none of the "
+                    f"owner's current values; the pin moved and the projection did not"
+                )
+        for relative, text in sources.items():
+            if relative == owner or relative in admitted:
+                continue
+            for value in sorted(value for value in owned if value in text):
+                errors.append(
+                    f"{relative} writes {entry['id']} value {value!r}, which {owner} owns; "
+                    f"derive it or admit {relative} as a read-only projection in {OWNERSHIP_REGISTRY_PATH}"
+                )
+    return errors
 
 
 def validate_policy_key_consumption(root: Path, tracked_paths: set[str]) -> list[str]:

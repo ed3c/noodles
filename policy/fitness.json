@@ -13,7 +13,7 @@
     "schedule": 41,
     "verify": 33
   },
-  "max_unowned_top_level_definitions": 120,
+  "max_unowned_top_level_definitions": 119,
   "max_workflows": 5,
   "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",
@@ -27,11 +27,6 @@
       "reasoning_effort": "high"
     }
   },
-  "task_profile_literal_exempt_paths": [
-    ".noodle.toml",
-    "github_protection.py",
-    "policy/fitness.json"
-  ],
   "max_agent_document_hops": 3,
   "agent_document_route": [
     "AGENTS.md",
@@ -63,6 +58,7 @@
     "policy/fitness.json",
     "policy/gh-aw.lock.json",
     "policy/github.json",
+    "policy/ownership-keys.json",
     "policy/providers.lock.json",
     "policy/runtime.lock.json",
     "runtime_contract.py",

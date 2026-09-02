@@ -167,6 +167,9 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(result["ok"], result["errors"])
 
     def test_a_second_task_profile_literal_is_rejected(self) -> None:
+        """ed3c/noodles#325 preserved this control against the new carrier: the task-model rule is no
+        longer its own function, it is one registered class in policy/ownership-keys.json, and the
+        refusal now names the owner instead of naming this one rule."""
         for relative in ("noodles.py", ".agents/bin/codex", "tests/test_schedule_contract.py"):
             with self.subTest(reader=relative):
                 temp, root = self.mutated_copy()
@@ -176,19 +179,25 @@ class RepositoryGateTests(unittest.TestCase):
                 self.commit(root)
                 result = self.verify(root)
                 self.assertFalse(result["ok"])
-                self.assertTrue(any(f"{relative} pins task model" in item for item in result["errors"]), result["errors"])
+                expected = f"{relative} writes task-profile-model value {EXECUTE_MODEL!r}, which policy/fitness.json owns"
+                self.assertTrue(any(expected in item for item in result["errors"]), result["errors"])
 
-    def test_task_profile_literal_exemption_must_name_tracked_paths(self) -> None:
+    def test_ownership_registry_projection_must_name_a_tracked_path(self) -> None:
+        """The ed3c/noodles#277-shaped half of the retired rule, preserved: an exemption that names a
+        path the tree does not carry has stopped describing this repository."""
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
-        path = root / "policy/fitness.json"
-        policy = json.loads(path.read_text())
-        policy["task_profile_literal_exempt_paths"] = [*policy["task_profile_literal_exempt_paths"], "policy/absent.json"]
-        path.write_text(json.dumps(policy, indent=2) + "\n")
+        path = root / "policy/ownership-keys.json"
+        registry = json.loads(path.read_text())
+        registry["classes"][0]["projections"].append({"path": "policy/absent.json", "why": "planted"})
+        path.write_text(json.dumps(registry, indent=2) + "\n")
         self.commit(root)
         result = noodles.verify_repository(root, root)
         self.assertFalse(result["ok"])
-        self.assertTrue(any("untracked path: policy/absent.json" in item for item in result["errors"]), result["errors"])
+        self.assertTrue(
+            any("admits projection 'policy/absent.json', which this tree does not track" in item for item in result["errors"]),
+            result["errors"],
+        )
 
     def test_runtime_lock_is_pinned_by_shape_derivation_and_internal_consistency(self) -> None:
         """ed3c/noodles#315 converted this from a strict-equal literal of the whole `runtime` object.
