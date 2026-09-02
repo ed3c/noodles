@@ -95,7 +95,14 @@ class RepairAttempt:
 
     `head` is what the attempt left behind and exists only so a revert oscillation is visible;
     movement of the diff on its own is not evidence, which is exactly why nineteen editing cycles
-    with one unchanging failure looked like work."""
+    with one unchanging failure looked like work.
+
+    Non-claim on `head`: it is a COMMIT id, not a tree id. A revert expressed as a new commit -
+    the ordinary shape - produces a head nobody has seen, so `revert_oscillation` reaches only a
+    literal reset-and-force-push back onto a commit this subject already carried. Everything else
+    is left to `same_signature`. A tree id would be the wider reading and the repair receipt does
+    not carry one; inventing it would cost a provider call per attempt to answer a question
+    `same_signature` already answers."""
 
     subject: str
     diagnostics: tuple[str, ...]
@@ -140,7 +147,16 @@ def attempt_signature(attempt: RepairAttempt) -> str:
 
     Legible rather than hashed on purpose - the receipt has to let the dispatcher see the missing
     invariant, and a digest names nothing. Both halves are sorted sets, so a provider that reorders
-    the same failures does not manufacture new evidence."""
+    the same failures does not manufacture new evidence.
+
+    The signature is only as fine as the fields the caller feeds it, and today's caller
+    (`noodles.start_unattended`, off a repair receipt) can feed it exactly three: the failed run's
+    conclusion, the failed job's conclusion, and that job's name. Those come from a closed provider
+    enum plus a fixed required-check name, so IN PRODUCTION this signature is constant per job and
+    `same_signature` reduces to "the same required job failed the same way N times running" - not
+    "no new evidence". contracts/system-v1.md AUTONOMY.BOUNDED.001 carries the full non-claim and
+    names the cure (carry the failed step names into the receipt). Nothing here guesses: a caller
+    that supplies real diagnostic literals gets the finer signature this function is written for."""
     diagnostics = sorted({normalized_literal(item) for item in attempt.diagnostics if str(item).strip()})
     controls = sorted({str(item).strip() for item in attempt.failing_controls if str(item).strip()})
     return f"controls=[{' '.join(controls)}] diagnostics=[{' | '.join(diagnostics)}]"
@@ -152,7 +168,7 @@ def struggle_verdict(attempts: Sequence[RepairAttempt], same_signature_attempts:
     Two triggers, both bounding repetition rather than attempts. `same_signature`: the trailing run
     of attempts sharing one signature reaches the configured threshold - same signature is what "no
     new evidence" means here, because a diff that moves while the failure does not is the burn, not
-    the cure. `revert_oscillation`: the tree returned to a state it had already left, which is spend
+    the cure. `revert_oscillation`: the branch head returned to a commit it had already left, which is spend
     with no direction and fires without waiting for the threshold.
 
     A threshold below two is refused rather than clamped: at one, a single failure would raise a

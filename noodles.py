@@ -3451,6 +3451,14 @@ def start_unattended(
                 job = receipt.get("failed_job") or {}
                 run = receipt.get("failed_workflow_run") or {}
                 history = attempted.setdefault(subject, [])
+                # constraint: these three fields are everything the repair receipt carries about the
+                # constraint: failure - github_protection.workflow_run_jobs_readback normalizes a job
+                # constraint: to id/name/status/conclusion/html_url and drops its steps. Two closed-enum
+                # constraint: conclusions plus one fixed required-check name means this signature is
+                # constraint: constant per job, so same_signature here reads "the same job failed the
+                # constraint: same way N times", NOT "no new evidence". Written out in full, with the
+                # constraint: cure, at contracts/system-v1.md AUTONOMY.BOUNDED.001; do not widen the
+                # constraint: claim without first widening the readback that feeds it.
                 history.append(schedule_domain.RepairAttempt(
                     subject=subject,
                     diagnostics=(str(run.get("conclusion") or ""), str(job.get("conclusion") or "")),
