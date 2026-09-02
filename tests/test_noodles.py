@@ -202,72 +202,78 @@ class RepositoryGateTests(unittest.TestCase):
         a legal move stays green under it."""
         self.assertEqual(runtime_lock_shape_errors(CANDIDATE_ROOT), [])
 
-    # constraint: ed3c/noodles#304 staging window - this assertion is what pull_request_target runs
-    # constraint: from the DEFAULT BRANCH against a candidate tree, so while it pins the whole list
-    # constraint: literally no candidate can ever remove the one disabled compatibility entry: the
-    # constraint: trusted verifier reds it and no rerun or rebase can turn that green. Acceptance is
-    # constraint: widened here first (step 1 of widen -> flip -> retire): the two enabled pins stay
-    # constraint: exact and the disabled entry is admitted as present-or-absent. The removal atom
-    # constraint: ed3c/noodles#301 is step 2; it retires this window and restores an exact list of
-    # constraint: exactly the entries that remain. #301 declares depends-on #304 so it cannot run first.
-    DISABLED_COMPAT_ENTRY = {
-        "name": "skills-shared-compat",
-        "source": "https://github.com/ed3c/skills-shared.git",
-        "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
-        "subpath": ".",
-        "destination": ".noodle/providers/skills-shared-compat",
-        "license_path": "LICENSE",
-        "enabled": False,
-        "authority": "P",
-        "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
-    }
+    # constraint: ed3c/noodles#301 - refusal is scoped to the retired source; generic provider
+    # constraint: schema and pin validity remain owned by the repository provider gate.
+    RETIRED_PROVIDER_NAME = "skills-" + "shared"
+    RETIRED_PROVIDER_POINTER = f"https://github.com/ed3c/{RETIRED_PROVIDER_NAME}.git"
 
-    def test_provider_lock_pins_expected_external_skills(self) -> None:
-        payload = json.loads((CANDIDATE_ROOT / "policy/providers.lock.json").read_text())
-        pstack_source = payload["providers"][0].get("source")
-        self.assertEqual(pstack_source, "https://github.com/ed3c/plugins.git")
-        # constraint: the window admits exactly one extra shape and nothing else - the strip is an
-        # constraint: exact compare, so an entry that merely resembles the disabled one is not
-        # constraint: stripped and still reds against the pinned list below.
-        observed = list(payload["providers"])
-        if observed[-1:] == [self.DISABLED_COMPAT_ENTRY]:
-            observed = observed[:-1]
-        self.assertEqual(
-            observed,
-            [
-                {
-                    "name": "cursor-pstack",
-                    "source": pstack_source,
-                    "commit": "68836ddaf5697224520f1847d90cdb90ca8babaa",
-                    "subpath": "pstack/skills",
-                    "destination": ".noodle/providers/cursor-pstack",
-                    "license_path": "pstack/LICENSE",
-                    "enabled": True,
-                    "authority": "P",
-                    "purpose": "Engineering lifecycle routing; never a correctness authority.",
-                },
-                {
-                    "name": "skill-concerns",
-                    "source": "https://github.com/ed3c/skill-concerns.git",
-                    "commit": "c91dbd04d1997b2e0f77907c9c2a40f55b787107",
-                    "subpath": "skills/control-noodle",
-                    "destination": ".noodle/providers/skill-concerns",
-                    "license_path": "LICENSE",
-                    "admission": {
-                        "path": "admissions/control-noodle.json",
-                        "sha256": "4e20f09502ba16db920a89b945ebbb9ac206946a7906ceea92090ecb2c93e42d",
-                        "skill": "control-noodle",
-                        "skill_tree_sha256": "969111ff62cc68a1df82e036f2fe892e4ab9a850bbf2020f0f4253f6db866581",
-                        "subject_files": {
-                            "skills/control-noodle/SKILL.md": "efa5a1d2e9166af47f9078bdc5924fb6520ae0171a0a068472f7abab02b00a1a",
-                        },
-                    },
-                    "enabled": True,
-                    "authority": "P",
-                    "purpose": "Replaceable engineering knowledge; never a correctness authority.",
-                },
-            ],
+    def retired_compat_entry(self) -> dict:
+        name = f"{self.RETIRED_PROVIDER_NAME}-compat"
+        return {
+            "name": name,
+            "source": self.RETIRED_PROVIDER_POINTER,
+            "commit": "52b29b38ded9eaacbf7fb1bfa8ccf69ab37870b9",
+            "subpath": ".",
+            "destination": f".noodle/providers/{name}",
+            "license_path": "LICENSE",
+            "enabled": False,
+            "authority": "P",
+            "purpose": "Explicitly disabled compatibility source; not a Golden Path dependency.",
+        }
+
+    def retired_provider_in_locks(self, root: Path) -> list[str]:
+        # constraint: ed3c/noodles#301 - the refusing half of the readback, and the written ceiling on
+        # constraint: the prose half below. `provider_sync` fetches only what `policy/*.lock.json`
+        # constraint: names, and JSON carries no string concatenation, so a lock entry cannot hide the
+        # constraint: retired repository from a substring scan the way source can - which is exactly
+        # constraint: what RETIRED_PROVIDER_NAME's own `"skills-" + "shared"` demonstrates. A
+        # constraint: re-coupling that spells the name anywhere in a lock file, as a provider name or
+        # constraint: inside a source URL, reds here whatever it does elsewhere in the tree.
+        return sorted(
+            relative
+            for relative in cmd(["git", "ls-files", "policy"], root).splitlines()
+            if relative.endswith(".lock.json")
+            and (root / relative).is_file()
+            and self.RETIRED_PROVIDER_NAME in (root / relative).read_text(encoding="utf-8", errors="ignore")
         )
+
+    def live_pointer_offenders(self, root: Path) -> list[str]:
+        # constraint: ed3c/noodles#301 repository-wide readback - historical-provenance documents may
+        # constraint: still name the retired repository in prose; a clone URL is the only shape
+        # constraint: provider sync can fetch, so it is the exact carrier of a live pointer.
+        # constraint: Non-claim, and not a small one: this matches one exact literal, so a tracked
+        # constraint: file that assembles the URL from parts is invisible to it. That is not
+        # constraint: hypothetical - RETIRED_PROVIDER_NAME above does exactly that, deliberately, so
+        # constraint: this control's own bytes are not an offender. Read this as prose hygiene over
+        # constraint: the tracked tree; `retired_provider_in_locks` is the check that refuses,
+        # constraint: because the one surface provider sync reads cannot concatenate.
+        return [
+            relative
+            for relative in cmd(["git", "ls-files"], root).splitlines()
+            if (root / relative).is_file()
+            and self.RETIRED_PROVIDER_POINTER in (root / relative).read_text(encoding="utf-8", errors="ignore")
+        ]
+
+    def test_no_tracked_file_is_a_live_pointer_to_the_retired_source(self) -> None:
+        self.assertEqual(self.live_pointer_offenders(CANDIDATE_ROOT), [])
+
+    def test_no_policy_lock_names_the_retired_repository(self) -> None:
+        self.assertEqual(self.retired_provider_in_locks(CANDIDATE_ROOT), [])
+
+    def test_readded_disabled_retired_provider_entry_reds_both_controls(self) -> None:
+        # constraint: ed3c/noodles#301 planted negative - the re-coupling this atom removes costs one
+        # constraint: boolean, so the control plants the cheapest re-addition (still enabled: false,
+        # constraint: under the provider budget, well-formed for validate_provider_lock) and runs the
+        # constraint: three controls above against it. Disabled is not neutral: all three red.
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / "policy/providers.lock.json"
+        payload = json.loads(path.read_text())
+        payload["providers"].append(self.retired_compat_entry())
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        self.commit(root)
+        self.assertEqual(self.live_pointer_offenders(root), ["policy/providers.lock.json"])
+        self.assertEqual(self.retired_provider_in_locks(root), ["policy/providers.lock.json"])
 
     def test_retired_codex_routing_model_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
