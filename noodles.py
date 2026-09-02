@@ -358,12 +358,20 @@ def backlog_completeness_report(issues: Sequence[dict[str, Any]]) -> dict[str, A
     known_requirements = system_requirement_ids()
     ready: list[dict[str, Any]] = []
     unparseable: list[dict[str, Any]] = []
-    # constraint: ed3c/noodles#314 - the same index the frontier derives, over the same captured
-    # constraint: bodies, so the report names the identical collisions admission blocks on. Keyed by
-    # constraint: the contract's own subject: an unparseable body declares no subject and joins no
-    # constraint: cluster rather than being guessed into one.
+    # constraint: ed3c/noodles#314 - the same fingerprints over the same bodies as the two admission
+    # constraint: indexes, and one named difference rather than an implied identity: those two are
+    # constraint: built inside a repository and key on `owner/repo#number`, while this report is fed
+    # constraint: a captured backlog that carries only number and body, so it keys on the contract's
+    # constraint: OWN declared subject. For a body whose subject marker matches its number the two
+    # constraint: keys are the same string; for one that declares a foreign subject this report shows
+    # constraint: the cluster the body claims and admission shows the cluster its number is in. An
+    # constraint: unparseable body declares no subject and joins no cluster rather than being guessed
+    # constraint: into one. `gh issue list` never emits a pull request, but this reads whatever is on
+    # constraint: stdin, so the same filter the admission indexes carry is applied here too.
     fingerprints: dict[str, str | None] = {}
     for issue in issues:
+        if "pull_request" in issue:
+            continue
         body = issue.get("body") or ""
         try:
             subject_value = parse_issue_contract(body)["subject"]
@@ -3136,21 +3144,6 @@ def backlog_items(
         try:
             issue = intake_normalize(issue, repository, verify_live=resumed)
             contract = issue_contract_payload(issue, None, dependency_cache, known_requirements, fingerprints)
-            # constraint: ed3c/noodles#314 - the surfacing UX, and nothing wider: one comment naming
-            # constraint: the elder, written at most once because its own marker is the receipt. The
-            # constraint: comment list is read only for an issue that actually collides, so a backlog
-            # constraint: with no collisions pays nothing and re-sync writes nothing.
-            for elder in contract["fingerprint_elders"]:
-                posted = gh_api(f"repos/{repository}/issues/{issue['number']}/comments")
-                comment = issue_contract.fingerprint_comment(
-                    elder, [str(item.get("body") or "") for item in posted if isinstance(item, dict)]
-                )
-                if comment:
-                    gh_api(
-                        f"repos/{repository}/issues/{issue['number']}/comments",
-                        method="POST",
-                        payload={"body": comment},
-                    )
         except GateError as exc:
             number = issue.get("number")
             output.append(
@@ -3163,6 +3156,29 @@ def backlog_items(
                 }
             )
             continue
+        # constraint: ed3c/noodles#314 - the surfacing UX, and nothing wider: one comment naming the
+        # constraint: elder, written at most once because its own marker is the receipt. It sits
+        # constraint: OUTSIDE the contract's try on purpose: a rate-limited or failed comment call is
+        # constraint: a provider absence, and reporting it as `issue contract invalid` would make one
+        # constraint: exit carry two different absences - the shape this atom's own trigger is about.
+        # constraint: The comment list is read once per colliding issue rather than once per elder,
+        # constraint: and only for an issue that actually collides, so a backlog with no collisions
+        # constraint: pays nothing and a re-sync writes nothing.
+        if contract["fingerprint_elders"]:
+            try:
+                posted = gh_api(f"repos/{repository}/issues/{issue['number']}/comments")
+                existing = [str(item.get("body") or "") for item in posted if isinstance(item, dict)]
+                for elder in contract["fingerprint_elders"]:
+                    comment = issue_contract.fingerprint_comment(elder, existing)
+                    if comment:
+                        gh_api(
+                            f"repos/{repository}/issues/{issue['number']}/comments",
+                            method="POST",
+                            payload={"body": comment},
+                        )
+                        existing.append(comment)
+            except GateError as exc:
+                print(f"fingerprint surfacing: {repository}#{issue['number']}: {exc}", file=sys.stderr)
         output.append(
             {
                 "id": contract["subject"],

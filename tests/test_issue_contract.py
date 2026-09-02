@@ -1207,6 +1207,45 @@ class DefectFingerprintGateTests(unittest.TestCase):
         self.assertEqual([item["schedulable"] for item in items], [True, False])
         self.assertIn(self.ELDER, " ".join(items[1]["reasons"]))
 
+    def test_a_failing_surfacing_call_is_a_provider_absence_not_an_invalid_contract(self) -> None:
+        """Two different absences must not share one exit.
+
+        The hold is structural and already derived before any comment is read; the cross-link is
+        the UX that explains it. A rate-limited or transient failure on that comment call is a
+        PROVIDER absence, and reporting it as `issue contract invalid` would say the body is
+        unparseable when it parsed - the exact wrong-absence shape this atom's own trigger is
+        about. The younger stays a normally held item and the provider failure is named on
+        stderr, where it is a different string carrying its own subject."""
+        finalists = {
+            "issues": [
+                {"number": 82, "state": "open", "title": "elder", "body": self.twin(self.ELDER), "html_url": "u82"},
+                {"number": 90, "state": "open", "title": "younger", "body": self.twin(self.YOUNGER), "html_url": "u90"},
+            ]
+        }
+        calls: list[str] = []
+
+        def refuse(endpoint: str, *, method: str = "GET", payload: object | None = None, token: object | None = None):
+            calls.append(endpoint)
+            raise noodles.GateError("API rate limit exceeded")
+
+        stderr = io.StringIO()
+        with mock.patch.object(noodles, "gh_api", side_effect=refuse):
+            with mock.patch("sys.stderr", stderr):
+                items = noodles.backlog_items(
+                    "ed3c/noodles", finalists, {}, noodles.system_requirement_ids(CANDIDATE_ROOT)
+                )
+
+        younger = next(item for item in items if item["id"] == self.YOUNGER)
+        self.assertNotIn("diagnostic", younger)
+        self.assertFalse(younger["schedulable"])
+        self.assertIn(self.ELDER, " ".join(younger["reasons"]))
+        self.assertIn(f"fingerprint surfacing: {self.YOUNGER}", stderr.getvalue())
+        self.assertIn("API rate limit exceeded", stderr.getvalue())
+        self.assertNotIn("issue contract invalid", stderr.getvalue())
+        # constraint: the elder collides with nobody older, so it never reaches the comment seam at
+        # constraint: all - the only provider call this backlog makes is the younger's comment read.
+        self.assertEqual(calls, ["repos/ed3c/noodles/issues/90/comments"])
+
 
 class BacklogCompletenessReadbackTests(unittest.TestCase):
     """ed3c/noodles#279 - the runnable gap report over exact open provider bodies.
