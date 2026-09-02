@@ -471,14 +471,6 @@
     },
     {
       "path": "tests/test_noodles.py",
-      "test": "RepositoryGateTests.test_provider_lock_pins_expected_external_skills",
-      "literal": "'https://github.com/ed3c/plugins.git'",
-      "disposition": "deferred",
-      "owner": "finding-9",
-      "reason": "The pstack provider source URL out of `policy/providers.lock.json`. ed3c/noodles#304 already had to widen the sibling entry-list assertion in this same method for exactly this reason, and #301 is the retirement half; this scalar is the residue of that instance."
-    },
-    {
-      "path": "tests/test_noodles.py",
       "test": "RepositoryGateTests.test_report_only_architecture_thresholds_emit_warnings_without_failing_verify",
       "literal": "['unowned_top_level_definitions']",
       "disposition": "deferred",
