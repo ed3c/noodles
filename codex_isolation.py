@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 CODEX_WRAPPER_DIR = ".agents/bin"
 CODEX_WRAPPER = f"{CODEX_WRAPPER_DIR}/codex"
+NOODLE_RUNTIME_ROOT = ".noodle"
 ISOLATED_HOME = ".noodle/codex-isolation/home"
 ISOLATED_CODEX_HOME = ".noodle/codex-isolation/codex-home"
 PROJECT_SKILLS_ROOT = ".agents/skills"
@@ -98,6 +99,42 @@ def codex_surface_canary(root: Path, *, error_cls: type[Exception]) -> dict[str,
             f"{status_before!r} -> {receipt['repository_status_after']!r}"
         )
     return receipt
+
+
+# constraint: ed3c/noodles#313 - .gitignore carries `.noodle/*`, so the observer every lane actually
+# constraint: runs to report "zero residue" (`git status --porcelain --untracked-files=all`) is blind
+# constraint: to exactly the residue the clause forbids, and the clause has never once been evaluated.
+# constraint: `--ignored=matching` is the only git observer that sees these paths at all.
+def noodle_runtime_residue(root: Path, *, error_cls: type[Exception]) -> list[str]:
+    """Repository-relative `.noodle/` paths this checkout carries that git ignores.
+
+    Scoped to `.noodle/` on purpose: `__pycache__/` is ignored too and is not runtime state, so a
+    blanket "anything ignored is residue" observer would red every run and be turned off. Git
+    collapses an ignored directory to a single entry, so a directory entry is walked here and the
+    directory itself is kept: the diagnostic then names `.noodle/codex-isolation/home` rather than
+    only its prefix, and an empty written directory is still residue rather than silence."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise error_cls(f"residue observer could not read git status in {root}: {result.stderr.strip() or result.stdout.strip()}")
+    residue: set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("!! "):
+            continue
+        entry = line[3:].strip().strip('"').rstrip("/")
+        if entry != NOODLE_RUNTIME_ROOT and not entry.startswith(f"{NOODLE_RUNTIME_ROOT}/"):
+            continue
+        residue.add(entry)
+        target = root / entry
+        if target.is_dir():
+            residue.update(child.relative_to(root).as_posix() for child in target.rglob("*"))
+    return sorted(residue)
 
 
 def _config_overrides(args: list[Any]) -> list[str]:
