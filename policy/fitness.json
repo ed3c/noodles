@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "max_tracked_files": 38,
+  "max_tracked_files": 39,
   "max_root_surfaces": 9,
   "max_file_lines": 1000,
   "max_markdown_share": 0.58,
@@ -48,6 +48,7 @@
     ".github/workflows/noodles-hosted.lock.yml",
     ".github/workflows/noodles-hosted.md",
     ".github/workflows/verify.yml",
+    ".github/workflows/verified-batch-canary.yml",
     ".noodle.toml",
     ".noodle/adapters/github",
     "AGENTS.md",
