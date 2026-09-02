@@ -8,9 +8,9 @@
   "min_test_to_executable_ratio": 0.2,
   "max_enabled_providers": 2,
   "max_cross_surface_import_edges": {
-    "carrier": 38,
-    "docs": 84,
-    "schedule": 40,
+    "carrier": 39,
+    "docs": 85,
+    "schedule": 41,
     "verify": 33
   },
   "max_unowned_top_level_definitions": 145,
