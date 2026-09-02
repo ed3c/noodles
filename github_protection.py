@@ -685,7 +685,7 @@ def workflow_boundary_readback(
     if trusted_verify_job is None: errors.append("verify workflow missing trusted verify job")
     else:
         if not _workflow_enabled(trusted_verify_job): errors.append("trusted verify job must stay enabled")
-        if trusted_verify_job.get("needs") not in ([], ["candidate-self-tests"]): errors.append("trusted verify job must be independent or depend only on candidate-self-tests during the staged transition")
+        if trusted_verify_job.get("needs") != []: errors.append("trusted verify job must be independent of candidate jobs")
         _workflow_checks(errors, [(trusted_verify_job.get("permissions"), EXPECTED_TRUSTED_VERIFY_JOB_PERMISSIONS, "trusted verify job permissions must stay read-only on the admitted scopes"), (trusted_verify_job.get("runs-on"), "ubuntu-latest", "trusted verify job runs-on drifted from ubuntu-latest"), (trusted_verify_job.get("timeout-minutes"), 15, "trusted verify timeout must stay 15 minutes")])
         trusted_checkout = _workflow_step(trusted_verify_job, "Checkout trusted verifier from default branch", errors, "trusted verify job missing trusted checkout step", "trusted verify checkout step must stay enabled")
         if trusted_checkout is not None: _workflow_checkout(trusted_checkout, errors, prefix="trusted verify checkout", ref="${{ github.event.repository.default_branch }}", path=".trusted", repo=None)
