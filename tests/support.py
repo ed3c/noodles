@@ -29,6 +29,9 @@ ISSUE_DEPENDS_ON_MARKER = "<!-- noodles-depends-on: none -->"
 # constraint: ed3c/noodles#120 - one stable requirement heading that really exists in
 # constraint: contracts/system-v1.md, so fixtures resolve through the production read path.
 ISSUE_REQUIREMENT_MARKER = "<!-- noodles-requirement: SYSTEM.PURPOSE.001 -->"
+# constraint: ed3c/noodles#317 - one owner for the two evidence markers every complete fixture body
+# constraint: carries, so the next tightening of this pair migrates the fixtures in one edit.
+ISSUE_EVIDENCE_MARKERS = "<!-- noodles-observer: none -->\n<!-- noodles-capability-probe: none -->\n"
 READY_BACKLOG_FIXTURE = Path("tests/fixtures/issue-contract-ready-backlog.json")
 MIGRATION_DIAGNOSTIC = (
     "migration obligation: update the durable ready-backlog fixture in this same atom; "
@@ -256,8 +259,14 @@ def assert_candidate_preserves_or_migrates_ready_backlog(trusted_root: Path, can
 
 def complete_issue_sections(goal: str, non_claims: str, *, claim: str | None = None) -> str:
     """ed3c/noodles#120 - the deterministic section shape a schedulable repository-mutating Issue
-    must carry, with one owner so a fixture cannot drift from the contract it represents."""
+    must carry, with one owner so a fixture cannot drift from the contract it represents.
+
+    ed3c/noodles#317 - the two evidence markers ride here rather than in each caller's own header
+    block: they are read by a whole-body scan, this text is always prepended by the caller's markers
+    and precedes the first `##`, and one owner is what let the tightening migrate every caller at
+    once. `none` is the honest value for these fixtures, whose triggers claim no observation."""
     return (
+        f"{ISSUE_EVIDENCE_MARKERS}\n"
         "## Physical trigger\n\nA syntactically valid ready subject can still be unimplementable.\n\n"
         f"## Goal\n\n{goal}\n\n"
         f"## Claim\n\n{claim or goal}\n\n"

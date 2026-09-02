@@ -1,6 +1,17 @@
 """One typed, read-only Issue contract: exact dependency markers plus schedulability derived from
 provider truth. A predecessor's own landed/closed readback is the only dependency-waiting state, so a
-landing cannot strand its dependents behind a mirrored marker nobody patched."""
+landing cannot strand its dependents behind a mirrored marker nobody patched.
+
+Stated ceiling of the evidence-qualification half (ed3c/noodles#317), the same way the completeness
+gate already disclaims prose judgment: `noodles-observer` and `noodles-capability-probe` are verified
+STRUCTURALLY - the marker is present, its section exists, both demonstration directions exist, and the
+command in each direction is byte-identical to the declared invocation. Nothing here can verify that
+the pasted outputs were not fabricated. The value is still real and two-fold. It is a forcing function:
+the author must actually run the planted direction, and that is the exact moment an observer that
+structurally cannot see what it claims dies - because the planted violation produces silence. And it
+converts composed truth into checkable truth: the demonstration is a runnable pair any monitor, judge,
+or successor can replay, so a fabricated demonstration is no longer a safe lie. What structure cannot
+catch stays owned by monitors and judges, by design."""
 from __future__ import annotations
 
 import hashlib
@@ -23,6 +34,10 @@ DEPENDENCY_DECLARATION_RE = re.compile(
 ISSUE_REFERENCE_RE = re.compile(r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<number>[1-9][0-9]*)")
 NO_DEPENDENCY_WORDS = {"", "-", "n/a", "none", "nothing"}
 NO_DEPENDENCIES = "none"
+# constraint: ed3c/noodles#315 - the schedulable-state token is owned here, where derive_schedulability
+# constraint: consumes it, so the trusted corpus test asserts the vocabulary the code itself reads
+# constraint: instead of memorizing its spelling as a candidate-current literal.
+READY_STATE = "ready"
 # constraint: ed3c/noodles#120 - `ready` is necessary but not sufficient. `claim` joins the typed
 # constraint: sections a repository-mutating Issue must carry non-empty before it is schedulable.
 REQUIRED_SECTIONS = ("goal", "claim", "physical_acceptance", "non_claims")
@@ -69,6 +84,33 @@ FINGERPRINT_COMMENT = (
     "or until {elder} closes. Nothing is closed, merged, or edited automatically: whether these are "
     "one defect stays a human judgment, and the relation marker is how that judgment becomes "
     "permanently visible.\n\n" + FINGERPRINT_COMMENT_MARKER + "\n"
+)
+# constraint: ed3c/noodles#317 - an issue must prove, before it is allowed to exist, that the observer
+# constraint: it cites can actually observe the invariant it claims, and that no acceptance line
+# constraint: prescribes an external tool behavior nobody probed. Both markers are required and both
+# constraint: admit the literal `none`: the marker is the discriminator, authored explicitly, because
+# constraint: classifying a trigger from its prose would be exactly the guess this gate replaces.
+# constraint: ONE row per marker, carrying everything a reason needs: marker, heading, section key,
+# constraint: the honest-`none` claim, and the directions as (label, subject) pairs. Three tables
+# constraint: keyed on the same strings meant a marker added to one of them raised KeyError out of a
+# constraint: reason-GENERATING function - a crash where the whole design is to fail closed with a
+# constraint: named reason. A row is now complete or it does not parse.
+EVIDENCE_NONE = "none"
+EVIDENCE_SECTIONS: tuple[tuple[str, str, str, str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "observer",
+        "Observer demonstration",
+        "observer_demonstration",
+        "makes no absence-or-failure observation claim",
+        (("GREEN", "clean subject"), ("RED", "planted violation")),
+    ),
+    (
+        "capability-probe",
+        "Capability probe",
+        "capability_probe",
+        "prescribes no external tool behavior in its acceptance",
+        (),
+    ),
 )
 PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
 PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
@@ -434,6 +476,125 @@ def fingerprint_comment(elder: str, existing_comments: Sequence[str]) -> str | N
     return FINGERPRINT_COMMENT.format(elder=elder)
 
 
+def _direction_halves(section: str, directions: Sequence[str]) -> dict[str, str]:
+    """Each declared direction label to the text under it, split at the next label.
+
+    A direction label starts a LINE, optionally behind markdown decoration (`- `, `**`, `> `, `#`,
+    a backtick). Two things this rules out, and the second is why it is anchored: `REDUCE` in prose
+    is not a RED direction because the match is on a word boundary, and a sentence that MENTIONS the
+    labels - "the RED and GREEN runs below use the same command" - is not the start of a transcript.
+    Unanchored, that preamble put RED before GREEN, made the preamble itself the RED half, and the
+    issue was refused for a demonstration it had actually supplied."""
+    found = {
+        direction: match.start()
+        for direction in directions
+        for match in [re.search(rf"(?m)^[^A-Za-z0-9]*{direction}\b", section)]
+        if match
+    }
+    ordered = sorted(found.items(), key=lambda item: item[1])
+    return {
+        direction: section[start : (ordered[index + 1][1] if index + 1 < len(ordered) else len(section))]
+        for index, (direction, start) in enumerate(ordered)
+    }
+
+
+def _observed_output(block: str, invocation: str) -> list[str]:
+    """The non-empty lines the block records under its copy of the invocation, fences dropped."""
+    if invocation not in block:
+        return []
+    after = block.split(invocation, 1)[1].splitlines()[1:]
+    return [line.strip() for line in after if line.strip() and line.strip() != "```"]
+
+
+def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, where: str) -> list[str]:
+    """Command identity plus an observed output, in one block. Nothing here judges the output's truth."""
+    if invocation not in block:
+        return [
+            f"'## {heading}' {where} does not run the declared noodles-{marker} invocation "
+            f"{invocation!r}; the demonstration must use the same command, flags, and access path "
+            "the claim relies on"
+        ]
+    if not _observed_output(block, invocation):
+        return [
+            f"'## {heading}' {where} runs the declared noodles-{marker} invocation but carries no "
+            "observed output under it; write what it actually printed, including 'no output'"
+        ]
+    return []
+
+
+def evidence_marker_reasons(
+    marker: str,
+    value: str | None,
+    heading: str,
+    claim: str,
+    section: str | None,
+    directions: Sequence[tuple[str, str]],
+) -> list[str]:
+    """One deterministic reason per absent half of one evidence marker.
+
+    A missing marker is its own reason; an honest `none` is complete and untouched; a non-`none`
+    marker owes its section, every declared direction, the identical invocation inside each, and an
+    output under it. Each half is named separately so the author is told which one is absent.
+
+    Everything this needs arrives in the arguments - `claim` and each direction's subject come from
+    the marker's own EVIDENCE_SECTIONS row - so a row for a new marker cannot be half-declared into
+    a KeyError raised out of a function whose entire job is to return named reasons."""
+    if value is None:
+        return [
+            f"issue declares no noodles-{marker} marker; write exactly {EVIDENCE_NONE!r} when the "
+            f"issue {claim}, or the exact invocation plus a '## {heading}' section"
+        ]
+    invocation = value.strip()
+    if invocation == EVIDENCE_NONE:
+        return []
+    if not (section or "").strip():
+        return [
+            f"noodles-{marker} declares {invocation!r} but the issue body has no '## {heading}' section"
+        ]
+    if not directions:
+        return _invocation_reasons(marker, heading, invocation, section or "", "section")
+    labels = [label for label, _subject in directions]
+    halves = _direction_halves(section or "", labels)
+    reasons: list[str] = []
+    for label, subject in directions:
+        if label not in halves:
+            reasons.append(
+                f"'## {heading}' carries no {label} direction ({subject}) "
+                f"for noodles-{marker} {invocation!r}"
+            )
+            continue
+        reasons.extend(
+            _invocation_reasons(marker, heading, invocation, halves[label], f"{label} direction")
+        )
+    # constraint: ed3c/noodles#317 - the second live blindness case was a probe whose planted
+    # constraint: direction returned exactly what its clean direction returned. Structurally that is
+    # constraint: an observer that did not discriminate, and it is checkable without judging either
+    # constraint: output's truth, so the pair is refused rather than read as a demonstration. Keyed
+    # constraint: on "more than one direction, all of them identical" rather than on exactly two, so
+    # constraint: a third direction narrows the check instead of silently switching it off.
+    if not reasons and len(labels) > 1:
+        recorded = [tuple(_observed_output(halves[label], invocation)) for label in labels]
+        if len(set(recorded)) == 1:
+            reasons.append(
+                f"'## {heading}' records identical output for {' and '.join(labels)}; "
+                f"the declared noodles-{marker} invocation {invocation!r} did not discriminate the "
+                "planted violation from the clean subject, so it cannot observe what the trigger claims"
+            )
+    return reasons
+
+
+def evidence_reasons(body: str, declared: Mapping[str, str | None]) -> list[str]:
+    """Both evidence markers judged against the body's own fence-preserving sections."""
+    demonstration = sections(body, keep_fences=True)
+    return [
+        reason
+        for marker, heading, key, claim, directions in EVIDENCE_SECTIONS
+        for reason in evidence_marker_reasons(
+            marker, declared.get(marker), heading, claim, demonstration.get(key), directions
+        )
+    ]
+
+
 def completeness_reasons(
     contract: dict[str, Any],
     body_sections: dict[str, str],
@@ -446,6 +607,7 @@ def completeness_reasons(
     names. It never decides whether prose is wise, complete in meaning, or technically correct, and
     it never promotes a natural-language judgment to an L verdict."""
     reasons = list(contract.get("requirement_errors") or ())
+    reasons.extend(contract.get("evidence_reasons") or ())
     requirements = contract.get("requirements") or ()
     if not requirements:
         reasons.append(
@@ -503,8 +665,12 @@ def parse_blocker(raw: str | None, state: str, *, error_cls: type[Exception]) ->
     return {"owner": owner.strip(), "reason": reason.strip()}
 
 
-def sections(body: str) -> dict[str, str]:
-    text = HTML_COMMENT_RE.sub("", FENCE_RE.sub("", body or ""))
+def sections(body: str, *, keep_fences: bool = False) -> dict[str, str]:
+    # constraint: ed3c/noodles#317 - a demonstration IS a fenced transcript, so the evidence gate is
+    # constraint: the one reader that must keep fences. HTML comments stay stripped either way: an
+    # constraint: untouched template placeholder must never read as an authored demonstration.
+    stripped = body or "" if keep_fences else FENCE_RE.sub("", body or "")
+    text = HTML_COMMENT_RE.sub("", stripped)
     matches = list(SECTION_RE.finditer(text))
     parsed: dict[str, str] = {}
     for index, match in enumerate(matches):
@@ -548,7 +714,7 @@ def derive_schedulability(
     reasons: list[str] = []
     if provider_state != "open":
         reasons.append(f"issue provider state is {provider_state!r}, not open")
-    if contract.get("state") != "ready":
+    if contract.get("state") != READY_STATE:
         reasons.append(f"issue state marker is {contract.get('state')!r}, not ready")
     blocker = contract.get("blocker")
     if blocker:
