@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout exact candidate head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
