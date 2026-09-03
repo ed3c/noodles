@@ -891,6 +891,11 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         errors.append(f"workflow count must equal {declared_workflows}, got {len(workflow_paths)}")
     workflow_boundary_errors, _workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     errors.extend(workflow_boundary_errors)
+    # constraint: ed3c/noodles#433 - reads the CANDIDATE's own land.yml, like the workflow-count
+    # constraint: equality above: the candidate that legitimately reshapes the entry must be able to
+    # constraint: land, and what it may not do is delete the handoff and quietly go back to running
+    # constraint: unpinned default-branch bytes.
+    errors.extend(lander_shim_errors(root))
     # constraint: ed3c/noodles#265 - the hosted lane's compiled bytes are judged by the same trusted
     # constraint: repository gate that judges the two hand-written workflows, so a hand-edited lock,
     # constraint: a floating action tag, or a stale recompilation reds here instead of surfacing
@@ -2567,6 +2572,96 @@ def gha_pull_request_admission(
     return {"task": task, "apply": apply_result}
 
 
+LANDER_PIN_KEY = "lander_pin"
+LANDER_PIN_ENV = "NOODLES_LANDER_PIN"
+LANDER_PIN_RE = re.compile(r"[0-9a-f]{40}")
+LANDER_WORKFLOW_PATH = ".github/workflows/land.yml"
+# constraint: ed3c/noodles#433 - workflow_run always executes the DEFAULT BRANCH's copy of the entry
+# constraint: file, so the entry itself can never be pinned. These two lines are the whole handoff:
+# constraint: everything after them in the land job runs the tree the pin names, so a lander change
+# constraint: merges dead and activates by moving one value in policy/github.json.
+LANDER_CHECKOUT_COMMAND = "python3 noodles.py github lander-checkout"
+LANDER_SHIM_BLOCK = (
+    "      - name: Check out the pinned lander logic\n"
+    f"        run: {LANDER_CHECKOUT_COMMAND}\n"
+)
+# constraint: ed3c/noodles#433 - the trailing boundary is load-bearing: `noodles.py github land` is a
+# constraint: prefix of the lander-checkout command above, so a plain substring search would report
+# constraint: the handoff step as the merge step. Matched as a command word rather than as a fixed
+# constraint: line so the ordering check survives the merge step's `run:` being reflowed from the
+# constraint: folded scalar it uses today into one line, which the trusted boundary readback admits.
+LANDER_LAND_COMMAND_RE = re.compile(r"noodles\.py github land(?![\w-])")
+def lander_checkout(root: Path) -> dict[str, Any]:
+    """Replace the entry checkout with the pinned lander tree and read the replacement back.
+
+    The invalid state this makes impossible: landing logic executing at whatever the default branch
+    happens to carry at trigger time. `workflow_run` hands us the default branch and nothing can
+    change that, so the entry resolves the pin from the trusted policy it was handed, checks that
+    exact commit out over itself, and refuses if `HEAD` is not the pin afterwards - the success
+    message is the readback, not the command's exit code.
+
+    The pin is read from the TRUSTED default-branch checkout, before the pinned tree replaces it, so
+    the trusted-policy invariant holds for the lander exactly as it holds for every other trusted
+    value: a candidate that moves this pin is landed by the pin `main` currently carries, never by
+    its own.
+
+    The pin travels forward through `$GITHUB_ENV` rather than through the land step's `env:` block,
+    for the reason ed3c/noodles#332 already recorded at this exact seam: the trusted default-branch
+    boundary readback pins that step's bytes, and `$GITHUB_ENV` reaches every later step without
+    touching any of them.
+
+    Ceilings, stated rather than implied. The fetch is anonymous, so this depends on the repository
+    staying public; a private repository needs the token wired into the fetch and fails loudly rather
+    than silently if that day comes. And an object already present is not re-fetched, which is what
+    lets the activation fixture drive this function against a real local repository with no remote at
+    all instead of against a mock of it."""
+    pin = str(protection_policy(root).get(LANDER_PIN_KEY) or "")
+    if not LANDER_PIN_RE.fullmatch(pin):
+        raise GateError(f"policy/github.json {LANDER_PIN_KEY} must be a full 40-hex commit sha, got {pin!r}")
+    entry_sha = git(root, "rev-parse", "HEAD")
+    if run(["git", "cat-file", "-e", f"{pin}^{{commit}}"], cwd=root, check=False).returncode != 0:
+        git(root, "fetch", "--depth", "1", "origin", pin)
+    git(root, "checkout", "--force", "--detach", pin)
+    head = git(root, "rev-parse", "HEAD")
+    if head != pin:
+        raise GateError(f"pinned lander checkout read back {head}, expected {pin}")
+    github_env = os.getenv("GITHUB_ENV", "").strip()
+    if github_env:
+        with open(github_env, "a", encoding="utf-8") as handle:
+            handle.write(f"{LANDER_PIN_ENV}={pin}\n")
+    return {"entry_sha": entry_sha, "lander_sha": head, "pin": pin, "readback": True, "exported": bool(github_env)}
+def lander_provenance(root: Path) -> dict[str, Any]:
+    """lander@SHA for the land receipt: which bytes are landing, and did the pin admit them.
+
+    Fail-closed on purpose. An absent pin means the entry did not hand off, which is precisely the
+    state this atom exists to make impossible, so it refuses BEFORE the merge rather than recording
+    an honest-looking `pinned: false` on a land that already happened."""
+    declared = os.getenv(LANDER_PIN_ENV, "").strip()
+    if not declared:
+        raise GateError(f"{LANDER_PIN_ENV} is absent: the land entry must run `{LANDER_CHECKOUT_COMMAND}` before landing")
+    head = git(root, "rev-parse", "HEAD")
+    if head != declared:
+        raise GateError(f"lander pin readback failed: landing bytes are {head}, {LANDER_PIN_ENV} declares {declared}")
+    return {"sha": head, "pin": declared, "pinned": True}
+def lander_shim_errors(root: Path) -> list[str]:
+    """The land entry hands landing off to the pinned lander, and does it before it lands anything.
+
+    Read as bytes rather than through the workflow model because the invariant is about two exact
+    lines: an `if:` inserted to disable the handoff, a renamed step, or a rewritten command all move
+    the block and stop matching. Non-claim: this is a byte-shape check on one block plus an ordering
+    check on the land command, never a semantic analysis of the workflow - it proves the handoff is
+    declared ahead of the merge, and `lander_provenance` is the independent arrival that proves it
+    actually ran."""
+    path = root / LANDER_WORKFLOW_PATH
+    if not path.is_file():
+        return [f"{LANDER_WORKFLOW_PATH} is absent, so the pinned lander has no entry"]
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    shim = text.find(LANDER_SHIM_BLOCK)
+    if shim < 0:
+        return [f"{LANDER_WORKFLOW_PATH} must carry the pinned-lander handoff block verbatim, so landing logic never executes unpinned default-branch bytes"]
+    if LANDER_LAND_COMMAND_RE.search(text, shim + len(LANDER_SHIM_BLOCK)) is None:
+        return [f"{LANDER_WORKFLOW_PATH} runs `noodles.py github land` before its pinned-lander handoff, so the merge would execute unpinned bytes"]
+    return []
 RECEIPT_ANCHOR_PREFIX = "physical-receipt-anchor:"
 # constraint: ed3c/noodles#375 - the anchor names the merge; this names the bytes. Anyone quoting a
 # constraint: body digest for a landed atom can now be checked against a provider-side field instead
@@ -2652,6 +2747,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
     workflow_boundary_errors, workflow_boundary = github_protection.workflow_boundary_readback(root, sha256_file)
     if workflow_boundary_errors:
         raise GateError("trusted workflow boundary invalid: " + "; ".join(workflow_boundary_errors))
+    lander = lander_provenance(root)
     verify_source = github_protection.trusted_workflow_run_readback(
         gh_api, GateError, repository, int(workflow.get("id") or 0), name="verify", path=".github/workflows/verify.yml", event="pull_request_target", default_branch=policy["default_branch"]
     )
@@ -2745,6 +2841,7 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         "head_sha": head_sha,
         "merge_sha": merge_sha,
         "issue_closed": True,
+        "lander": lander,
         "receipt_anchor": anchor,
         "protection_readback": protection_receipt,
         "trusted_workflows": {
@@ -4227,6 +4324,7 @@ def build_parser() -> argparse.ArgumentParser:
     land = github_sub.add_parser("land")
     land.add_argument("--event", required=True)
     land.add_argument("--receipt", required=True)
+    github_sub.add_parser("lander-checkout")
     github_sub.add_parser("train")
     reconcile = sub.add_parser("reconcile")
     reconcile.add_argument("--control-url", default=os.getenv("NOODLE_CONTROL_URL", "http://127.0.0.1:3210"))
@@ -4418,6 +4516,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.github_action == "land":
                 result = land_pull_request(root, Path(args.event), Path(args.receipt))
                 print(json.dumps(result, indent=2, sort_keys=True))
+                return 0
+            if args.github_action == "lander-checkout":
+                print(json.dumps(lander_checkout(root), indent=2, sort_keys=True))
                 return 0
             if args.github_action == "train":
                 # constraint: ed3c/noodles#332 - the closure identity arrives by environment rather than by

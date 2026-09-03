@@ -9,6 +9,7 @@
     "email": "ed3c@users.noreply.github.com"
   },
   "default_branch": "main",
+  "lander_pin": "c76cdf5ccb6593fb6f67d89510df74a36e327e9c",
   "required_check": "verify",
   "merge_method": "merge",
   "require_branch_protection": true,

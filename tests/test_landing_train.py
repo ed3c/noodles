@@ -377,6 +377,10 @@ class LandingRaceTests(unittest.TestCase):
             }), encoding="utf-8")
             trusted = {"run": {"id": 700 + pr_number}, "workflow": {"path": ".github/workflows/verify.yml"}, "provider_default_branch": "main"}
             with (
+                # constraint: ed3c/noodles#433 - the land entry hands the job to the pinned lander and
+                # constraint: exports the pin it read back; land_pull_request refuses without it. Here
+                # constraint: the engine tree IS the landing bytes, so its own HEAD is the honest pin.
+                mock.patch.dict(os.environ, {noodles.LANDER_PIN_ENV: noodles.git(ENGINE_ROOT, "rev-parse", "HEAD")}, clear=False),
                 mock.patch.object(noodles, "gh_api", side_effect=api),
                 mock.patch.object(noodles.github_protection, "trusted_workflow_run_readback", return_value=trusted),
                 mock.patch.object(noodles.github_protection, "protection_audit", return_value={"required_check": "verify"}),

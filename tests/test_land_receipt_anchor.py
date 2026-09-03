@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -116,9 +117,18 @@ class LandApi:
         return [str((payload or {}).get("body", "")) for _endpoint, payload in self.posts]
 
 
-def land(api: LandApi) -> dict:
+def engine_head() -> str:
+    """The revision this engine tree is checked out at - what the shim would have pinned to reach it."""
+    return noodles.git(ENGINE_ROOT, "rev-parse", "HEAD")
+
+
+def land(api: LandApi, *, lander_pin: str | None = None) -> dict:
     """The land ceremony against that provider surface. Module-level since ed3c/noodles#375 so the
-    digest controls drive the same ceremony without borrowing another TestCase's bound method."""
+    digest controls drive the same ceremony without borrowing another TestCase's bound method.
+
+    `lander_pin` is what ed3c/noodles#433's entry exports into `$GITHUB_ENV` before the pinned tree
+    takes over: `None` means "this engine tree, correctly pinned", `""` means the entry never ran,
+    and an explicit sha plants a disagreement between the declared pin and the landing bytes."""
     with tempfile.TemporaryDirectory(prefix="noodles-land-anchor-", ignore_cleanup_errors=True) as name:
         work = Path(name)
         event_path = work / "event.json"
@@ -141,7 +151,9 @@ def land(api: LandApi) -> dict:
             "issue_subject": SUBJECT,
         }), encoding="utf-8")
         trusted = {"run": {"id": 777}, "workflow": {"path": ".github/workflows/verify.yml"}, "provider_default_branch": "main"}
+        declared = engine_head() if lander_pin is None else lander_pin
         with (
+            mock.patch.dict(os.environ, {noodles.LANDER_PIN_ENV: declared}, clear=False),
             mock.patch.object(noodles, "gh_api", side_effect=api),
             mock.patch.object(noodles.github_protection, "trusted_workflow_run_readback", return_value=trusted),
             mock.patch.object(noodles.github_protection, "protection_audit", return_value={"required_check": "verify"}),
@@ -312,6 +324,38 @@ class AnchorBodyDigestTests(unittest.TestCase):
         truncated = re.sub(r"(body-sha256=[0-9a-f]{40})[0-9a-f]{24}", r"\1", anchor)
         self.assertNotEqual(truncated, anchor)
         self.assertEqual(self.check(truncated, MERGED_BODY.encode("utf-8")), 1)
+
+
+class LanderProvenanceTests(unittest.TestCase):
+    """ed3c/noodles#433 - every land receipt names the lander revision that produced it.
+
+    `workflow_run` runs the default branch's entry file, so before this atom the answer to "which
+    lander landed this" was "whatever `main` happened to carry at trigger time" and no record said
+    so. The entry now checks the pinned revision out over itself and exports the pin; these controls
+    hold the lander to reading that pin back against the bytes it is actually running, and to
+    refusing BEFORE the merge when the two disagree or the handoff never happened."""
+
+    def test_the_land_receipt_records_the_pinned_lander_revision(self) -> None:
+        api = LandApi()
+        result = land(api)
+        self.assertEqual(result["lander"], {"sha": engine_head(), "pin": engine_head(), "pinned": True})
+        self.assertTrue(api.merged)
+
+    def test_planted_negative_a_pin_disagreeing_with_the_landing_bytes_refuses_before_the_merge(self) -> None:
+        api = LandApi()
+        with self.assertRaisesRegex(noodles.GateError, "lander pin readback failed"):
+            land(api, lander_pin="0" * 40)
+        self.assertFalse(api.merged)
+        self.assertEqual(api.anchors(), [])
+        self.assertEqual(api.issue["state"], "open")
+
+    def test_planted_negative_an_entry_that_never_handed_off_refuses_before_the_merge(self) -> None:
+        api = LandApi()
+        with self.assertRaisesRegex(noodles.GateError, f"{noodles.LANDER_PIN_ENV} is absent"):
+            land(api, lander_pin="")
+        self.assertFalse(api.merged)
+        self.assertEqual(api.anchors(), [])
+        self.assertEqual(api.issue["state"], "open")
 
 
 if __name__ == "__main__":

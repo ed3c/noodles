@@ -42,6 +42,13 @@
       "select": ["parser", "*", "commit"],
       "why": "The tree-sitter library and grammar commits. Registered with no projections on purpose: this class is the positive control that a clean class exists, so a green detector is not evidence that every class merely has a long exemption list.",
       "projections": []
+    },
+    {
+      "id": "lander-pin",
+      "owner": "policy/github.json",
+      "select": ["lander_pin"],
+      "why": "ed3c/noodles#433 - the revision the land entry executes its landing logic at. Flipping it is what activates a merged lander change, so a second copy anywhere is a second answer to 'which lander is live' at exactly the moment nobody can afford two. Registered with no projections: the entry resolves it from this document at run time and the fixtures read it from here rather than restating it, so a pin quoted into a test, a report or a workflow reds naming itself.",
+      "projections": []
     }
   ]
 }
