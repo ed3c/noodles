@@ -476,3 +476,132 @@ def budget_deferral_errors(
         elif match.group(1) != subject:
             errors.append(f"{DEFERRED_BUDGET} receipt for {subject} names subject {match.group(1)}")
     return errors
+
+
+# constraint: ed3c/noodles#408 - AUTONOMY.BOUNDED.001. "Keep going until all issues are solved" has
+# constraint: no machine semantics, and the naive reading (while open_issues > 0) is a non-terminating
+# constraint: loop generator: new issues arrive, duplicates enrich, external blockers retry-storm,
+# constraint: flaky issues starve the queue, and the daemon burns quota attempting work it has no
+# constraint: authority to land. In the pure-Codex fallback there is no human-adjacent dispatcher to
+# constraint: notice, so termination must be machine-decidable or the fallback is unsafe to leave
+# constraint: running. The predicate below is read-only over existing state and names every issue
+# constraint: that blocks closure and why.
+TERMINAL_CLASSES = (
+    "RESOLVED",
+    "DUPLICATE_ENRICHED",
+    "GATED_OUT",
+    "N_CLASS_DECLARED",
+    "BLOCKED_EXTERNAL",
+    "DEFERRED_BUDGET",
+    "QUARANTINED",
+    "SUPERSEDED",
+)
+# constraint: every non-resolved class is a state somebody may have to leave again, so each one must
+# constraint: name the condition it is retried under; RESOLVED is the only arm that terminates for
+# constraint: good, which is precisely why it is the arm a masquerade aims at.
+RETRY_BEARING_TERMINAL_CLASSES = tuple(name for name in TERMINAL_CLASSES if name != "RESOLVED")
+# constraint: the seven conjuncts, named here so a blocker line and this list cannot drift apart.
+CLOSURE_CONJUNCTS = (
+    "terminal_classification",
+    "no_active_lanes",
+    "no_unreconciled_lanes",
+    "empty_landing_train",
+    "findings_accounted",
+    "sweeper_balance_zero",
+    "ledgers_committed",
+)
+
+
+@dataclass(frozen=True)
+class AdmittedIssue:
+    """One admitted issue of a generation, with whatever terminal state it currently carries.
+
+    `external_blocker` is carried separately from `terminal_class` on purpose: it is the FACT, and
+    the class is the CLAIM about the fact. Keeping them apart is what makes the masquerade visible -
+    an issue that names an external blocker and claims RESOLVED is refused, where a single field
+    would have simply been overwritten and the lie would have been unobservable."""
+
+    subject: str
+    terminal_class: str | None = None
+    receipt: str = ""
+    retry_condition: str = ""
+    external_blocker: str = ""
+
+
+@dataclass(frozen=True)
+class GenerationState:
+    """Everything the closure predicate reads. Nothing here is written by anything below."""
+
+    issues: tuple[AdmittedIssue, ...] = ()
+    active_lanes: tuple[str, ...] = ()
+    unreconciled_lanes: tuple[str, ...] = ()
+    landing_train: tuple[str, ...] = ()
+    unaccounted_findings: tuple[str, ...] = ()
+    sweeper_balance: int = 0
+    uncommitted_ledgers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ClosureVerdict:
+    closed: bool
+    blockers: tuple[str, ...]
+
+
+def terminal_classification_errors(issues: Sequence[AdmittedIssue]) -> list[str]:
+    """Why these classifications are not admissible at all - as opposed to merely not yet closed.
+
+    The distinction is the whole atom: an issue with no class yet is an OPEN generation (ordinary,
+    reported by the predicate), while an issue whose class contradicts its own recorded facts is a
+    LIE (refused, never reported as a state). BLOCKED_EXTERNAL can never satisfy the RESOLVED arm, so
+    external blockage stops masquerading as completion - the self-report honesty the daemon needs
+    before any generation is allowed to declare itself done unattended."""
+    errors: list[str] = []
+    for issue in issues:
+        if issue.terminal_class is None:
+            continue
+        if issue.terminal_class not in TERMINAL_CLASSES:
+            errors.append(
+                f"{issue.subject} claims terminal class {issue.terminal_class!r}, which is not one of {list(TERMINAL_CLASSES)}"
+            )
+            continue
+        if issue.external_blocker.strip() and issue.terminal_class == "RESOLVED":
+            errors.append(
+                f"{issue.subject} presents external blockage {issue.external_blocker!r} as RESOLVED; "
+                "BLOCKED_EXTERNAL can never satisfy the RESOLVED arm"
+            )
+    return errors
+
+
+def generation_closure(state: GenerationState) -> ClosureVerdict:
+    """Whether this generation is closed, and every conjunct plus issue that holds it open.
+
+    Seven conjuncts, evaluated in `CLOSURE_CONJUNCTS` order. The output names what blocks closure so
+    the report is actionable rather than a bare boolean - "not closed" with no named blocker is the
+    aspiration this predicate replaces.
+
+    Zero writes: this reads `state` and returns a value. It closes nothing, retries nothing, and
+    touches no provider - acting on the verdict stays with the daemon and the dispatcher."""
+    refusals = terminal_classification_errors(state.issues)
+    if refusals:
+        raise ValueError("; ".join(refusals))
+    blockers: list[str] = []
+    for issue in state.issues:
+        if issue.terminal_class is None:
+            blockers.append(f"terminal_classification: {issue.subject} carries no terminal class")
+            continue
+        if not issue.receipt.strip():
+            blockers.append(f"terminal_classification: {issue.subject} is {issue.terminal_class} with no receipt")
+        if issue.terminal_class in RETRY_BEARING_TERMINAL_CLASSES and not issue.retry_condition.strip():
+            blockers.append(
+                f"terminal_classification: {issue.subject} is {issue.terminal_class} with no named retry condition"
+            )
+    blockers.extend(f"no_active_lanes: {lane} is still active" for lane in state.active_lanes)
+    blockers.extend(f"no_unreconciled_lanes: {lane} completed but is unreconciled" for lane in state.unreconciled_lanes)
+    blockers.extend(f"empty_landing_train: {entry} is still on the landing train" for entry in state.landing_train)
+    blockers.extend(f"findings_accounted: {finding} is unaccounted" for finding in state.unaccounted_findings)
+    if state.sweeper_balance != 0:
+        blockers.append(
+            f"sweeper_balance_zero: sweeper balance is {state.sweeper_balance}, so a tracked nudge or hand-off is unreconciled"
+        )
+    blockers.extend(f"ledgers_committed: {ledger} is uncommitted" for ledger in state.uncommitted_ledgers)
+    return ClosureVerdict(closed=not blockers, blockers=tuple(blockers))

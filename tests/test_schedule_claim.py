@@ -1355,6 +1355,227 @@ class FailSoftZeroWriteTests(unittest.TestCase):
                 os.chdir(cwd)
             self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
 
+# constraint: ed3c/noodles#408 - the generation-closure predicate's fixtures share this module for the
+# constraint: reason the #407 block above states: a new tests/ module importing schedule_domain moves
+# constraint: cross-surface edge counts disclosed outside this atom's declared write boundary.
+CLOSURE_RETRY = "the external dependency ships"
+
+
+def admitted_issue(subject: str, terminal_class: str, **overrides: str) -> schedule_domain.AdmittedIssue:
+    """One admitted issue carrying a receipted terminal class, with a retry condition whenever the
+    class is one the generation may have to leave again."""
+    return dataclasses.replace(
+        schedule_domain.AdmittedIssue(
+            subject=subject,
+            terminal_class=terminal_class,
+            receipt=f"NOODLES_TERMINAL_CLASS: subject {subject} class {terminal_class}",
+            retry_condition="" if terminal_class == "RESOLVED" else CLOSURE_RETRY,
+        ),
+        **overrides,
+    )
+
+
+def closed_generation() -> schedule_domain.GenerationState:
+    """A generation with one issue per terminal class and every liveness conjunct satisfied."""
+    return schedule_domain.GenerationState(
+        issues=tuple(
+            admitted_issue(f"ed3c/noodles#{index}", name)
+            for index, name in enumerate(schedule_domain.TERMINAL_CLASSES, start=1)
+        )
+    )
+
+
+class EightClassClosureTests(unittest.TestCase):
+    def test_generation_with_one_issue_per_class_is_closed(self) -> None:
+        verdict = schedule_domain.generation_closure(closed_generation())
+        self.assertEqual(verdict.blockers, ())
+        self.assertTrue(verdict.closed)
+
+    def test_the_fixture_covers_every_declared_terminal_class(self) -> None:
+        covered = {item.terminal_class for item in closed_generation().issues}
+        self.assertEqual(covered, set(schedule_domain.TERMINAL_CLASSES))
+
+    def test_removing_any_one_receipt_flips_the_predicate_open_with_that_issue_named(self) -> None:
+        base = closed_generation()
+        for index, item in enumerate(base.issues):
+            with self.subTest(terminal_class=item.terminal_class):
+                planted = dataclasses.replace(
+                    base,
+                    issues=base.issues[:index] + (dataclasses.replace(item, receipt=""),) + base.issues[index + 1 :],
+                )
+                verdict = schedule_domain.generation_closure(planted)
+                self.assertFalse(verdict.closed)
+                self.assertTrue(any(item.subject in blocker for blocker in verdict.blockers))
+                self.assertTrue(any(blocker.startswith("terminal_classification:") for blocker in verdict.blockers))
+
+    def test_a_non_resolved_class_without_a_retry_condition_holds_closure_open(self) -> None:
+        base = closed_generation()
+        for index, item in enumerate(base.issues):
+            if item.terminal_class == "RESOLVED":
+                continue
+            with self.subTest(terminal_class=item.terminal_class):
+                planted = dataclasses.replace(
+                    base,
+                    issues=base.issues[:index]
+                    + (dataclasses.replace(item, retry_condition=" "),)
+                    + base.issues[index + 1 :],
+                )
+                verdict = schedule_domain.generation_closure(planted)
+                self.assertFalse(verdict.closed)
+                self.assertTrue(any("no named retry condition" in blocker for blocker in verdict.blockers))
+
+    def test_an_unclassified_issue_holds_closure_open_and_is_named(self) -> None:
+        state = schedule_domain.GenerationState(issues=(schedule_domain.AdmittedIssue("ed3c/noodles#500"),))
+        verdict = schedule_domain.generation_closure(state)
+        self.assertFalse(verdict.closed)
+        self.assertEqual(verdict.blockers, ("terminal_classification: ed3c/noodles#500 carries no terminal class",))
+
+    def test_an_empty_generation_is_closed(self) -> None:
+        self.assertTrue(schedule_domain.generation_closure(schedule_domain.GenerationState()).closed)
+
+
+class ClosureMasqueradeTests(unittest.TestCase):
+    """BLOCKED_EXTERNAL can never satisfy the RESOLVED arm."""
+
+    def test_external_blockage_presented_as_resolved_is_a_validator_error(self) -> None:
+        planted = admitted_issue("ed3c/noodles#501", "RESOLVED", external_blocker="upstream poteto/noodle release")
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.generation_closure(schedule_domain.GenerationState(issues=(planted,)))
+        message = str(caught.exception)
+        self.assertIn("ed3c/noodles#501", message)
+        self.assertIn("RESOLVED", message)
+
+    def test_the_same_blockage_declared_honestly_is_admitted(self) -> None:
+        """The planted control's other direction: the refusal fires on the LIE, not on the blocker."""
+        honest = admitted_issue(
+            "ed3c/noodles#501", "BLOCKED_EXTERNAL", external_blocker="upstream poteto/noodle release"
+        )
+        self.assertTrue(schedule_domain.generation_closure(schedule_domain.GenerationState(issues=(honest,))).closed)
+
+    def test_an_undeclared_terminal_class_is_a_validator_error(self) -> None:
+        planted = admitted_issue("ed3c/noodles#502", "PROBABLY_FINE")
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.generation_closure(schedule_domain.GenerationState(issues=(planted,)))
+        self.assertIn("PROBABLY_FINE", str(caught.exception))
+
+    def test_a_resolved_issue_with_no_blocker_is_admitted(self) -> None:
+        self.assertEqual(
+            schedule_domain.terminal_classification_errors((admitted_issue("ed3c/noodles#503", "RESOLVED"),)), []
+        )
+
+
+class ClosureLivenessConjunctTests(unittest.TestCase):
+    """One fixture per liveness conjunct, each independently holding closure open with itself named."""
+
+    def assert_conjunct(self, conjunct: str, **override: object) -> None:
+        base = closed_generation()
+        self.assertTrue(schedule_domain.generation_closure(base).closed, "the base fixture must be closed")
+        verdict = schedule_domain.generation_closure(dataclasses.replace(base, **override))
+        self.assertFalse(verdict.closed)
+        self.assertTrue(
+            any(blocker.startswith(f"{conjunct}:") for blocker in verdict.blockers),
+            f"{conjunct} must name itself; got {verdict.blockers}",
+        )
+
+    def test_a_planted_active_lane_holds_closure_open(self) -> None:
+        self.assert_conjunct("no_active_lanes", active_lanes=("lane-a",))
+
+    def test_a_completed_unreconciled_lane_holds_closure_open(self) -> None:
+        self.assert_conjunct("no_unreconciled_lanes", unreconciled_lanes=("lane-b",))
+
+    def test_a_non_empty_landing_train_holds_closure_open(self) -> None:
+        self.assert_conjunct("empty_landing_train", landing_train=("pr-77",))
+
+    def test_an_unaccounted_finding_holds_closure_open(self) -> None:
+        self.assert_conjunct("findings_accounted", unaccounted_findings=("finding-12",))
+
+    def test_a_non_zero_sweeper_balance_holds_closure_open(self) -> None:
+        self.assert_conjunct("sweeper_balance_zero", sweeper_balance=1)
+
+    def test_a_negative_sweeper_balance_holds_closure_open(self) -> None:
+        """Balance is a balance, not a count: an over-reconciled sweeper is as unreconciled as an
+        under-reconciled one, and reading it as `> 0` would silently admit the negative half."""
+        self.assert_conjunct("sweeper_balance_zero", sweeper_balance=-1)
+
+    def test_an_uncommitted_ledger_holds_closure_open(self) -> None:
+        self.assert_conjunct("ledgers_committed", uncommitted_ledgers=("evidence-ledger",))
+
+    def test_every_declared_conjunct_has_a_fixture(self) -> None:
+        """Seven conjuncts; the classification arm is covered by EightClassClosureTests above."""
+        planted = {
+            "no_active_lanes": {"active_lanes": ("lane-a",)},
+            "no_unreconciled_lanes": {"unreconciled_lanes": ("lane-b",)},
+            "empty_landing_train": {"landing_train": ("pr-77",)},
+            "findings_accounted": {"unaccounted_findings": ("finding-12",)},
+            "sweeper_balance_zero": {"sweeper_balance": 1},
+            "ledgers_committed": {"uncommitted_ledgers": ("evidence-ledger",)},
+        }
+        self.assertEqual(set(planted) | {"terminal_classification"}, set(schedule_domain.CLOSURE_CONJUNCTS))
+        for conjunct, override in planted.items():
+            with self.subTest(conjunct=conjunct):
+                self.assert_conjunct(conjunct, **override)
+
+    def test_conjuncts_accumulate_rather_than_short_circuiting(self) -> None:
+        """The output names EVERY blocker; a predicate that stops at the first one hides the rest."""
+        verdict = schedule_domain.generation_closure(
+            dataclasses.replace(closed_generation(), active_lanes=("lane-a",), sweeper_balance=3)
+        )
+        self.assertEqual(
+            {blocker.split(":", 1)[0] for blocker in verdict.blockers},
+            {"no_active_lanes", "sweeper_balance_zero"},
+        )
+
+
+class DeferredBudgetConsumerTests(unittest.TestCase):
+    """ed3c/noodles#407's classification duty, asserted from the consumer side.
+
+    The producer proves it emits DEFERRED_BUDGET receipts; this proves the predicate ACCEPTS them.
+    A producer whose output no consumer reads is not a duty, it is a decoration."""
+
+    def test_a_budget_deferral_classification_closes_its_issue(self) -> None:
+        produced = schedule_domain.budget_deferral_classifications(
+            provider_reading("budget_exhausted"), ("ed3c/noodles#407",), "core quota bucket refills"
+        )
+        state = schedule_domain.GenerationState(
+            issues=tuple(
+                schedule_domain.AdmittedIssue(
+                    subject=item.subject,
+                    terminal_class=item.terminal_class,
+                    receipt=item.receipt,
+                    retry_condition=item.retry_condition,
+                )
+                for item in produced
+            )
+        )
+        self.assertTrue(schedule_domain.generation_closure(state).closed)
+
+    def test_a_budget_deferral_that_classified_nothing_leaves_the_generation_open(self) -> None:
+        state = schedule_domain.GenerationState(issues=(schedule_domain.AdmittedIssue("ed3c/noodles#407"),))
+        verdict = schedule_domain.generation_closure(state)
+        self.assertFalse(verdict.closed)
+        self.assertTrue(any("ed3c/noodles#407" in blocker for blocker in verdict.blockers))
+        self.assertTrue(schedule_domain.budget_deferral_errors(("ed3c/noodles#407",), ()))
+
+
+class ClosureZeroWriteTests(unittest.TestCase):
+    """"The predicate performs zero writes, asserted by its fixtures" - reduced physically."""
+
+    def test_evaluating_the_predicate_writes_nothing_to_the_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-408-zero-write-", ignore_cleanup_errors=True) as name:
+            sandbox = Path(name)
+            before = sorted(path.relative_to(sandbox) for path in sandbox.rglob("*"))
+            cwd = Path.cwd()
+            os.chdir(sandbox)
+            try:
+                schedule_domain.generation_closure(closed_generation())
+                schedule_domain.generation_closure(
+                    dataclasses.replace(closed_generation(), active_lanes=("lane-a",), sweeper_balance=2)
+                )
+                schedule_domain.terminal_classification_errors(closed_generation().issues)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
+
 
 if __name__ == "__main__":
     unittest.main()
