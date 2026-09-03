@@ -8,6 +8,7 @@ import ast
 import fnmatch
 import json
 import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -570,6 +571,45 @@ def measured_definition_surfaces(root: Path, path: str) -> tuple[dict[str, froze
     return direction, coupled
 
 
+def relocation_seam_errors(coupled: dict[str, frozenset[str]], owners: dict[str, tuple[str, ...]]) -> list[str]:
+    """ed3c/noodles#326's "ownership never erases a disclosed seam", widened by ed3c/noodles#436 for
+    the sole coupler.
+
+    The law: for every repo-local module the engine root couples to, at least one definition the
+    owner map does NOT own still couples to it, so relocating a whole owned group leaves the import -
+    and therefore ed3c/noodles#276's counted edge - exactly where it was. A seam that moves no edge
+    is not a seam, which is why ed3c/noodles#326's moved record is empty.
+
+    ed3c/noodles#394 measured the case where that law and the drain rule
+    (`test_a_measured_owner_is_owned_in_place_rather_than_left_at_the_engine_root`) have an EMPTY
+    intersection: coupling `landing_train` to `verified_batch.py` narrows its admitting set to
+    `{verify}`, a non-empty proper subset, so the drain rule REQUIRES owning it - and owning it
+    empties this rule's survivor set, because it is that module's ONLY coupler. No assignment of that
+    one definition satisfies both, and no candidate can widen its way out from inside its own PR:
+    `pull_request_target` runs the default branch's copy of this module against it, which is why the
+    widening lands here first and alone (ed3c/noodles#436) and the coupling cites it afterwards.
+
+    The widening is exactly one case wide - a module with exactly ONE coupler, which is owned - and
+    it keeps what the law protects rather than excusing it: there one definition IS the whole seam,
+    so relocating it carries the import along and the edge is disclosed at the destination instead of
+    disappearing. Two or more owned couplers stay refused: an owned group is not the module's
+    boundary there, nothing measures which destination the import would follow, and that ambiguity is
+    what ed3c/noodles#326 exists to name.
+
+    Ceiling, stated rather than implied: this does not re-check that the sole coupler's owning
+    components admit the module. It does not need to -
+    `test_no_owner_entry_claims_a_component_the_measurement_excludes` holds every owner entry to
+    `direction`, which is already intersected with the admitting set of every module the definition
+    couples to, so an owner that could carry the edge off the disclosed surface reds there first."""
+    errors: list[str] = []
+    for module in sorted({item for names in coupled.values() for item in names}):
+        couplers = sorted(name for name, names in coupled.items() if module in names)
+        if len(couplers) == 1 or any(name not in owners for name in couplers):
+            continue
+        errors.append(f"every definition coupling to {module} is owned ({', '.join(couplers)}): that is a measured seam")
+    return errors
+
+
 class DefinitionDispositionTests(unittest.TestCase):
     """ed3c/noodles#326: the ownership gravity-well drain, judged against the measurements it consumed.
 
@@ -652,11 +692,12 @@ class DefinitionDispositionTests(unittest.TestCase):
         repo-local module noodles.py couples to, at least one definition the owner map does NOT own
         still couples to it, so relocating a whole owned group leaves the import - and therefore the
         counted edge - exactly where it was. That is why the atom's moved record is empty. It is a
-        measurement rather than a scope decision, and it reds the day it stops being true."""
-        for module in sorted({item for names in self.coupled.values() for item in names}):
-            survivors = sorted(name for name, names in self.coupled.items() if module in names and name not in self.owners)
-            with self.subTest(module=module):
-                self.assertTrue(survivors, f"every definition coupling to {module} is owned: that is a measured seam")
+        measurement rather than a scope decision, and it reds the day it stops being true.
+
+        ed3c/noodles#436 moved the rule itself into `relocation_seam_errors` so the sole-coupler case
+        it now admits carries its own fixtures (`SoleCouplerRelocationTests`); the shipped tree is
+        judged by exactly the rule those fixtures drive, not by a second copy of it."""
+        self.assertEqual(relocation_seam_errors(self.coupled, self.owners), [])
 
     def test_the_unowned_ratchet_sits_at_the_post_drain_floor(self) -> None:
         policy = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text(encoding="utf-8"))
@@ -820,6 +861,93 @@ class DefinitionDispositionTests(unittest.TestCase):
     def test_absent_owner_map_leaves_the_gate_inert(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             self.assertEqual(noodles.definition_disposition_errors(Path(temp)), [])
+
+
+class SoleCouplerRelocationTests(unittest.TestCase):
+    """ed3c/noodles#436: the sole-coupler intersection the two trusted disposition laws could not both
+    admit, reproduced from the tree rather than described.
+
+    The fixture is the real engine root carrying ed3c/noodles#394's coupling - `import
+    verified_batch` plus one reference inside `landing_train` - and the real owner map with that
+    definition owned under `verify`: the exact configuration that lane landed experimentally, read
+    the red from, and reverted. Every value the assertions read is measured off that planted tree by
+    the same `measured_definition_surfaces`/`relocation_seam_errors` pair that judges the shipped
+    tree, so a widening that only worked in a toy shape could not pass here."""
+
+    def planted_coupling_root(self, second_coupler: bool = False) -> Path:
+        """The engine root as the follow-up coupling atom will commit it, in a temporary tree.
+
+        `second_coupler` plants one more OWNED definition coupling to the same module - the single
+        variable between this class's two controls, so the admitted case and the refused case differ
+        by coupler count and by nothing else, not even by which module they are about."""
+        temp = tempfile.TemporaryDirectory(prefix="noodles-sole-coupler-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        shutil.copy2(CANDIDATE_ROOT / "policy/components.json", root / "policy/components.json")
+        for module in CANDIDATE_ROOT.glob("*.py"):
+            shutil.copy2(module, root / module.name)
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        body = ast.parse(source).body
+        train = next(item for item in body if getattr(item, "name", "") == "landing_train")
+        imports = max(item.end_lineno or 0 for item in body if isinstance(item, (ast.Import, ast.ImportFrom)))
+        lines = source.splitlines()
+        lines.insert(train.body[0].lineno - 1, "    verified_batch.construct_batch  # planted ed3c/noodles#394 coupling")
+        lines.insert(imports, "import verified_batch")
+        if second_coupler:
+            lines += ["", "", "def planted_second_coupler() -> None:", "    verified_batch.construct_batch"]
+        (root / "noodles.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        payload = json.loads((CANDIDATE_ROOT / noodles.COMPONENT_OWNER_MAP_PATH).read_text(encoding="utf-8"))
+        owners = payload["owners"]["noodles.py"]
+        owners["landing_train"] = ["verify"]
+        if second_coupler:
+            owners["planted_second_coupler"] = ["verify"]
+        (root / noodles.COMPONENT_OWNER_MAP_PATH).write_text(json.dumps(payload), encoding="utf-8")
+        return root
+
+    def test_the_verified_batch_coupling_the_394_lane_deadlocked_on_is_admitted(self) -> None:
+        """Both horns of the contradiction measured on one tree, then the widened rule over it.
+
+        Horn 1, the drain rule: `landing_train`'s admitting set is now a non-empty PROPER subset of
+        the components that admit noodles.py, so `test_a_measured_owner_is_owned_in_place...`
+        requires it in the owner map - which this fixture's map has.
+        Horn 2, this rule before the widening: `verified_batch.py`'s coupler list is exactly that one
+        owned definition, so the survivor list the old form asserted truthy comes back EMPTY. That
+        pair is the deadlock; with the widening the same measurement returns no error."""
+        root = self.planted_coupling_root()
+        direction, coupled = measured_definition_surfaces(root, "noodles.py")
+        owners = noodles.component_owner_map(root)["noodles.py"]
+        universe = frozenset(
+            name
+            for name, globs in noodles.component_map(root).items()
+            if globs != ["*"] and any(fnmatch.fnmatchcase("noodles.py", glob) for glob in globs)
+        )
+        couplers = sorted(name for name, names in coupled.items() if "verified_batch.py" in names)
+
+        self.assertEqual(couplers, ["landing_train"])
+        self.assertIn("landing_train", owners)
+        self.assertTrue(direction["landing_train"])
+        self.assertLess(direction["landing_train"], universe)
+        self.assertEqual([name for name in couplers if name not in owners], [])
+        self.assertEqual(relocation_seam_errors(coupled, owners), [])
+
+    def test_planted_negative_a_second_owned_coupler_to_the_same_module_is_refused_exactly_as_before(self) -> None:
+        """The direction the widening does NOT open, one variable away from the case it does.
+
+        Same module, same owner map, one more owned coupler: now relocating the owned group really
+        would erase the disclosed edge, because the group is no longer the module's boundary and
+        nothing measures which destination the import would follow. It reds exactly as it did before
+        ed3c/noodles#436. The widening is a coupler count, not a module allow-list - which is why
+        this control plants its second coupler rather than naming some other module the real tree
+        happens to couple twice today."""
+        root = self.planted_coupling_root(second_coupler=True)
+        _, coupled = measured_definition_surfaces(root, "noodles.py")
+        owners = noodles.component_owner_map(root)["noodles.py"]
+        couplers = sorted(name for name, names in coupled.items() if "verified_batch.py" in names)
+
+        self.assertEqual(couplers, ["landing_train", "planted_second_coupler"])
+        self.assertEqual([name for name in couplers if name not in owners], [])
+        self.assertTrue([error for error in relocation_seam_errors(coupled, owners) if "verified_batch.py" in error])
 
 
 def mutate_definition(source: str, name: str) -> str:
