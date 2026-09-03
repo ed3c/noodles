@@ -864,6 +864,22 @@ class RepositoryGateTests(unittest.TestCase):
         for executable in ("noodles.py", "feature_contract.py"):
             self.assertNotIn("#112", (CANDIDATE_ROOT / executable).read_text())
 
+    def test_trusted_transition_rule_carries_its_physical_receipt(self) -> None:
+        # constraint: ed3c/noodles#274 - the staged-transition rule's one paid instance lives only in
+        # constraint: the bodies of ed3c/noodles#252 and #253. When those close, the next lane
+        # constraint: re-derives the pattern from its own red CI run. The receipt is asserted inside
+        # constraint: the RULE'S OWN PARAGRAPH rather than anywhere in the file, because a receipt
+        # constraint: filed elsewhere in a 400-line contract is exactly the separation this atom cures.
+        # constraint: assertIn only - a strict-equal against a literal reachable from CANDIDATE_ROOT
+        # constraint: is what tests/test_trusted_literals.py sweeps, and its ledger lives in policy/,
+        # constraint: outside this atom's declared write-boundary.
+        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        anchor = "exactly one supported path, the staged transition"
+        paragraph = next((block for block in system_contract.split("\n\n") if anchor in block), "")
+        self.assertIn(anchor, paragraph)
+        for receipt in ("ed3c/noodles#129", "33366751879", ".trusted/tests/test_noodles.py:298"):
+            self.assertIn(receipt, paragraph)
+
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
