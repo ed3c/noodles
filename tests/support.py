@@ -666,13 +666,53 @@ def cursor_pstack_fixture() -> tuple[tempfile.TemporaryDirectory[str], Path]:
     return temp, candidate
 
 
+# constraint: ed3c/noodles#359 - three attempts, because the observed rate is a low-single-digit
+# constraint: percentage per clone (see clone_fixture) and a fixture that burns a whole hosted job on
+# constraint: a 1-in-a-million triple is not cheaper than one that retries twice.
+FIXTURE_CLONE_ATTEMPTS = 3
+
+
+def clone_fixture(source: Path, destination: Path, cwd: Path) -> None:
+    """Clone a fixture repository in a form a concurrent write into `source`'s git dir cannot red.
+
+    ed3c/noodles#359 - the setup-side sibling of the ed3c/noodles#319 teardown race. The wave-18 tail
+    lost a `candidate-self-tests` run at SETUP to `git clone ... fatal: hardlink different from
+    source`; the teardown cure is scoped to cleanup and explicitly does not reach here.
+
+    The reproduction the issue's Goal asks for was run - 150 clones of a locally-written repo against
+    a thread committing, repacking and pruning it, per form - and it kills the obvious cure. The
+    default hardlinking form failed 4/150, three of them the exact recorded `fatal: hardlink
+    different from source` (on a `.pack`, an `.idx` and `objects/info/commit-graph`). `--no-hardlinks`
+    failed 3/150, with `failed to copy file to '...': No such file or directory` and one
+    `update_ref failed ... nonexistent object`. Disabling hardlinks MOVES the failure, it does not
+    remove it, so shipping that flag would have been a cure carrying a receipt for another mechanism.
+    `--no-local` is no better: it hands the same racing object store to `upload-pack`.
+
+    What every observed form has in common is that the failure is in ACQUIRING the source's objects,
+    not in what the clone means, and setup is not part of what any control asserts - the same reason
+    ed3c/noodles#319 gives for teardown. So the disposition, not the mechanism, is fixed: a clone that
+    lost the race leaves nothing behind and is taken again. A source that is genuinely broken still
+    fails, `FIXTURE_CLONE_ATTEMPTS` times, and `cmd` raises with git's own diagnostic.
+
+    Ceiling, stated rather than implied: this makes the fixture race-immune, not git. A production
+    clone racing a writer is a different problem with a different owner."""
+    for attempt in range(FIXTURE_CLONE_ATTEMPTS):
+        try:
+            cmd(["git", "clone", "-q", str(source), str(destination)], cwd)
+            return
+        except AssertionError:
+            if attempt == FIXTURE_CLONE_ATTEMPTS - 1:
+                raise
+            shutil.rmtree(destination, ignore_errors=True)
+
+
 def control_checkout_fixture(source: Path = CANDIDATE_ROOT) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
     temp = tempfile.TemporaryDirectory(prefix="noodles-control-checkout-test-", ignore_cleanup_errors=True)
     base = Path(temp.name)
     provider = base / "provider"
     copy_tracked(source, provider)
     control = base / "control"
-    cmd(["git", "clone", "-q", str(provider), str(control)], base)
+    clone_fixture(provider, control, base)
     cmd(["git", "config", "user.name", "tests"], control)
     cmd(["git", "config", "user.email", "tests@example.invalid"], control)
     return temp, control, provider
