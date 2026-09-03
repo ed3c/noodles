@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows: [verify]
     types: [completed]
+  issues:
+    types: [labeled]
 
 permissions:
   actions: read
@@ -75,3 +77,40 @@ jobs:
           NOODLES_TRAIN_PUSH_TOKEN: ${{ steps.train-token.outputs.token }}
           NOODLES_LAND_RECEIPT: ${{ github.workspace }}/receipt/noodles-receipt.json
         run: python3 noodles.py github train
+
+  protection-apply:
+    if: >-
+      github.actor == github.repository_owner &&
+      github.event.issue.number == 389 &&
+      github.event.issue.state == 'open' &&
+      github.event.label.name == 'protection-apply'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout trusted default branch without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Mint repository-scoped protection writer token
+        id: protection-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.NOODLES_APP_CLIENT_ID }}
+          private-key: ${{ secrets.NOODLES_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: write
+
+      - name: Apply code-managed protection and read it back
+        env:
+          GH_TOKEN: ${{ steps.protection-token.outputs.token }}
+        run: python3 noodles.py github protect apply --repository "$GITHUB_REPOSITORY"
