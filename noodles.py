@@ -2862,7 +2862,7 @@ def train_rebase(workdir: Path, remote_url: str, default_branch: str, head_ref: 
     return {"rebased": True, "base_sha": base_sha, "new_head": new_head}
 
 
-def landing_train(root: Path, remote_url: str | None = None, closed_subject: str | None = None) -> dict[str, Any]:
+def landing_train(root: Path, remote_url: str | None = None, closed_subject: str | None = None, landed_pr: int = 0) -> dict[str, Any]:
     """The mechanical train, plus the predecessor-closure nudge when the same run just closed a subject.
 
     A dependent is nudged only while it is genuinely behind the default branch, which is a provider fact
@@ -2872,7 +2872,13 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
     nothing. No marker, no counter, no state file. Nudged pull requests are withheld from the ordinary
     selection because the listing that fed it still names their pre-nudge heads.
 
-    `dependents` and `push` are nested rather than module-level on purpose: each has exactly one caller,
+    Before either, the clear-queue path: when this land carried a whole pre-stacked batch into the
+    default branch, `batch` finishes the five-action bundle for every member it carried, under one
+    batch manifest, instead of re-pushing and re-verifying each of them. `landed_pr` is
+    the land receipt's own pull request; without it - any train run outside a land job - the batch
+    path costs nothing and the single-head path below is byte-identical to what it always was.
+
+    `dependents`, `remote`, `carried`, `batch` and `push` are nested rather than module-level on purpose: each has exactly one caller,
     and `unowned_top_level_definitions` ratchets this file's top-level count against a ceiling a candidate
     cannot legally raise - that function's own docstring records the trusted-transition deadlock - so an
     atom that must not move that number keeps its helpers inside the function that uses them."""
@@ -2926,22 +2932,24 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
             declared.append(pr)
         return declared
 
-    def push(pr: dict[str, Any]) -> dict[str, Any]:
-        """One mechanical rebase-push of one pull request, carrying the shipped fail-back diagnostic.
-
-        The push token is resolved here rather than by the caller so an idle train - and a train whose
-        nudge scan found nothing - still costs no token."""
+    def remote() -> str:
+        """The push/fetch URL, resolved on first use so an idle train still costs no token."""
         nonlocal remote_url
-        head_ref = str(pr["head"]["ref"])
-        head_sha = str(pr["head"]["sha"])
-        pr_number = int(pr["number"])
         if remote_url is None:
             token = os.getenv("NOODLES_TRAIN_PUSH_TOKEN", "").strip()
             if not token:
                 raise GateError("landing train push token absent: NOODLES_TRAIN_PUSH_TOKEN must carry the scoped Contents-write App token")
             remote_url = f"https://x-access-token:{token}@github.com/{repository}"
+        return remote_url
+
+    def push(pr: dict[str, Any]) -> dict[str, Any]:
+        """One mechanical rebase-push of one pull request, carrying the shipped fail-back diagnostic."""
+        head_ref = str(pr["head"]["ref"])
+        head_sha = str(pr["head"]["sha"])
+        pr_number = int(pr["number"])
+        url = remote()
         with tempfile.TemporaryDirectory(prefix="noodles-train-") as temp_name:
-            outcome = train_rebase(Path(temp_name), remote_url, default_branch, head_ref, head_sha)
+            outcome = train_rebase(Path(temp_name), url, default_branch, head_ref, head_sha)
         receipt = {
             "repository": repository,
             "pr_number": pr_number,
@@ -2966,22 +2974,197 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
             return {"action": "failback", "conflicts": outcome["conflicts"], **receipt}
         return {"action": "rebased", "new_head": outcome["new_head"], **receipt}
 
+    def carried() -> list[dict[str, Any]]:
+        """Eligible open pull requests whose EXACT verified head the default branch already carries.
+
+        Same eligibility `train_select` reads (open, non-draft, based on the default branch, head in
+        this repository, Issue open at `awaiting_land`) off the same compare call, plus one fact more
+        from the same payload: `ahead_by == 0` means the default branch contains every commit of that
+        head. Such a head is not a candidate to rebase - a rebase of it is empty and the verify run it
+        provokes re-proves a tree that already landed. A payload that does not carry `ahead_by` is
+        read as not-carried, never as carried: the whole batch degrades rather than closing a head on
+        an absent field.
+
+        ponytail: this walks the same queue `train_select` walks and pays the same per-candidate Issue
+        read and compare, so a land job's train costs about twice the provider reads it used to. It is
+        bounded by the open queue and only spent inside a land job. Upgrade path if that bound stops
+        holding: one pass feeding both, which means moving `train_select`'s own loop in here."""
+        members: list[dict[str, Any]] = []
+        for pr in sorted(pulls, key=lambda item: (str(item.get("created_at") or ""), int(item.get("number") or 0))):
+            head = pr.get("head") or {}
+            if pr.get("state") != "open" or pr.get("draft"):
+                continue
+            if (pr.get("base") or {}).get("ref") != default_branch or (head.get("repo") or {}).get("full_name") != repository:
+                continue
+            try:
+                subject_value = parse_pr_reference(pr.get("body") or "")
+                issue = issue_read(subject_value)
+                contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
+            except GateError:
+                continue
+            if issue.get("state") != "open" or contract["state"] != "awaiting_land":
+                continue
+            compare = gh_api(f"repos/{repository}/compare/{default_branch}...{str(head.get('sha') or '')}")
+            ahead = (compare or {}).get("ahead_by")
+            if not isinstance(ahead, int) or isinstance(ahead, bool) or ahead != 0:
+                continue
+            members.append(pr)
+        return members
+
+    def batch() -> list[dict[str, Any]]:
+        """Complete the five-action bundle for every head this one landing already carried, once.
+
+        The strict treadmill this deletes: with strict up-to-date required checks, each land advances
+        the default branch and un-greens every queued sibling, so a queue of depth n costs ~n^2/2
+        verify runs to clear. The ship stage's pre-stack is what makes the escape physical - a wave's
+        green candidates are stacked in landing order and ONE verify runs on the stacked tip - so when
+        that tip lands, every earlier member's exact verified commit is already inside the default
+        branch. Those members need no rebase and no second verify; they need their ceremony finished.
+        n cycles become ~1 cycle per batch, at exactly the moment queues form.
+
+        The batch manifest is the ship-stage pre-stack's own shape: an ordered member list, the base
+        it was stacked on, and the stacked tip. All three are read off the provider - the ordered
+        queue, the merge commit's first parent, the merge commit itself - and then BOUND to Git object
+        bytes fetched from the remote before anything is closed: the tip's parent pair must be the
+        base and the landed head the provider named, the tip's tree must be the tree the provider
+        named, and every member head must be an ancestor of the tip. A head is closed on two
+        independent arrivals or not at all: `ahead_by` is a provider compare, the ancestry is the
+        object graph, and neither is derived from the other.
+
+        Refusing costs nothing and strands nobody: every one of those checks returns an empty batch,
+        which leaves each member exactly where it was - open, `awaiting_land`, selectable on the very
+        next cycle - and the byte-identical single-head path below takes over in the same run. That is
+        also what a member which conflicted at pre-stack time gets: it never entered the stack, so the
+        default branch does not carry it, so it is not a member.
+
+        ponytail: `verified_batch` builds the canonical ordered identity for exactly this manifest
+        shape and its refusals (wrong base, wrong count, duplicate head, reordered members) are what
+        should validate it here. It is NOT wired into this path, and cannot be in one atom: it is a
+        `verify`-only module, so the first noodles.py definition to couple to it must be owned by
+        `verify` (test_a_measured_owner_is_owned_in_place_rather_than_left_at_the_engine_root) AND
+        must leave an unowned coupler behind (test_relocating_any_owned_group_would_remove_no_
+        disclosed_edge) - a contradiction no assignment satisfies, so the supported cure is the staged
+        transition those two tests describe, on the default branch, before the coupling lands. Until
+        then the identity is pinned against the capability at the test boundary, and this path binds
+        the same manifest to the same object graph. Upgrade path: ed3c/noodles#394's second atom."""
+        if landed_pr <= 0:
+            return []
+        members = carried()
+        if not members:
+            return []
+        tip_sha = str(((gh_api(f"repos/{repository}/branches/{default_branch}") or {}).get("commit") or {}).get("sha") or "")
+        tip_commit = gh_api(f"repos/{repository}/git/commits/{tip_sha}") or {}
+        parents = [str(parent.get("sha") or "") for parent in tip_commit.get("parents") or []]
+        tip_tree = str((tip_commit.get("tree") or {}).get("sha") or "")
+        if len(parents) != 2 or not tip_tree:
+            return []
+        ordered = [*(str(pr["head"]["sha"]) for pr in members), parents[1]]
+        # constraint: the same duplicate-head refusal the landed capability asserts: an ordered member
+        # constraint: list naming one head twice is not an identity, and two pull requests sharing a head
+        # constraint: is a queue this path must hand back rather than close.
+        if len(set(ordered)) != len(ordered):
+            return []
+        manifest = {
+            "base_sha": parents[0],
+            "members": [
+                *({"pr_number": int(pr["number"]), "head_sha": str(pr["head"]["sha"])} for pr in members),
+                {"pr_number": landed_pr, "head_sha": parents[1]},
+            ],
+            "stacked_tip": tip_sha,
+        }
+        url = remote()
+        with tempfile.TemporaryDirectory(prefix="noodles-batch-") as temp_name:
+            workdir = Path(temp_name)
+            git(workdir, "init", "--quiet", "--initial-branch", "noodles-batch-scratch")
+            git(workdir, "remote", "add", "origin", url)
+            git(
+                workdir,
+                "fetch",
+                "--quiet",
+                "origin",
+                f"+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}",
+                *(f"+refs/heads/{str(pr['head']['ref'])}:refs/remotes/origin/{str(pr['head']['ref'])}" for pr in members),
+            )
+            observed = git(workdir, "rev-list", "--parents", "-n", "1", tip_sha, check=False).split()
+            if observed != [tip_sha, *parents]:
+                return []
+            if git(workdir, "rev-parse", f"{tip_sha}^{{tree}}", check=False) != tip_tree:
+                return []
+            if any(not git_ok(workdir, "merge-base", "--is-ancestor", head, tip_sha) for head in ordered):
+                return []
+        landed: list[dict[str, Any]] = []
+        for pr, head_sha in zip(members, ordered):
+            pr_number = int(pr["number"])
+            subject_value = parse_pr_reference(pr.get("body") or "")
+            subject = parse_subject(subject_value)
+            body = issue_read(subject_value).get("body") or ""
+            body = replace_marker(body, "state", "landed")
+            body = replace_marker(body, "landed_pr", f"{repository}#{pr_number}")
+            body = replace_marker(body, "head", head_sha)
+            body = replace_marker(body, "merge", tip_sha)
+            gh_api(f"repos/{subject.repo}/issues/{subject.number}", method="PATCH", payload={"body": body})
+            gh_api(f"repos/{repository}/pulls/{pr_number}", method="PATCH", payload={"state": "closed"})
+            gh_api(
+                f"repos/{subject.repo}/issues/{subject.number}",
+                method="PATCH",
+                payload={"state": "closed", "state_reason": "completed"},
+            )
+            closed = issue_read(subject_value)
+            closed_contract = parse_issue_contract(closed.get("body") or "", expected_subject=subject_value)
+            if closed.get("state") != "closed" or closed_contract["state"] != "landed":
+                raise GateError(f"verified batch closure readback failed for {subject_value}")
+            # constraint: same order and same fail-open shape land_pull_request uses - the closure above is
+            # constraint: already durable provider state, so an additive N-class anchor may never report a
+            # constraint: completed land as failed. The digest hashes the merged body's raw UTF-8 bytes.
+            try:
+                pr_readback = gh_api(f"repos/{repository}/pulls/{pr_number}")
+                merged_at = str(pr_readback.get("merged_at") or "") or str((tip_commit.get("committer") or {}).get("date") or "")
+                if not merged_at:
+                    raise GateError("batch member readback carries no merge timestamp")
+                anchor = post_receipt_anchor(
+                    repository,
+                    pr_number,
+                    tip_sha,
+                    merged_at,
+                    hashlib.sha256(str(pr_readback.get("body") or "").encode("utf-8")).hexdigest(),
+                )
+            except GateError:
+                anchor = "failed"
+            landed.append(
+                {
+                    "action": "batch-landed",
+                    "repository": repository,
+                    "pr_number": pr_number,
+                    "issue_subject": subject_value,
+                    "head_sha": head_sha,
+                    "merge_sha": tip_sha,
+                    "issue_closed": True,
+                    "receipt_anchor": anchor,
+                    "batch": manifest,
+                }
+            )
+        return landed
+
+    batched = batch()
+    batched_numbers = {int(item["pr_number"]) for item in batched}
     nudged: list[dict[str, Any]] = []
     for dependent in dependents() if closed_subject else ():
+        if int(dependent.get("number") or 0) in batched_numbers:
+            continue
         compare = gh_api(f"repos/{repository}/compare/{default_branch}...{str((dependent.get('head') or {}).get('sha') or '')}")
         if int((compare or {}).get("behind_by") or 0) <= 0:
             continue
         nudged.append({"nudged_for": closed_subject, **push(dependent)})
-    nudged_numbers = {int(item["pr_number"]) for item in nudged}
+    withheld = batched_numbers | {int(item["pr_number"]) for item in nudged}
     selected = train_select(
         repository,
         default_branch,
-        [pr for pr in pulls if int(pr.get("number") or 0) not in nudged_numbers],
+        [pr for pr in pulls if int(pr.get("number") or 0) not in withheld],
         str(policy["required_check"]),
     )
     if selected is None:
-        return {"action": "idle", "repository": repository, "selected": None, "nudged": nudged}
-    return {"nudged": nudged, **push(selected)}
+        return {"action": "idle", "repository": repository, "selected": None, "nudged": nudged, "batch": batched}
+    return {"nudged": nudged, "batch": batched, **push(selected)}
 
 
 def http_json(url: str, *, payload: Any | None = None) -> Any:
@@ -4428,11 +4611,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # constraint: merged that exact head and read its closure back.
                 land_receipt = os.getenv("NOODLES_LAND_RECEIPT", "").strip()
                 closed_subject = ""
+                landed_pr = 0
                 if land_receipt:
-                    closed_subject = str(load_json(Path(land_receipt)).get("issue_subject") or "")
+                    receipt = load_json(Path(land_receipt))
+                    closed_subject = str(receipt.get("issue_subject") or "")
                     if not closed_subject:
                         raise GateError("landing train receipt carries no issue_subject; refusing to nudge dependents of an unnamed closure")
-                print(json.dumps(landing_train(root, closed_subject=closed_subject or None), indent=2, sort_keys=True))
+                    # constraint: ed3c/noodles#394 - the batch identity names the head this run just landed by
+                    # constraint: its own pull request number, and the same receipt already carries it. Absent
+                    # constraint: or unusable is 0, which is the no-batch train, never a guessed member.
+                    landed_pr = int(receipt.get("pr_number") or 0)
+                print(json.dumps(landing_train(root, closed_subject=closed_subject or None, landed_pr=landed_pr), indent=2, sort_keys=True))
                 return 0
         if args.command == "reconcile":
             if args.watch:
