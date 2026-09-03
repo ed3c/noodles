@@ -179,6 +179,22 @@ N_CLASS_EVIDENCE_RE = re.compile(
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".json", ".toml", ".yml", ".yaml", ".txt"}
 EXEC_SUFFIXES = {".py", ".sh"}
 ALLOWED_COMMENT_TAGS = ("# constraint:", "# ponytail:")
+# constraint: ed3c/noodles#413 - the lint policy lives under policy/ rather than at the repository
+# constraint: root so that `verify_repository`'s existing trusted/candidate split carries it for
+# constraint: free, and so that ruff never auto-discovers a candidate-side copy: --config both
+# constraint: names the trusted file and disables upward discovery.
+LINT_POLICY_PATH = "policy/ruff.toml"
+# constraint: the noqa shapes are read out of COMMENT tokens, never off raw lines, so prose in a
+# constraint: docstring that merely names the directive is not mistaken for one - the same tokenize
+# constraint: boundary validate_comment_tags already uses, for the same reason.
+NOQA_DIRECTIVE_RE = re.compile(r"#\s*(?i:noqa)")
+JUSTIFIED_SUPPRESSION_RE = re.compile(r"#\s*(?:constraint|ponytail):\s*(?P<reason>.*?)\s*#\s*(?i:noqa):\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*")
+# constraint: a floor rather than a judgement of the prose: it separates a written reason from the
+# constraint: degenerate one-token justification that satisfies the comment tag and says nothing.
+# constraint: The directive itself is never spelled inside a comment anywhere in this tree - a
+# constraint: comment that names it IS one, both to ruff and to the scan below.
+MIN_SUPPRESSION_REASON = 24
+LINT_FINDING_RE = re.compile(r"^\S.*?:\d+:\d+: ")
 # constraint: this module's own tree carries the one committed task-profile definition it verifies
 # constraint: a target tree against, so a mutated copy's drifted policy still fails closed here.
 ENGINE_ROOT = Path(__file__).resolve().parent
@@ -776,6 +792,65 @@ def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
             if stripped.startswith("#") and not (lineno == 1 and stripped.startswith("#!")) and not stripped.startswith(ALLOWED_COMMENT_TAGS):
                 errors.append(f"untagged comment {other_path}:{lineno}: {stripped}")
     return errors
+# constraint: ed3c/noodles#413 - the syntax coordinate's refusal surface, and the one gate in this
+# constraint: function whose policy is a file rather than a literal. TRUSTED-POLICY INVARIANT: the
+# constraint: config is resolved under `policy_root` and the sources under `root`, which are the
+# constraint: default-branch checkout and the candidate in CI. A candidate that rewrites
+# constraint: policy/ruff.toml is therefore still judged by main's copy - its policy change becomes
+# constraint: authority only from the next PR onward - and passing --config disables ruff's own
+# constraint: upward discovery, so the candidate's copy cannot win by sitting next to the sources
+# constraint: either. That asymmetry is deliberate and is the opposite of the candidate-read gates
+# constraint: above: a lint policy is not a value the candidate legally owns mid-verification.
+def lint_gate_errors(root: Path, policy_root: Path, paths: Iterable[str]) -> list[str]:
+    """Trusted-side ruff findings over the candidate's tracked Python, plus the suppression discipline.
+
+    Two halves, because ruff can only judge one of them. PGH004 (selected in the policy) refuses a
+    blanket `# noqa`, and RUF100 refuses one that suppresses nothing; neither can see whether a
+    suppression carries a REASON. The second half here reads that: a suppression is admissible only
+    inside this repository's already-required comment tag, with written prose before the directive,
+    so `# constraint: <why> # noqa: RULE` is the only shape that passes and the reason sits where the
+    reader of the suppressed line already looks.
+
+    Absences are separate exits rather than a quiet pass: a missing trusted config, an unreadable
+    source, a ruff that will not execute, and a ruff that reported red without emitting a parsable
+    finding each produce their own message. The last of those matters most - ruff pins its own
+    version through `required-version`, so a lane running the wrong version exits non-zero with no
+    findings at all, which must never read as green.
+
+    Non-claim: this proves the pinned ruff found nothing it was configured to look for. The
+    configured set is an adjudicated subset with existing debt frozen at rule granularity, so a green
+    here is not "this file is clean" - it is "this file adds no NEW instance of a rule that measures
+    zero today, and no instance at all of the rules that do"."""
+    config = policy_root / LINT_POLICY_PATH
+    if not config.is_file():
+        return [f"trusted lint policy missing: {config}"]
+    sources = sorted(path for path in paths if path.endswith(".py"))
+    errors: list[str] = []
+    for relative in sources:
+        try:
+            with (root / relative).open("rb") as handle:
+                comments = [(token.start[0], token.string) for token in tokenize.tokenize(handle.readline) if token.type == tokenize.COMMENT]
+        except (OSError, SyntaxError, IndentationError, UnicodeDecodeError, tokenize.TokenizeError) as exc:
+            errors.append(f"lint suppression scan failed for {relative}: {exc}")
+            continue
+        for lineno, comment in comments:
+            if not NOQA_DIRECTIVE_RE.search(comment):
+                continue
+            match = JUSTIFIED_SUPPRESSION_RE.fullmatch(comment.strip())
+            if match is None or len(match["reason"]) < MIN_SUPPRESSION_REASON:
+                errors.append(f"unjustified lint suppression {relative}:{lineno}: {comment.strip()!r} - a suppression is admissible only as '# constraint: <at least {MIN_SUPPRESSION_REASON} characters of why> # noqa: RULE'")
+    if not sources:
+        return errors
+    try:
+        completed = run(["ruff", "check", "--config", str(config), "--no-cache", "--output-format", "concise", *sources], cwd=root, check=False)
+    except OSError as exc:
+        return [*errors, f"lint gate cannot execute the ruff pinned by {LINT_POLICY_PATH}: {exc}"]
+    if completed.returncode not in {0, 1}:
+        return [*errors, f"lint gate could not run ruff pinned by {LINT_POLICY_PATH} (exit {completed.returncode}): {(completed.stderr or completed.stdout).strip()}"]
+    findings = [line.strip() for line in completed.stdout.splitlines() if LINT_FINDING_RE.match(line)]
+    if completed.returncode == 1 and not findings:
+        return [*errors, f"lint gate read ruff exit 1 with no parsable finding, which must not read as green: {(completed.stderr or completed.stdout).strip()}"]
+    return [*errors, *(f"lint {finding}" for finding in findings)]
 
 
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
@@ -858,6 +933,11 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
     errors.extend(skill_contract.validate_test_runner_contract(root))
     errors.extend(validate_comment_tags(root, paths))
+    # constraint: ed3c/noodles#413 - policy_root, not root: the lint policy is the one input here the
+    # constraint: candidate does not own. Every other gate above deliberately reads the candidate's
+    # constraint: own records so a candidate that legitimately moves a value can land it; a candidate
+    # constraint: that widens the lint policy is not moving a value it owns, it is approving itself.
+    errors.extend(lint_gate_errors(root, policy_root, paths))
     # constraint: ed3c/noodles#326 - reads the CANDIDATE's own tree and its own records, the same way
     # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
     # constraint: adds a top-level definition must disposition it in that same commit, and can.
@@ -2527,7 +2607,7 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     # constraint: even observer failure is recorded rather than promoted into a landing refusal.
     try:
         receipt["test_standard_diff"] = skill_contract.test_standard_diff(root, candidate_root, changed_files)
-    except Exception as exc:
+    except Exception as exc:  # constraint: ed3c/noodles#413 - the second live BLE001, disposed rather than narrowed: ed3c/noodles#427 requires this observer's own failure to be RECORDED as N-class metadata and never promoted into a landing refusal, so narrowing the except would convert an unanticipated observer defect into the refusal that clause forbids # noqa: BLE001
         receipt["test_standard_diff"] = {
             "authority": "N",
             "classification": "metadata-only",

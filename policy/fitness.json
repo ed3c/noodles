@@ -13,7 +13,7 @@
     "schedule": 42,
     "verify": 33
   },
-  "max_unowned_top_level_definitions": 119,
+  "max_unowned_top_level_definitions": 120,
   "max_workflows": 5,
   "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",
@@ -65,6 +65,7 @@
     "policy/github.json",
     "policy/ownership-keys.json",
     "policy/providers.lock.json",
+    "policy/ruff.toml",
     "policy/runtime.lock.json",
     "runtime_contract.py",
     "tests/run.sh",

@@ -2062,5 +2062,117 @@ class DaemonLeaseTests(unittest.TestCase):
         self.assertIn("noodles-start lease-child-exited:", str(raised.exception))
 
 
+class LintGateTests(unittest.TestCase):
+    """ed3c/noodles#413 - the syntax coordinate's refusal surface, judged in both directions.
+
+    The gate has two halves that fail differently and are therefore controlled separately: ruff run
+    with the TRUSTED config over the candidate's sources, and the justified-suppression rule that
+    ruff cannot express (PGH004 refuses a code-less directive; nothing in ruff can ask whether a
+    reason was written next to it).
+
+    The trusted-policy leg is the one that matters and the one a fixture can get wrong: it is not
+    enough to show that a violation reds, because a gate that read the candidate's config would red
+    on the same input. The control has to show the SAME candidate tree judged from two different
+    policy roots and disagreeing - trusted-side red, candidate-side green - which is exactly the
+    authority asymmetry the atom claims and the only shape that could distinguish the two readings.
+
+    Ceiling, measured rather than assumed: the issue's wording for the escape hatch is a candidate
+    carrying `ignore = ["ALL"]`. On the pinned ruff 0.15.2 that key does not expand `ALL` and
+    suppresses nothing, so a fixture built on it alone would be a control that controls nothing - it
+    would red from either policy root and prove neither reading. The fixture therefore carries that
+    literal AND `select = []`, which is the working off-switch, so the candidate-side leg is really
+    green and the disagreement is real."""
+
+    SUFFIXED_BLIND_EXCEPT = "def probe() -> None:\n    try:\n        pass\n    except Exception as exc:{suffix}\n        print(exc)\n"
+    CLEAN = "def probe() -> None:\n    print('nothing to refuse here')\n"
+    ESCAPE_HATCH_POLICY = '[lint]\nselect = []\nignore = ["ALL"]\n'
+    REASON = "the listener thread has no other channel back to the assertion"
+
+    def planted(self, source: str, *, candidate_policy: str | None = None) -> tuple[Path, Path, set[str]]:
+        """A trusted root carrying THIS repository's real lint policy, and a separate candidate root."""
+        temp = tempfile.TemporaryDirectory(prefix="noodles-lint-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        trusted, candidate = base / "trusted", base / "candidate"
+        for root in (trusted, candidate):
+            (root / "policy").mkdir(parents=True)
+        landed = (CANDIDATE_ROOT / noodles.LINT_POLICY_PATH).read_text(encoding="utf-8")
+        (trusted / noodles.LINT_POLICY_PATH).write_text(landed, encoding="utf-8")
+        (candidate / noodles.LINT_POLICY_PATH).write_text(candidate_policy or landed, encoding="utf-8")
+        (candidate / "probe.py").write_text(source, encoding="utf-8")
+        return trusted, candidate, {noodles.LINT_POLICY_PATH, "probe.py"}
+
+    def test_a_planted_blind_except_reds_and_the_inverse_edit_restores_green(self) -> None:
+        trusted, candidate, paths = self.planted(self.SUFFIXED_BLIND_EXCEPT.format(suffix=""))
+        errors = noodles.lint_gate_errors(candidate, trusted, paths)
+        self.assertTrue(any("BLE001" in error for error in errors), errors)
+        (candidate / "probe.py").write_text(self.CLEAN, encoding="utf-8")
+        self.assertEqual(noodles.lint_gate_errors(candidate, trusted, paths), [])
+
+    def test_the_candidate_cannot_switch_off_the_policy_that_judges_it(self) -> None:
+        trusted, candidate, paths = self.planted(
+            self.SUFFIXED_BLIND_EXCEPT.format(suffix=""), candidate_policy=self.ESCAPE_HATCH_POLICY
+        )
+        judged_by_trusted = noodles.lint_gate_errors(candidate, trusted, paths)
+        judged_by_candidate = noodles.lint_gate_errors(candidate, candidate, paths)
+        self.assertTrue(any("BLE001" in error for error in judged_by_trusted), judged_by_trusted)
+        self.assertEqual(judged_by_candidate, [])
+
+    def test_a_bare_or_reasonless_suppression_is_refused_and_a_justified_one_passes(self) -> None:
+        trusted, candidate, paths = self.planted(self.SUFFIXED_BLIND_EXCEPT.format(suffix=""))
+        for suffix, expected in (
+            ("  # noqa", "unjustified"),
+            ("  # noqa: BLE001", "unjustified"),
+            ("  # constraint: x # noqa: BLE001", "unjustified"),
+            (f"  # constraint: {self.REASON} # noqa: BLE001", None),
+        ):
+            with self.subTest(suffix=suffix.strip()):
+                (candidate / "probe.py").write_text(self.SUFFIXED_BLIND_EXCEPT.format(suffix=suffix), encoding="utf-8")
+                errors = noodles.lint_gate_errors(candidate, trusted, paths)
+                if expected is None:
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_a_blanket_suppression_is_also_refused_by_the_policy_itself(self) -> None:
+        """The suppression discipline has two independent carriers and neither is the other's proof:
+        the reason rule above is this repository's, PGH004 is ruff's. A bare directive trips both, so
+        the ruff half is asserted where the reason half cannot reach it - inside a tagged comment
+        that carries a real reason and still names no rule."""
+        trusted, candidate, paths = self.planted(
+            self.SUFFIXED_BLIND_EXCEPT.format(suffix=f"  # constraint: {self.REASON} # noqa")
+        )
+        errors = noodles.lint_gate_errors(candidate, trusted, paths)
+        self.assertTrue(any("PGH004" in error for error in errors), errors)
+
+    def test_prose_that_merely_names_the_directive_is_not_read_as_one(self) -> None:
+        """The scan reads COMMENT tokens, so a docstring quoting the directive is prose, not a
+        suppression - the fail-open shape a raw line scan would have."""
+        trusted, candidate, paths = self.planted('def probe() -> None:\n    """A docstring mentioning # noqa on purpose."""\n')
+        self.assertEqual(noodles.lint_gate_errors(candidate, trusted, paths), [])
+
+    def test_every_absence_around_the_tool_is_its_own_refusal(self) -> None:
+        """Four ways this gate can fail to produce evidence, each named rather than passed: no
+        trusted policy, a ruff that will not execute, a ruff that errors out, and a ruff that reports
+        red while emitting nothing parsable - the shape a version-pin refusal takes."""
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        (trusted / noodles.LINT_POLICY_PATH).unlink()
+        self.assertTrue(any("trusted lint policy missing" in error for error in noodles.lint_gate_errors(candidate, trusted, paths)))
+
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        with mock.patch.object(noodles, "run", side_effect=FileNotFoundError("ruff")):
+            self.assertTrue(any("cannot execute the ruff pinned by" in error for error in noodles.lint_gate_errors(candidate, trusted, paths)))
+        with mock.patch.object(noodles, "run", return_value=subprocess.CompletedProcess([], 2, "", "unknown option")):
+            self.assertTrue(any("could not run ruff pinned by" in error for error in noodles.lint_gate_errors(candidate, trusted, paths)))
+        with mock.patch.object(noodles, "run", return_value=subprocess.CompletedProcess([], 1, "", "required-version mismatch")):
+            self.assertTrue(any("must not read as green" in error for error in noodles.lint_gate_errors(candidate, trusted, paths)))
+
+    def test_the_landed_policy_selects_explicit_groups_rather_than_everything(self) -> None:
+        """`ALL` grows on every ruff upgrade, which is the one selection shape the atom refuses."""
+        policy = tomllib.loads((CANDIDATE_ROOT / noodles.LINT_POLICY_PATH).read_text(encoding="utf-8"))
+        self.assertNotIn("ALL", policy["lint"]["select"])
+        self.assertTrue(policy["required-version"].startswith("=="), policy["required-version"])
+
+
 if __name__ == "__main__":
     unittest.main()

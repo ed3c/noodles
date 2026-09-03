@@ -76,6 +76,7 @@
           "issue_set_state",
           "issue_template",
           "landing_train",
+          "lint_gate_errors",
           "load_json",
           "merge_base_changed_files",
           "one_marker",

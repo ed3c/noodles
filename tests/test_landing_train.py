@@ -759,7 +759,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual([call for call in with_closure if call not in listings], without)
 
 
-def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] = []) -> dict[str, str]:
+def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: tuple[str, ...] = ()) -> dict[str, str]:
     """One ship-stage pre-stack, then the provider's own merge of its tip.
 
     `stacked` branches are cut in landing order, each on the previous, which is what running ONE
@@ -880,7 +880,7 @@ class VerifiedBatchLandingTests(unittest.TestCase):
     TIP_PR = 33
     TIP_ISSUE = 733
 
-    def wave(self, base: Path, *, detached: list[str] = []) -> tuple[dict[str, str], BatchApi]:
+    def wave(self, base: Path, *, detached: tuple[str, ...] = ()) -> tuple[dict[str, str], BatchApi]:
         stacked = ["first", "second", "tip"]
         fixture = seed_prestacked_wave(base, stacked=stacked, detached=detached)
         fixture["tip_ref"] = "tip"
