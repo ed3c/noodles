@@ -515,6 +515,313 @@ class CrossSurfaceImportDebtRatchetTests(unittest.TestCase):
         self.assertNotIn("contract", noodles.cross_surface_import_edges(self.planted_tree("import beta\n")))
 
 
+def measured_definition_surfaces(root: Path, path: str) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
+    """ed3c/noodles#326's attribution rule, recomputed from the tree rather than read from policy.
+
+    Returns (direction, coupled). `coupled[d]` is the repo-local modules the definition `d` names,
+    resolved with the same `python_import_targets`/`repo_module_target` pair ed3c/noodles#276's
+    disclosed edge counts are measured with - this is that measurement refined from file granularity
+    to definition granularity, not a second resolver. `direction[d]` is the components whose declared
+    surface admits `path` AND admits every module in `coupled[d]`.
+
+    Committed ownership stays hand-kept; this is the independent recomputation that holds it to the
+    measurement, the same way `standing_cross_surface_edges` above holds the AGENTS.md disclosure to
+    the tree rather than to a sentence nobody re-runs.
+
+    Ceiling, inherited and one added: `repo_module_target` cannot see an `importlib` load, and this
+    reads the names a definition mentions, so a module reached only through a local alias or a
+    getattr string is invisible to it. Both fail-open, both toward reporting a WIDER admitting set -
+    which the ownership bound below refuses to act on rather than trusts."""
+    components = {name: globs for name, globs in noodles.component_map(root).items() if globs != ["*"]}
+
+    def admitting(target: str) -> frozenset[str]:
+        return frozenset(name for name, globs in components.items() if any(fnmatch.fnmatchcase(target, glob) for glob in globs))
+
+    universe = admitting(path)
+    tree = ast.parse((root / path).read_text(encoding="utf-8"))
+    alias: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                target = noodles.repo_module_target(item.name, root)
+                if target:
+                    alias[item.asname or item.name.split(".")[0]] = target
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            target = noodles.repo_module_target(node.module, root)
+            if target:
+                for item in node.names:
+                    alias[item.asname or item.name] = target
+    direction: dict[str, frozenset[str]] = {}
+    coupled: dict[str, frozenset[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        used: set[str] = set()
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id in alias:
+                used.add(alias[child.id])
+            elif isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name) and child.value.id in alias:
+                used.add(alias[child.value.id])
+        admitted = universe
+        for module in used:
+            admitted &= admitting(module)
+        direction[node.name] = admitted
+        coupled[node.name] = frozenset(used)
+    return direction, coupled
+
+
+class DefinitionDispositionTests(unittest.TestCase):
+    """ed3c/noodles#326: the ownership gravity-well drain, judged against the measurements it consumed.
+
+    ed3c/noodles#278 made the unowned pool a number; nothing made it a set of decisions, so "unowned"
+    stayed a silence that could only grow. Every top-level definition of every file
+    policy/component-owners.json names now carries exactly one disposition - owned in place, moved
+    with its seam cited in disclosed-edge form, or left at the engine root under a written class
+    reason - and `definition_disposition_errors` reds on a definition in neither record, in both, or
+    under two class reasons at once."""
+
+    PATH = "noodles.py"
+
+    def setUp(self) -> None:
+        self.owners = noodles.component_owner_map(CANDIDATE_ROOT)[self.PATH]
+        self.records = noodles.definition_dispositions(CANDIDATE_ROOT)
+        self.direction, self.coupled = measured_definition_surfaces(CANDIDATE_ROOT, self.PATH)
+        self.universe = frozenset(
+            name
+            for name, globs in noodles.component_map(CANDIDATE_ROOT).items()
+            if globs != ["*"] and any(fnmatch.fnmatchcase(self.PATH, glob) for glob in globs)
+        )
+
+    def planted_tree(self, source: str, owners: dict, records: dict) -> Path:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-disposition-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        (root / noodles.COMPONENT_OWNER_MAP_PATH).write_text(
+            json.dumps({"schema_version": 1, "owners": {"target.py": owners}}), encoding="utf-8"
+        )
+        (root / noodles.DEFINITION_DISPOSITION_PATH).write_text(json.dumps(records), encoding="utf-8")
+        (root / "target.py").write_text(source, encoding="utf-8")
+        return root
+
+    def reasoned(self) -> dict[str, str]:
+        return {
+            name: label
+            for label, record in self.records["engine_root"][self.PATH].items()
+            for name in record["definitions"]
+        }
+
+    def test_every_top_level_definition_carries_exactly_one_disposition(self) -> None:
+        self.assertEqual(noodles.definition_disposition_errors(CANDIDATE_ROOT), [])
+        present = set(noodles.top_level_definitions((CANDIDATE_ROOT / self.PATH).read_text(encoding="utf-8"), self.PATH))
+        self.assertEqual(present - set(self.owners) - set(self.reasoned()), set())
+        self.assertEqual(set(self.owners) & set(self.reasoned()), set())
+
+    def test_no_owner_entry_claims_a_component_the_measurement_excludes(self) -> None:
+        """The bound the drain works under: ownership may be NARROWER than the measured direction -
+        that is hand judgment about who a definition serves, and the map stays hand-kept - but never
+        wider. A component whose declared surface does not admit everything a definition couples to
+        cannot be that definition's owner without contradicting the surface gate itself."""
+        for name, owning in sorted(self.owners.items()):
+            with self.subTest(definition=name):
+                self.assertLessEqual(set(owning), self.direction[name])
+
+    def test_a_measured_owner_is_owned_in_place_rather_than_left_at_the_engine_root(self) -> None:
+        """The drain rule itself: a definition whose admitting set is a non-empty PROPER subset of
+        the components that admit the file has a measured owner, so leaving it unowned would be
+        exactly the silence ed3c/noodles#278 made visible and this atom exists to spend."""
+        for name, admitted in sorted(self.direction.items()):
+            if admitted and admitted != self.universe:
+                with self.subTest(definition=name):
+                    self.assertIn(name, self.owners)
+
+    def test_each_engine_root_class_holds_exactly_the_definitions_its_rule_describes(self) -> None:
+        """Two reasons, each mechanical rather than editorial: every component that admits the file
+        admits every coupling (so naming one owner invents a boundary), or none of them does (so
+        there is no legal owner to name)."""
+        for name, label in sorted(self.reasoned().items()):
+            with self.subTest(definition=name, engine_root_class=label):
+                if label == "no-component-admits-every-coupling":
+                    self.assertFalse(self.direction[name])
+                else:
+                    self.assertEqual(self.direction[name], self.universe)
+
+    def test_relocating_any_owned_group_would_remove_no_disclosed_edge(self) -> None:
+        """The measured reason this drain moved nothing. ed3c/noodles#326 admits a module split only
+        where the disclosed edges show a seam, and a seam that moves no edge is not one: for every
+        repo-local module noodles.py couples to, at least one definition the owner map does NOT own
+        still couples to it, so relocating a whole owned group leaves the import - and therefore the
+        counted edge - exactly where it was. That is why the atom's moved record is empty. It is a
+        measurement rather than a scope decision, and it reds the day it stops being true."""
+        for module in sorted({item for names in self.coupled.values() for item in names}):
+            survivors = sorted(name for name, names in self.coupled.items() if module in names and name not in self.owners)
+            with self.subTest(module=module):
+                self.assertTrue(survivors, f"every definition coupling to {module} is owned: that is a measured seam")
+
+    def test_the_unowned_ratchet_sits_at_the_post_drain_floor(self) -> None:
+        policy = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            policy["max_unowned_top_level_definitions"], noodles.unowned_top_level_definitions(CANDIDATE_ROOT)
+        )
+
+    def test_planted_negative_a_regrown_definition_exceeds_the_re_tightened_floor(self) -> None:
+        """ed3c/noodles#326's regrowth control, read through the landed measurement's own reader: one
+        definition added to a copy of the real file, judged against the real owner map, and the
+        re-tightened ceiling is exceeded."""
+        floor = json.loads((CANDIDATE_ROOT / "policy/fitness.json").read_text(encoding="utf-8"))["max_unowned_top_level_definitions"]
+        temp = tempfile.TemporaryDirectory(prefix="noodles-regrowth-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name) / "repo"
+        (root / "policy").mkdir(parents=True)
+        (root / noodles.COMPONENT_OWNER_MAP_PATH).write_text(
+            (CANDIDATE_ROOT / noodles.COMPONENT_OWNER_MAP_PATH).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        source = (CANDIDATE_ROOT / self.PATH).read_text(encoding="utf-8")
+        (root / self.PATH).write_text(source, encoding="utf-8")
+        self.assertEqual(noodles.unowned_top_level_definitions(root), floor)
+
+        (root / self.PATH).write_text(source + "\n\ndef planted_regrowth() -> None:\n    pass\n", encoding="utf-8")
+        regrown = noodles.unowned_top_level_definitions(root)
+        self.assertGreater(regrown, floor)
+        self.assertTrue(noodles.unowned_definition_readback(regrown, {"max_unowned_top_level_definitions": floor})["message"])
+
+    def test_planted_negative_an_undispositioned_definition_is_named_rather_than_skipped(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n\n\ndef b() -> None:\n    pass\n\n\ndef c() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {"target.py": {"reasoned": {"reason": "no component is excluded", "definitions": ["b"]}}}, "moved": {}},
+        )
+        errors = noodles.definition_disposition_errors(root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("target.py:c is neither owned", errors[0])
+
+    def test_planted_negative_a_definition_both_owned_and_reasoned_is_named(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {"target.py": {"reasoned": {"reason": "no component is excluded", "definitions": ["a"]}}}, "moved": {}},
+        )
+        errors = noodles.definition_disposition_errors(root)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("target.py:a is both owned", errors[0])
+
+    def test_planted_negative_an_absent_record_refuses_rather_than_counting_zero(self) -> None:
+        root = self.planted_tree("def a() -> None:\n    pass\n", {"a": ["verify"]}, {"schema_version": 1, "engine_root": {}, "moved": {}})
+        (root / noodles.DEFINITION_DISPOSITION_PATH).unlink()
+        self.assertIn("is absent", noodles.definition_disposition_errors(root)[0])
+
+    def test_planted_negative_a_length_only_split_justification_is_refused(self) -> None:
+        """The review fixture ed3c/noodles#326 requires. Length is not an input to a seam, so a
+        record arguing from it is refused whatever else it says - including a record whose
+        definitions and classes are otherwise perfectly well formed."""
+        for pretext in (
+            "the engine root carries 4747 lines, so this split is overdue",
+            "the file is too long to review",
+            "split on line count",
+            "the number of lines in the engine root justifies the seam",
+        ):
+            with self.subTest(pretext=pretext):
+                root = self.planted_tree(
+                    "def a() -> None:\n    pass\n\n\ndef b() -> None:\n    pass\n",
+                    {"a": ["verify"]},
+                    {"schema_version": 1, "engine_root": {"target.py": {"reasoned": {"reason": pretext, "definitions": ["b"]}}}, "moved": {}},
+                )
+                self.assertTrue([error for error in noodles.definition_disposition_errors(root) if "argues from length" in error])
+
+    def test_planted_negative_a_split_justified_only_by_length_is_refused_even_when_it_cites_an_edge(self) -> None:
+        """The same refusal in the record that actually creates a module, and the harder case: the
+        moved record's edge citation is real, the destination really carries the definition, and the
+        split is still refused because the reason it gives is a length argument. An edge citation
+        does not launder a length motivation."""
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {
+                "schema_version": 1,
+                "engine_root": {},
+                "moved": {
+                    "moved_target.py": {
+                        "edges": ["target.py -> moved_target.py"],
+                        "definitions": ["landed"],
+                        "reason": "target.py is too large, so this seam splits it",
+                    }
+                },
+            },
+        )
+        (root / "moved_target.py").write_text("def landed() -> None:\n    pass\n", encoding="utf-8")
+        self.assertTrue([error for error in noodles.definition_disposition_errors(root) if "argues from length" in error])
+
+    def test_positive_control_the_same_record_reasoned_from_the_disclosed_edges_is_admitted(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n\n\ndef b() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {
+                "schema_version": 1,
+                "engine_root": {
+                    "target.py": {
+                        "reasoned": {
+                            "reason": "every component that admits target.py admits every module it couples to, so the disclosed edges name no owner",
+                            "definitions": ["b"],
+                        }
+                    }
+                },
+                "moved": {},
+            },
+        )
+        self.assertEqual(noodles.definition_disposition_errors(root), [])
+
+    def test_planted_negative_a_moved_record_citing_no_edge_is_refused(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {}, "moved": {"moved_target.py": {"edges": [], "definitions": ["landed"]}}},
+        )
+        (root / "moved_target.py").write_text("def landed() -> None:\n    pass\n", encoding="utf-8")
+        self.assertTrue([error for error in noodles.definition_disposition_errors(root) if "must cite at least one disclosed edge" in error])
+
+    def test_planted_negative_a_moved_record_whose_destination_does_not_define_it_is_refused(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {}, "moved": {"moved_target.py": {"edges": ["target.py -> moved_target.py"], "definitions": ["never_moved"]}}},
+        )
+        (root / "moved_target.py").write_text("def landed() -> None:\n    pass\n", encoding="utf-8")
+        self.assertTrue([error for error in noodles.definition_disposition_errors(root) if "claims never_moved" in error])
+
+    def test_planted_negative_a_new_module_that_does_not_state_its_seam_is_refused(self) -> None:
+        """ed3c/noodles#326: a new module cites the disclosed edges that justify its seam in its own
+        header. A ledger row alone is an index of a citation, not the citation - so the destination's
+        own source has to carry the edge it was cut at, or the split is unexplained where a reader
+        opening the module would look for the explanation."""
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {}, "moved": {"moved_target.py": {"edges": ["target.py -> moved_target.py"], "definitions": ["landed"]}}},
+        )
+        (root / "moved_target.py").write_text("def landed() -> None:\n    pass\n", encoding="utf-8")
+        self.assertTrue([error for error in noodles.definition_disposition_errors(root) if "own source does not carry" in error])
+
+    def test_positive_control_a_moved_record_whose_module_states_its_seam_is_admitted(self) -> None:
+        root = self.planted_tree(
+            "def a() -> None:\n    pass\n",
+            {"a": ["verify"]},
+            {"schema_version": 1, "engine_root": {}, "moved": {"moved_target.py": {"edges": ["target.py -> moved_target.py"], "definitions": ["landed"]}}},
+        )
+        (root / "moved_target.py").write_text(
+            "# constraint: seam cited from the disclosed edges: target.py -> moved_target.py\ndef landed() -> None:\n    pass\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(noodles.definition_disposition_errors(root), [])
+
+    def test_wrong_schema_fails_closed(self) -> None:
+        root = self.planted_tree("def a() -> None:\n    pass\n", {"a": ["verify"]}, {"schema_version": 2, "engine_root": {}, "moved": {}})
+        self.assertIn("must contain exactly schema_version 1", noodles.definition_disposition_errors(root)[0])
+
+    def test_absent_owner_map_leaves_the_gate_inert(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            self.assertEqual(noodles.definition_disposition_errors(Path(temp)), [])
+
+
 def mutate_definition(source: str, name: str) -> str:
     """The candidate tree of ed3c/noodles#189: one top-level definition's own bytes change, nothing
     else in the file moves, and the file-level glob still matches every component that lists it."""
