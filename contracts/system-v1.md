@@ -157,6 +157,10 @@ Every repository mutation receives mandatory baseline acceptance. A specialized 
 
 Every completion claim whose observable behavior extends beyond static repository state MUST execute the nearest target-local physical oracle and bind the observation to the exact candidate head/tree.
 
+The default-branch-owned repository verifier MUST structurally read the candidate's tracked `tests/run.sh` before issuing a receipt. Its active top-level path keeps strict shell mode, the zero-residue EXIT trap, full `unittest discover -s tests`, and `./noodles verify --json` in that order; comments, uncalled functions, narrowed discovery, and an earlier unconditional successful exit do not satisfy the contract. The check preserves the current executable oracle without pinning an exact whole-file digest.
+
+The same trusted verifier attaches an exact-base/candidate test-standard diff to the receipt when oracle surfaces are read. That inventory reports test-function additions/removals/modifications, skip/assertion/planted-control deltas, runner changes, and workflow-authority changes. It is guarantee class N with `authority: N` and `classification: metadata-only`: it is not a gate, never changes the verification verdict, and cannot authorize or refuse landing. Blocking rules for individual test edits require separate runtime evidence and a later atom.
+
 ### VERIFICATION.FEATURE_MAP.001
 
 A supported feature SHOULD minimally map feature → code surface → observable transition/journey → physical oracle → evidence. These facts remain target-local; a global registry is not required. Changed supported code must not silently escape verification: it either maps to required journeys/oracles or has an explicit mechanically justified non-case.
