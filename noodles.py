@@ -2610,6 +2610,15 @@ def lander_checkout(root: Path) -> dict[str, Any]:
     boundary readback pins that step's bytes, and `$GITHUB_ENV` reaches every later step without
     touching any of them.
 
+    The pin must also be an ancestor of the trusted `HEAD` it was read from. Object-presence alone
+    does not prove that: `git fetch --depth 1 origin <sha>` succeeds for *any* reachable commit on a
+    public remote, ancestor or not, so a moved pin could otherwise select bytes that never passed
+    through this repository's own history at all - a strictly worse hazard than the one-time-older
+    pin ed3c/noodles#433's own authoring already lived through. The entry's own checkout is
+    `fetch-depth: 1`, so proving ancestry first unshallows it (a one-time cost at land time, not a
+    hot path) rather than trusting a depth-1 fetch of the pin alone, which would carry no parent
+    links to walk.
+
     Ceilings, stated rather than implied. The fetch is anonymous, so this depends on the repository
     staying public; a private repository needs the token wired into the fetch and fails loudly rather
     than silently if that day comes. And an object already present is not re-fetched, which is what
@@ -2619,8 +2628,12 @@ def lander_checkout(root: Path) -> dict[str, Any]:
     if not LANDER_PIN_RE.fullmatch(pin):
         raise GateError(f"policy/github.json {LANDER_PIN_KEY} must be a full 40-hex commit sha, got {pin!r}")
     entry_sha = git(root, "rev-parse", "HEAD")
+    if git(root, "rev-parse", "--is-shallow-repository") == "true":
+        git(root, "fetch", "--unshallow", "--quiet", "origin")
     if run(["git", "cat-file", "-e", f"{pin}^{{commit}}"], cwd=root, check=False).returncode != 0:
         git(root, "fetch", "--depth", "1", "origin", pin)
+    if not git_ok(root, "merge-base", "--is-ancestor", pin, entry_sha):
+        raise GateError(f"policy/github.json {LANDER_PIN_KEY} {pin} is not an ancestor of trusted HEAD {entry_sha}; the pin must name a commit that already passed this repository's own gates")
     git(root, "checkout", "--force", "--detach", pin)
     head = git(root, "rev-parse", "HEAD")
     if head != pin:

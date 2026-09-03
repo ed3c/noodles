@@ -119,6 +119,21 @@ class LanderPinActivationTests(unittest.TestCase):
                 noodles.lander_checkout(root)
             self.assertEqual((root / LANDER_FILE).read_bytes(), PLANTED.encode("utf-8"))
 
+    def test_planted_negative_a_pin_that_is_not_an_ancestor_of_the_trusted_head_is_refused(self) -> None:
+        """Object presence is not ancestry. A pin naming a real, fetchable commit that diverged from
+        `main` instead of descending from it - a sideline branch tip, not an older `main` revision -
+        must refuse exactly like an absent object, or a moved pin could select bytes that never
+        passed through this repository's own history at all."""
+        with tempfile.TemporaryDirectory(prefix="noodles-lander-pin-", ignore_cleanup_errors=True) as name:
+            root, revisions = self.build(Path(name))
+            _git(root, "checkout", "--force", "--quiet", "-b", "sideline", revisions["baseline"])
+            sideline = _commit(root, "sideline commit that never merged to main", lander="sideline bytes\n", pin="0" * 40)
+            _git(root, "checkout", "--force", "--quiet", revisions["merged"])
+            (root / "policy/github.json").write_text(json.dumps({"lander_pin": sideline}) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(noodles.GateError, "is not an ancestor of trusted HEAD"):
+                noodles.lander_checkout(root)
+            self.assertEqual((root / LANDER_FILE).read_bytes(), PLANTED.encode("utf-8"))
+
 
 class LanderShimGateTests(unittest.TestCase):
     """The unpinnable entry must declare the handoff, and declare it before it lands anything."""

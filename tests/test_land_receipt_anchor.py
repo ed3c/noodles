@@ -343,8 +343,15 @@ class LanderProvenanceTests(unittest.TestCase):
 
     def test_planted_negative_a_pin_disagreeing_with_the_landing_bytes_refuses_before_the_merge(self) -> None:
         api = LandApi()
-        with self.assertRaisesRegex(noodles.GateError, "lander pin readback failed"):
-            land(api, lander_pin="0" * 40)
+        disagreeing = "0" * 40
+        # constraint: the regex names both values, not just the "lander pin readback failed" prefix,
+        # constraint: so this control distinguishes "wrong bytes" from "wrong pin" rather than passing
+        # constraint: on any refusal that happens to share the same first few words.
+        with self.assertRaisesRegex(
+            noodles.GateError,
+            re.escape(f"landing bytes are {engine_head()}, {noodles.LANDER_PIN_ENV} declares {disagreeing}"),
+        ):
+            land(api, lander_pin=disagreeing)
         self.assertFalse(api.merged)
         self.assertEqual(api.anchors(), [])
         self.assertEqual(api.issue["state"], "open")

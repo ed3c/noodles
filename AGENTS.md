@@ -218,10 +218,18 @@ Two independent arrivals hold the
 handoff in place and neither subsumes the other: `lander_shim_errors` refuses a candidate whose
 land.yml drops, disables or misorders the handoff block (a byte-shape check on two lines, never a
 semantic read of the workflow), and `lander_provenance` refuses at land time when the pin never
-arrived. Ceilings: the pinned checkout fetches anonymously, so it depends on this repository staying
-public; and `land.yml`'s own lines — the trigger, the permissions, the concurrency group, the
-`if` conclusion guard, the receipt download, the Python setup, the two App-token mints and the shim
-step itself — stay unpinnable, which is why the shim carries no landing logic of its own to get wrong.
+arrived. `lander_checkout` also refuses a pin that is not an ancestor of the trusted `HEAD` it was
+read from (`git merge-base --is-ancestor`, unshallowing the entry's `fetch-depth: 1` checkout first
+when needed): object presence alone does not prove ancestry, since a public remote will hand back any
+reachable commit by SHA, ancestor or not, so without this a moved pin could select bytes that never
+passed through this repository's own history at all. Ceilings: the pinned checkout fetches
+anonymously, so it depends on this repository staying public; `land.yml`'s own lines — the trigger,
+the permissions, the concurrency group, the `if` conclusion guard, the receipt download, the Python
+setup, the two App-token mints and the shim step itself — stay unpinnable, which is why the shim
+carries no landing logic of its own to get wrong; and the land receipt's `trusted_workflows.boundary`
+evidence describes the pinned tree's workflow bytes once a pin has flipped past #433's own merge, not
+the live entry's — honest but worth naming since it is a security-evidence field, and the two agree
+again after the first flip forward.
 
 One Issue equals one repository-mutating atom. A PR contains exactly one line:
 
