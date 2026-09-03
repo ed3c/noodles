@@ -4,9 +4,11 @@ landing cannot strand its dependents behind a mirrored marker nobody patched.
 
 Stated ceiling of the evidence-qualification half (ed3c/noodles#317), the same way the completeness
 gate already disclaims prose judgment: `noodles-observer` and `noodles-capability-probe` are verified
-STRUCTURALLY - the marker is present, its section exists, both demonstration directions exist, and the
-command in each direction is byte-identical to the declared invocation. Nothing here can verify that
-the pasted outputs were not fabricated. The value is still real and two-fold. It is a forcing function:
+STRUCTURALLY - the marker is present, its section exists, both demonstration directions exist, the
+command in each direction is byte-identical to the declared invocation, and each direction records a
+status line in one closed form (ed3c/noodles#409). Nothing here can verify that the pasted outputs
+were not fabricated, and a status line is a paste like any other; what it removes is the half that
+could pass by NARRATION alone, because a status has no prose spelling to hide a failed command in. The value is still real and two-fold. It is a forcing function:
 the author must actually run the planted direction, and that is the exact moment an observer that
 structurally cannot see what it claims dies - because the planted violation produces silence. And it
 converts composed truth into checkable truth: the demonstration is a runnable pair any monitor, judge,
@@ -112,6 +114,24 @@ EVIDENCE_SECTIONS: tuple[tuple[str, str, str, str, tuple[tuple[str, str], ...]],
         "prescribes no external tool behavior in its acceptance",
         (),
     ),
+)
+# constraint: ed3c/noodles#409 - the one part of a demonstration its author cannot narrate. Prose
+# constraint: output can be paraphrased into any verdict the author wants; a status cannot, so each
+# constraint: half owes one. ONE closed mechanical form with three admitted spellings, named in the
+# constraint: refusal message itself the way the marker semantics already are: `EXIT=<n>` for a
+# constraint: shell status, the runner's own verdict line for a suite that prints one, and
+# constraint: `EXIT=unrecorded` for a receipt whose status genuinely was never captured. The third
+# constraint: is deliberate and is the migration's honest exit: a recorded demonstration is never
+# constraint: re-executed to manufacture a zero, so an unknown status is DECLARED - one greppable
+# constraint: token - instead of invented. It is a hole with a name and a count, which is strictly
+# constraint: what an unvalidated status was not.
+STATUS_UNRECORDED = "unrecorded"
+STATUS_LINE_RE = re.compile(
+    rf"^[^A-Za-z0-9]*(?:EXIT=(?:[0-9]+|{STATUS_UNRECORDED})|OK(?:[ \t]*\([^)]*\))?|FAILED[ \t]*\([^)]*\))[ \t]*$"
+)
+STATUS_LINE_FORM = (
+    "'EXIT=<n>', the runner's own verdict line ('OK', 'OK (skipped=N)', 'FAILED (failures=N)'), "
+    f"or 'EXIT={STATUS_UNRECORDED}' when the receipt genuinely never captured one"
 )
 PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
 PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
@@ -616,8 +636,16 @@ def _observed_output(block: str, invocation: str) -> list[str]:
     return [line.strip() for line in after if line.strip() and line.strip() != "```"]
 
 
+def _status_line(block: str, invocation: str) -> str | None:
+    """The first observed line under the invocation that is a recognizable status, or None."""
+    return next((line for line in _observed_output(block, invocation) if STATUS_LINE_RE.match(line)), None)
+
+
 def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, where: str) -> list[str]:
-    """Command identity plus an observed output, in one block. Nothing here judges the output's truth."""
+    """Command identity, an observed output, and a recorded status, in one block.
+
+    Nothing here judges the output's truth - and that is exactly why the status is required. Output
+    is narratable; a status is not."""
     if invocation not in block:
         return [
             f"'## {heading}' {where} does not run the declared noodles-{marker} invocation "
@@ -628,6 +656,12 @@ def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, 
         return [
             f"'## {heading}' {where} runs the declared noodles-{marker} invocation but carries no "
             "observed output under it; write what it actually printed, including 'no output'"
+        ]
+    if _status_line(block, invocation) is None:
+        return [
+            f"'## {heading}' {where} records output for the declared noodles-{marker} invocation "
+            f"{invocation!r} but no status line; add one line of the form {STATUS_LINE_FORM}. "
+            "Output can be narrated convincingly; an exit status cannot"
         ]
     return []
 

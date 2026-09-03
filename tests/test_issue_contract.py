@@ -139,16 +139,42 @@ class ReadyBacklogFixtureGateTests(unittest.TestCase):
         # constraint: migration protocol above is not triggered. What the corpus owes instead is
         # constraint: durable coverage of the two shapes the tightened gate now distinguishes, so a
         # constraint: later atom cannot quietly drop either one.
+        # constraint: ed3c/noodles#409 - the status tightening rides the same route, so the corpus
+        # constraint: owes the shape it now distinguishes too. The pre-status fixture is NOT edited:
+        # constraint: the candidate parser still accepts it, and the migration law above forbids
+        # constraint: changing a fixture whose baseline the candidate accepts. It stays as the
+        # constraint: durable statusless shape the tightened gate names, and the conforming shape
+        # constraint: arrives as its own fixture - which is how #317 added this coverage in the
+        # constraint: first place.
         fixtures = {fixture.id: fixture for fixture in load_ready_backlog_fixtures(CANDIDATE_ROOT)}
         honest = fixtures["ready-evidence-markers-honest-none"]
-        demonstrated = fixtures["ready-observer-demonstration-both-directions"]
-        for fixture in (honest, demonstrated):
+        statusless = fixtures["ready-observer-demonstration-both-directions"]
+        recorded = fixtures["ready-observer-demonstration-recorded-status"]
+        for fixture in (honest, statusless, recorded):
             with self.subTest(fixture=fixture.id):
-                contract = noodles.parse_issue_contract(fixture.body, fixture.subject)
-                self.assertEqual(contract["state"], issue_contract.READY_STATE)
-                self.assertEqual(contract["evidence_reasons"], [])
+                self.assertEqual(
+                    noodles.parse_issue_contract(fixture.body, fixture.subject)["state"],
+                    issue_contract.READY_STATE,
+                )
+        for fixture in (honest, recorded):
+            with self.subTest(clean=fixture.id):
+                self.assertEqual(noodles.parse_issue_contract(fixture.body, fixture.subject)["evidence_reasons"], [])
+        # constraint: the expected count is DERIVED from the candidate's own observer row rather
+        # constraint: than pinned as a literal, so a third declared direction narrows this test
+        # constraint: instead of deadlocking the trusted side (tests/test_trusted_literals.py).
+        directions = [
+            label
+            for marker, _heading, _key, _claim, row in issue_contract.EVIDENCE_SECTIONS
+            if marker == "observer"
+            for label, _subject in row
+        ]
+        refused = noodles.parse_issue_contract(statusless.body, statusless.subject)["evidence_reasons"]
+        self.assertEqual(len(refused), len(directions), refused)
+        for direction, reason in zip(directions, refused):
+            self.assertIn(f"{direction} direction", reason)
+            self.assertIn("no status line", reason)
         self.assertEqual(noodles.parse_issue_contract(honest.body, honest.subject)["observer"], issue_contract.EVIDENCE_NONE)
-        self.assertNotEqual(noodles.parse_issue_contract(demonstrated.body, demonstrated.subject)["observer"], issue_contract.EVIDENCE_NONE)
+        self.assertNotEqual(noodles.parse_issue_contract(recorded.body, recorded.subject)["observer"], issue_contract.EVIDENCE_NONE)
 
     def test_planted_tightening_fails_even_when_generated_helper_changes(self) -> None:
         temp, root = self.tightened_candidate()
@@ -626,13 +652,22 @@ EDIT_PROBE = "gh api repos/ed3c/noodles/issues/317/events --jq 'length'"
 FENCE = "```"
 
 
-def demonstration(observer: str, green: str, red: str, *, directions: tuple[str, ...] = ("GREEN", "RED")) -> str:
+def demonstration(
+    observer: str,
+    green: str,
+    red: str,
+    *,
+    directions: tuple[str, ...] = ("GREEN", "RED"),
+    statuses: tuple[str, ...] = ("EXIT=0", "EXIT=0"),
+) -> str:
     """One `## Observer demonstration` body in the shape an author actually pastes: a labelled
-    direction, the exact invocation inside a fence, and whatever it printed underneath."""
+    direction, the exact invocation inside a fence, whatever it printed underneath, and the status
+    it exited with. An empty string in `statuses` plants the absence of that half's status line."""
     blocks = []
-    for direction, output in zip(directions, (green, red)):
+    for direction, output, status in zip(directions, (green, red), statuses):
         subject = "clean subject" if direction == "GREEN" else "planted violation"
-        blocks.append(f"{direction} ({subject}):\n\n{FENCE}\n$ {observer}\n{output}{FENCE}\n")
+        tail = f"{status}\n" if status else ""
+        blocks.append(f"{direction} ({subject}):\n\n{FENCE}\n$ {observer}\n{output}{tail}{FENCE}\n")
     return "\n".join(blocks)
 
 
@@ -707,6 +742,66 @@ class QualifiedEvidenceTests(unittest.TestCase):
         self.assertEqual(len(empty), 1, empty)
         self.assertIn("no observed output under it", empty[0])
 
+    def probe_body(self, transcript: str) -> str:
+        declared = "scip-python --help"
+        return issue_body(
+            capability_probe=declared,
+            extra_sections=(("Capability probe", f"{FENCE}\n$ {declared}\n{transcript}{FENCE}\n"),),
+        )
+
+    def test_planted_control_a_half_that_narrates_output_without_a_status_line_is_refused(self) -> None:
+        """ed3c/noodles#409 - the residue of text-as-control. Both halves quote convincing prose and
+        neither says whether the command reached a verdict; each absence is its own named reason."""
+        for absent, statuses in (("GREEN", ("", "EXIT=0")), ("RED", ("EXIT=0", ""))):
+            with self.subTest(absent=absent):
+                section = demonstration(
+                    RESIDUE_OBSERVER, "(no output)\n", "!! .noodle/state.json\n", statuses=statuses
+                )
+                reported = self.reasons(self.observing_body(RESIDUE_OBSERVER, section))
+                self.assertEqual(len(reported), 1, reported)
+                self.assertIn(f"{absent} direction", reported[0])
+                self.assertIn("no status line", reported[0])
+        probe = self.reasons(self.probe_body("Usage: scip-python [options] [command]\n"))
+        self.assertEqual(len(probe), 1, probe)
+        self.assertIn("'## Capability probe' section records output", probe[0])
+        self.assertIn("no status line", probe[0])
+
+    def test_the_refusal_message_states_the_status_line_form_it_expects(self) -> None:
+        """The form is stated by the gate that enforces it, the way the marker semantics already are,
+        so an author learns the exact spelling from the refusal rather than from a document."""
+        section = demonstration(RESIDUE_OBSERVER, "(no output)\n", "!! .noodle/state.json\n", statuses=("", ""))
+        reported = self.reasons(self.observing_body(RESIDUE_OBSERVER, section))
+        self.assertEqual(len(reported), 2, reported)
+        for reason in reported:
+            self.assertIn(issue_contract.STATUS_LINE_FORM, reason)
+            for spelling in ("EXIT=<n>", "OK", "FAILED (failures=N)", f"EXIT={issue_contract.STATUS_UNRECORDED}"):
+                self.assertIn(spelling, reason)
+
+    def test_the_admitted_status_spellings_are_exactly_the_closed_form(self) -> None:
+        """One closed vocabulary, both directions. A shell status, the runner's own verdict line, and
+        the honest `unrecorded` the migration needs; narrated prose about a status is not a status."""
+        for status in ("EXIT=0", "EXIT=137", "OK", "OK (skipped=2)", "FAILED (failures=1)", "FAILED (errors=2)"):
+            with self.subTest(admitted=status):
+                self.assertEqual(self.reasons(self.probe_body(f"printed something\n{status}\n")), [])
+        for narration in ("the command succeeded", "PASS", "exit status zero", "Ran 17 tests in 1.0s", "EXIT=ok"):
+            with self.subTest(refused=narration):
+                reported = self.reasons(self.probe_body(f"printed something\n{narration}\n"))
+                self.assertEqual(len(reported), 1, reported)
+                self.assertIn("no status line", reported[0])
+
+    def test_an_unrecorded_status_is_a_declared_hole_rather_than_an_invented_zero(self) -> None:
+        """ed3c/noodles#409 non-claim - recorded demonstrations are never re-executed to manufacture
+        a status. A receipt that genuinely never captured one says so in one greppable token, which
+        is a hole with a name and a count where an unvalidated status had neither."""
+        unrecorded = f"EXIT={issue_contract.STATUS_UNRECORDED}"
+        section = demonstration(
+            RESIDUE_OBSERVER, "(no output)\n", "!! .noodle/state.json\n", statuses=(unrecorded, unrecorded)
+        )
+        body = self.observing_body(RESIDUE_OBSERVER, section)
+        self.assertEqual(self.reasons(body), [])
+        self.assertTrue(self.schedulable(body))
+        self.assertEqual(body.count(unrecorded), 2)
+
     def test_planted_negative_an_honest_none_on_a_design_atom_passes_untouched(self) -> None:
         self.assertEqual(self.reasons(issue_body()), [])
 
@@ -742,12 +837,21 @@ class QualifiedEvidenceTests(unittest.TestCase):
     def test_the_live_zero_residue_blindness_case_reds_on_its_own_planted_direction(self) -> None:
         """`git status` without the ignored-matching form structurally cannot see `.noodle/` residue,
         so the RED direction it would have to paste is silence. The gate refuses the silence, which
-        is the exact moment this observer would have died at authoring time."""
-        section = demonstration(BLIND_RESIDUE_OBSERVER, "(no output)\n", "")
+        is the exact moment this observer would have died at authoring time.
+
+        ed3c/noodles#409 - the status tightening must not open the door it closes. A blind observer's
+        RED run exits 0 like its GREEN one, so an author who now pastes the status has a non-empty
+        RED half for the first time. The pair is still refused, one check later: both halves record
+        the same silence and the same status, and identical halves are not a demonstration."""
+        section = demonstration(BLIND_RESIDUE_OBSERVER, "(no output)\n", "", statuses=("EXIT=0", ""))
         reported = self.reasons(self.observing_body(BLIND_RESIDUE_OBSERVER, section))
         self.assertEqual(len(reported), 1, reported)
         self.assertIn("RED direction", reported[0])
         self.assertIn("no observed output under it", reported[0])
+        with_status = demonstration(BLIND_RESIDUE_OBSERVER, "(no output)\n", "(no output)\n")
+        still_reported = self.reasons(self.observing_body(BLIND_RESIDUE_OBSERVER, with_status))
+        self.assertEqual(len(still_reported), 1, still_reported)
+        self.assertIn("did not discriminate", still_reported[0])
 
     def test_the_live_edit_probe_blindness_case_reds_because_it_did_not_discriminate(self) -> None:
         """The REST events feed returned zero for bodies GraphQL shows edited two to five times. Both
