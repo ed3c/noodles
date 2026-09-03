@@ -2,7 +2,7 @@
   "schema_version": 1,
   "owners": {
     "noodles.py": {
-      "_preflight_gh_auth": ["carrier"],
+      "_preflight_credential_readback": ["carrier"],
       "_preflight_provider_network": ["carrier"],
       "active_execute_claims": ["schedule"],
       "adapter_add": ["carrier"],

@@ -779,6 +779,67 @@ def validate_comment_tags(root: Path, paths: Iterable[str]) -> list[str]:
     return errors
 
 
+# constraint: ed3c/noodles#434 - the credential names an adapter may not hand to its transport, and
+# constraint: the endpoint shapes that MINT one. The first is matched case-insensitively against the
+# constraint: three positions that SUPPLY a credential - an adapter's parameter names, the
+# constraint: environment keys it assigns, the keywords it passes - and the second against its string
+# constraint: literals.
+CREDENTIAL_ADAPTER_PREFIX = "_credential_adapter_"
+CREDENTIAL_SUPPLY_RE = re.compile(r"(?i)token|password|credential|secret|auth")
+CREDENTIAL_MINT_RE = re.compile(r"(?i)access_tokens?\b|\bauth\s+(?:login|token|refresh)\b")
+
+
+def credential_adapter_errors(root: Path) -> list[str]:
+    """No credential adapter may SUPPLY a credential; each reads the ambient identity's access only.
+
+    ed3c/noodles#434 widened the preflight readback from one binary to a transport roster. The
+    widening is honest only while every adapter answers with the identity the environment already
+    holds, so the written positions in which one could hand a credential over - a parameter it takes,
+    an environment key it stores into, a credential-named keyword it passes, a credential-ISSUING
+    endpoint it names - are refused mechanically rather than reviewed for. That is what keeps this a
+    recognition of a legitimate non-`gh` arrival instead of a bypass: an adapter that substitutes an
+    identity reds here, in the same `./noodles verify` that judges everything else.
+
+    Ceiling, stated rather than implied: it reads those four positions inside the adapter's OWN body.
+    An adapter that obtained a credential from a differently-named helper and forwarded it in an
+    ordinary header mapping is invisible to it. What is refused is the written shape of substitution,
+    never the author's motive."""
+    source_path = root / "noodles.py"
+    if not source_path.is_file():
+        return []
+    try:
+        module = parse_python(source_path.read_text(encoding="utf-8"), "noodles.py")
+    except (GateError, OSError, UnicodeDecodeError) as exc:
+        return [f"credential adapter scan failed: {exc}"]
+    errors: list[str] = []
+    for node in module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.name.startswith(CREDENTIAL_ADAPTER_PREFIX):
+            continue
+        for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]:
+            if CREDENTIAL_SUPPLY_RE.search(argument.arg):
+                errors.append(f"noodles.py:{node.name} takes credential parameter {argument.arg!r}: an adapter reads the ambient identity, it is never handed one")
+        # constraint: the docstring is skipped rather than scanned - it is where an adapter DESCRIBES
+        # constraint: the credential handling this gate exists to bound, so scanning it would refuse
+        # constraint: the disclosure and reward silence.
+        body = node.body[1:] if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str) else node.body
+        for statement in body:
+            for inner in ast.walk(statement):
+                if isinstance(inner, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    for target in (inner.targets if isinstance(inner, ast.Assign) else [inner.target]):
+                        key = target.slice.value if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant) else None
+                        if isinstance(key, str) and CREDENTIAL_SUPPLY_RE.search(key):
+                            errors.append(f"noodles.py:{node.name} stores into {key!r}: an adapter may not mint or swap a credential")
+                if isinstance(inner, ast.Call):
+                    errors.extend(
+                        f"noodles.py:{node.name} passes {keyword.arg}= to its transport: an adapter may not supply a credential"
+                        for keyword in inner.keywords
+                        if keyword.arg and CREDENTIAL_SUPPLY_RE.search(keyword.arg)
+                    )
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str) and CREDENTIAL_MINT_RE.search(inner.value):
+                    errors.append(f"noodles.py:{node.name} names credential-issuing {inner.value!r}: an adapter reads access, it never mints one")
+    return errors
+
+
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
     policy_root = (policy_root or root).resolve()
@@ -863,6 +924,10 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
     # constraint: adds a top-level definition must disposition it in that same commit, and can.
     errors.extend(definition_disposition_errors(root))
+    # constraint: ed3c/noodles#434 - reads the CANDIDATE's own noodles.py, for the same reason the two
+    # constraint: readbacks above do: the atom that registers a credential adapter is the atom that
+    # constraint: must satisfy the no-substitution rule, and can, in that same commit.
+    errors.extend(credential_adapter_errors(root))
     # constraint: ed3c/noodles#390 - the co-mandate registry's SHAPE is judged against the candidate's
     # constraint: own copy, so a row that names no mandate or widens to the whole tree reds before it
     # constraint: can be believed. Its CONTENT is read from the trusted root at the boundary judge
@@ -983,22 +1048,112 @@ def _preflight_provider_network(root: Path) -> dict[str, Any]:
     return {"capability": capability, "providers": names}
 
 
-def _preflight_gh_auth(root: Path) -> dict[str, Any]:
-    capability = "gh auth readback"
+# constraint: ed3c/noodles#434 - the readback below proves the ambient identity reaches the target
+# constraint: repository, and it was bound to the `gh` BINARY rather than to that access: a live
+# constraint: environment that could git-fetch and reach GitHub through a connector, but carried no
+# constraint: `gh`, was refused by a gate whose question it answered. An adapter returns None when its
+# constraint: transport is absent ("ask the next one") and raises when the transport is here but the
+# constraint: identity does not resolve the target ("fail closed"), so a missing binary stops being a
+# constraint: gate failure while NO present transport still refuses. Every adapter reads the AMBIENT
+# constraint: credential and supplies none of its own; credential_adapter_errors refuses one that
+# constraint: would, so the widening cannot become a bypass.
+def _credential_adapter_gh(root: Path, repository: str) -> str | None:
+    """The `gh` transport: absent only when the binary cannot be executed at all, never when it refuses."""
+    try:
+        result = run(["gh", "api", f"repos/{repository}", "--jq", ".full_name"], cwd=root, check=False, timeout=3.0)
+    except FileNotFoundError:
+        return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise GateError(str(exc)) from exc
+    if result.returncode != 0:
+        raise GateError(result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}")
+    return result.stdout.strip()
+
+
+def _credential_adapter_connector(root: Path, repository: str) -> str | None:
+    """The connector transport: the ambient credential git itself uses, asked straight at the REST API.
+
+    A connector-provisioned environment surfaces its identity to a subprocess through git's own
+    credential store - which is exactly why such an environment can `git fetch` while carrying no `gh`
+    binary. `git credential fill` READS that store and issues nothing; terminal prompting is disabled
+    so an environment holding no ambient credential reports an absent transport instead of blocking.
+
+    Ceiling, stated rather than implied: this reads whichever ambient credential git would itself have
+    used, so it is exactly as honest as that store is - it cannot tell a connector-provisioned
+    credential apart from any other credential the same environment legitimately holds, and it is not
+    meant to: the invariant is that the adapter introduces none of its own.
+    """
+    try:
+        filled = run(
+            ["git", "credential", "fill"],
+            cwd=root,
+            check=False,
+            timeout=3.0,
+            input_text="protocol=https\nhost=github.com\n\n",
+            env=os.environ | {"GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if filled.returncode != 0:
+        return None
+    ambient = ""
+    for line in filled.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key == "password":
+            ambient = value
+    if not ambient:
+        return None
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}",
+        headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {ambient}", "User-Agent": "noodles-preflight"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise GateError(f"connector REST readback failed: {exc}") from exc
+    observed = payload.get("full_name") if isinstance(payload, dict) else None
+    return observed if isinstance(observed, str) else ""
+
+
+# constraint: ed3c/noodles#434 declares the App-token adapter as headroom: it lands as its own atom
+# constraint: when that transport is provisioned, by appending one row here and nothing else.
+CREDENTIAL_ADAPTERS: tuple[tuple[str, Callable[[Path, str], str | None]], ...] = (
+    ("gh", _credential_adapter_gh),
+    ("connector", _credential_adapter_connector),
+)
+
+
+def _preflight_credential_readback(root: Path) -> dict[str, Any]:
+    """The first present transport answers; no present transport at all is a fail-closed refusal.
+
+    Ceiling, stated rather than implied: this asserts the ambient identity resolves the target
+    repository live, which is exactly the assertion the `gh`-bound probe made before ed3c/noodles#434
+    made it transport-neutral. Whether that identity also holds `push` is a permission this readback
+    has never read, and #434 changes only how the question is asked, never which question it is.
+    """
+    capability = "credential adapter readback"
     try:
         repository = runtime_gh_repo_from_git(root, error_cls=GateError)
     except GateError as exc:
         raise GateError(f"preflight missing capability: {capability}: {exc}") from exc
-    observed = _preflight_command(
-        capability,
-        ["gh", "api", f"repos/{repository}", "--jq", ".full_name"],
-        root=root,
-    ).stdout.strip()
-    if observed != repository:
-        raise GateError(
-            f"preflight missing capability: {capability}: repository readback {observed!r} != {repository!r}"
-        )
-    return {"capability": capability, "repository": repository}
+    tried: list[str] = []
+    for name, adapter in CREDENTIAL_ADAPTERS:
+        tried.append(name)
+        try:
+            observed = adapter(root, repository)
+        except GateError as exc:
+            raise GateError(f"preflight missing capability: {capability}: {name} transport: {exc}") from exc
+        if observed is None:
+            continue
+        if observed != repository:
+            raise GateError(
+                f"preflight missing capability: {capability}: {name} transport: repository readback {observed!r} != {repository!r}"
+            )
+        return {"capability": capability, "repository": repository, "transport": name, "transports_tried": tried}
+    raise GateError(
+        f"preflight missing capability: {capability}: no credential transport present (tried: {', '.join(tried)})"
+    )
 
 
 def _preflight_git_metadata(root: Path) -> dict[str, Any]:
@@ -1058,7 +1213,7 @@ def preflight(root: Path) -> dict[str, Any]:
     root = root.resolve()
     probes = (
         _preflight_provider_network,
-        _preflight_gh_auth,
+        _preflight_credential_readback,
         _preflight_git_metadata,
         _preflight_feature_verify,
     )
