@@ -8,10 +8,12 @@ rebase that must leave no in-progress state, and a run whose head is not the bra
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -703,6 +705,88 @@ class CeremonyPlantTests(ControlCheckoutFixture):
         self.assertIn("./noodles ceremony plant --patch", step)
         self.assertIn("./noodles ceremony unplant --patch", step)
         self.assertIn("git checkout -- <file>", step)
+
+
+
+EDIT_SUBJECT = "ed3c/noodles#903303"
+EDIT_ENDPOINT = "repos/ed3c/noodles/issues/903303"
+LIVE_BODY = "<!-- noodles-state: ready -->\n\n## Goal\n\nCarry the guard.\n"
+NEXT_BODY = LIVE_BODY.replace("Carry the guard", "Carry the guard, edited")
+
+
+class FakeIssueProvider:
+    def __init__(self, body: str) -> None:
+        self.body = body
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(
+        self,
+        endpoint: str,
+        *,
+        method: str = "GET",
+        payload: object | None = None,
+        **_kwargs: object,
+    ) -> object:
+        self.calls.append((method, endpoint))
+        if endpoint != EDIT_ENDPOINT:
+            raise AssertionError(f"unexpected endpoint {endpoint}")
+        if method == "PATCH":
+            self.body = str((payload or {}).get("body") or "")
+        return {"number": 903303, "body": self.body}
+
+
+class CeremonyEditBodyTests(unittest.TestCase):
+    def digest(self, body: str) -> str:
+        return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+    def refused_path(self) -> Path:
+        temporary = tempfile.TemporaryDirectory(prefix="noodles-edit-body-")
+        self.addCleanup(temporary.cleanup)
+        return Path(temporary.name) / "nested" / "refused.md"
+
+    def test_matching_digest_updates_and_reads_back_full_digests(self) -> None:
+        provider = FakeIssueProvider(LIVE_BODY)
+        receipt = noodles.ceremony_edit_body(
+            provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, self.refused_path()
+        )
+        self.assertEqual(provider.body, NEXT_BODY)
+        self.assertRegex(receipt["before_sha256"], r"\A[0-9a-f]{64}\Z")
+        self.assertEqual(receipt["after_sha256"], self.digest(NEXT_BODY))
+
+    def test_drift_refuses_persists_live_bytes_and_does_not_patch(self) -> None:
+        drifted = LIVE_BODY.replace("ready", "blocked")
+        provider = FakeIssueProvider(drifted)
+        refused = self.refused_path()
+        with self.assertRaisesRegex(noodles.GateError, "edit-body refused"):
+            noodles.ceremony_edit_body(
+                provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, refused
+            )
+        self.assertEqual(refused.read_text(encoding="utf-8"), drifted)
+        self.assertNotIn("PATCH", [method for method, _endpoint in provider.calls])
+
+    def test_elided_digest_fails_before_provider_contact(self) -> None:
+        provider = FakeIssueProvider(LIVE_BODY)
+        with self.assertRaisesRegex(noodles.GateError, "full 64-hex"):
+            noodles.ceremony_edit_body(
+                provider, EDIT_SUBJECT, self.digest(LIVE_BODY)[:12], NEXT_BODY, self.refused_path()
+            )
+        self.assertEqual(provider.calls, [])
+
+    def test_wrong_provider_readback_fails_closed(self) -> None:
+        class LyingProvider(FakeIssueProvider):
+            def __call__(self, endpoint: str, *, method: str = "GET", payload: object | None = None, **kwargs: object) -> object:
+                if method == "PATCH":
+                    payload = {"body": str((payload or {}).get("body") or "") + "drift"}
+                return super().__call__(endpoint, method=method, payload=payload, **kwargs)
+
+        with self.assertRaisesRegex(noodles.GateError, "readback failed"):
+            noodles.ceremony_edit_body(
+                LyingProvider(LIVE_BODY),
+                EDIT_SUBJECT,
+                self.digest(LIVE_BODY),
+                NEXT_BODY,
+                self.refused_path(),
+            )
 
 
 if __name__ == "__main__":
