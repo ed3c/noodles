@@ -1088,6 +1088,15 @@ were written. What follows is from that tail and has no other survivor.
   and a queue that grows faster than it drains is the failure mode a cold consumer
   inherits.
 
+### 7.8 Landing strategy and salvage (pointer)
+
+- **`docs/landing-strategy-and-salvage.md`** (N-class, `ed3c/noodles#438`) —
+  three session-adjudicated bodies of landing knowledge that had no repository
+  home: the three-beat async landing strategy (displacement-conservation law,
+  accelerator-hold classes), the storm-salvage protocol (verified live during
+  the 2026-09-03 provider incident), and model-tier degradation practice
+  (distinct from and finer than `#407`'s provider-level fail-soft modes).
+
 ---
 
 ## 8. Ceiling of this document
