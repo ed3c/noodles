@@ -2440,9 +2440,23 @@ def gha_pull_request_admission(
 
 
 RECEIPT_ANCHOR_PREFIX = "physical-receipt-anchor:"
+# constraint: ed3c/noodles#375 - the anchor names the merge; this names the bytes. Anyone quoting a
+# constraint: body digest for a landed atom can now be checked against a provider-side field instead
+# constraint: of being believed, which is the exact lie a sibling repository caught live: a land
+# constraint: report carried one PR's digest verbatim as another PR's "independently reproduced"
+# constraint: value. The check is one line and is executed, not described - the control that plants a
+# constraint: missing field and a disagreeing digest runs THIS string, so the documentation cannot
+# constraint: drift away from what refuses. $1 is a file holding the anchor comment body, $2 a file
+# constraint: holding the PR body's raw bytes as the provider returned them.
+ANCHOR_BODY_DIGEST_FIELD = "body-sha256"
+ANCHOR_BODY_DIGEST_CHECK = (
+    "python3 -c \"import hashlib,re,sys;"
+    f"m=re.search(r'{ANCHOR_BODY_DIGEST_FIELD}=([0-9a-f]{{64}})',open(sys.argv[1],encoding='utf-8').read());"
+    "sys.exit(0 if m and m.group(1)==hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest() else 1)\" \"$1\" \"$2\""
+)
 
 
-def post_receipt_anchor(repository: str, pr_number: int, merge_sha: str, merged_at: str) -> str:
+def post_receipt_anchor(repository: str, pr_number: int, merge_sha: str, merged_at: str, body_sha256: str) -> str:
     """One idempotent N-class receipt comment carrying the provider's own merge truth.
 
     Emitted per land, after the merge and Issue closure already succeeded, so it can never gate a
@@ -2450,15 +2464,34 @@ def post_receipt_anchor(repository: str, pr_number: int, merge_sha: str, merged_
     the replaced manual bulk backfill was not - that batch tripped GitHub's secondary content-creation
     limit. The Drive-index URL stays out of scope; host evidence is unreachable from the Action.
 
+    Anchor format, appended to rather than reshaped so existing consumers keep parsing:
+
+        <RECEIPT_ANCHOR_PREFIX> pr=N merge-commit=SHA merged-at=TS <ANCHOR_BODY_DIGEST_FIELD>=64HEX
+
+    The digest field is sha256 over the merged PR body's RAW UTF-8 bytes, hashed at the call site in
+    `land_pull_request` from the body the lander already read back. No stripping, no line-ending
+    rewrite, no trailing-newline repair: a normalising digest would agree with a body nobody actually
+    merged, which is the failure this field exists to make visible. Truncation is impossible by
+    construction rather than by assertion - `hexdigest()` has one length and nothing slices it.
+    `ANCHOR_BODY_DIGEST_CHECK` beside this function is the one-line check that refuses an anchor
+    missing the field and an anchor whose digest disagrees with a recomputation.
+
     Ceiling: existence is checked over the first 100 issue comments, matching the landing train's own
-    comment scan. A PR carrying more than 100 comments before its land could take a second anchor."""
+    comment scan. A PR carrying more than 100 comments before its land could take a second anchor.
+    Second ceiling, stated rather than implied: the field binds from this landing forward and nothing
+    re-anchors what already landed, so an anchor without it is old, not forged."""
     existing = gh_api(f"repos/{repository}/issues/{pr_number}/comments?per_page=100")
     if any(RECEIPT_ANCHOR_PREFIX in str(comment.get("body") or "") for comment in existing or []):
         return "existing"
     gh_api(
         f"repos/{repository}/issues/{pr_number}/comments",
         method="POST",
-        payload={"body": f"{RECEIPT_ANCHOR_PREFIX} pr={pr_number} merge-commit={merge_sha} merged-at={merged_at}"},
+        payload={
+            "body": (
+                f"{RECEIPT_ANCHOR_PREFIX} pr={pr_number} merge-commit={merge_sha} "
+                f"merged-at={merged_at} {ANCHOR_BODY_DIGEST_FIELD}={body_sha256}"
+            )
+        },
     )
     return "posted"
 
@@ -2565,7 +2598,16 @@ def land_pull_request(root: Path, event_path: Path, receipt_path: Path) -> dict[
         merged_at = str(pr_readback.get("merged_at") or "")
         if not merged_at:
             raise GateError("merged PR readback carries no merged_at timestamp")
-        anchor = post_receipt_anchor(repository, pr_number, merge_sha, merged_at)
+        # constraint: ed3c/noodles#375 - hashed from pr_readback, the body AS MERGED, not from the
+        # constraint: pre-merge `pr` read above: the field's whole job is to say which bytes landed.
+        # constraint: raw UTF-8 bytes, no normalisation - see post_receipt_anchor for why.
+        anchor = post_receipt_anchor(
+            repository,
+            pr_number,
+            merge_sha,
+            merged_at,
+            hashlib.sha256(str(pr_readback.get("body") or "").encode("utf-8")).hexdigest(),
+        )
     except GateError:
         anchor = "failed"
     return {
