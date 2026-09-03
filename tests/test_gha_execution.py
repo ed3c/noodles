@@ -397,6 +397,30 @@ class ApplyAdmissionTests(unittest.TestCase):
             ("tests2/file.ts",),
         )
 
+    def test_a_codex_named_candidate_branch_meets_the_same_write_boundary_judge(self) -> None:
+        """ed3c/noodles#450 - the `codex-cloud` lane's candidates buy no boundary bypass.
+
+        The Codex App pushes `codex/*` rather than the machine's `<owner>-<repo>-<N>-0-execute`, and
+        naming a lane in the enum is exactly the moment someone could be tempted to special-case its
+        branch shape. The judge is `issue_contract.boundary_escapes`, reached through the same
+        `gha_apply_admission` entry point, and it is handed changed paths, the declared boundary and
+        the co-mandate registry - never a branch name. Asserted in both directions on the real branch
+        shape so a future filter that special-cased `codex/` would red here."""
+        codex_branch = f"codex/issue-{SUBJECT.rsplit('#', 1)[1]}-admit-codex-cloud"
+        task = {**admitted_task(), "branch": codex_branch}
+        admitted = noodles.gha_apply_admission(
+            task, proposal(branch=codex_branch), default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES,
+        )
+        self.assertEqual(admitted["status"], "apply_admitted")
+        self.assertEqual(admitted["branch"], codex_branch)
+        escaped = noodles.gha_apply_admission(
+            task, proposal(branch=codex_branch, changed_paths=["src/index.ts", "policy/github.json"]),
+            default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES,
+        )
+        self.assertEqual(escaped["status"], "gha_write_boundary_escape")
+        self.assertIn("policy/github.json", escaped["reasons"][0])
+        self.assertNotIn("src/index.ts", escaped["reasons"][0])
+
     def test_planted_negative_an_empty_boundary_admits_no_path_at_all(self) -> None:
         body = issue_body(boundary="none")
         task = noodles.gha_execution_task(body, declaration(body, write_boundary=[]), base_head=BASE_SHA)
