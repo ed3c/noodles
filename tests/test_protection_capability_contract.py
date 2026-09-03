@@ -7,17 +7,19 @@ branch protection" when by adjudication it cannot and should not on this App.
 
 Subtraction, not addition: the dead job is deleted (`.github/workflows/land.yml`) and the
 adjudicated capability state is recorded as data where readers look (`policy/github.json`)
-instead of prose nobody re-reads. This module holds three physical acceptance halves:
+instead of prose nobody re-reads. This module holds two physical acceptance halves:
 
 * a repo-wide readback that the dead job left no residue, with a planted-negative control that
   proves the readback would actually catch a lingering reference rather than passing vacuously;
-* a fixture that `protection_write=false` is not a flag nobody consumes: it evaluates a
-  protection-mutation requirement against the recorded capability and shows the refusal is
-  BLOCKED_EXTERNAL, names the missing Administration:write, and never attempts a provider call -
-  entirely from the recorded policy data, since #422 (not this atom) owns the general
-  requirements-subseteq-capabilities admission reader;
-* the future Protection-Operator App is recorded as arrival topology DECLARED, with the receipt
-  path it does not yet have, and is never claimed EXERCISED.
+* the recorded capability state itself: `protection_write` is false with a reason naming both
+  Administration:write and Contents:write, and the future Protection-Operator App is recorded as
+  arrival topology DECLARED, with the receipt path it does not yet have, never claimed EXERCISED.
+
+A third half was cut in reconcile: a fixture that branched on `policy["protection_write"]` and
+then asserted the literal dict its own else-branch had just built. Its poisoned `gh_api` recorder
+sat in a branch `protection_write: false` makes unreachable, so no production code ran and the
+only failure it could ever produce - the flag flipping to true - is already asserted directly and
+more cheaply by `test_capability_contract_declares_write_false_read_true_with_reason`.
 """
 from __future__ import annotations
 
@@ -30,7 +32,10 @@ from tests.support import CANDIDATE_ROOT
 
 GITHUB_POLICY_PATH = CANDIDATE_ROOT / "policy/github.json"
 LAND_WORKFLOW_PATH = CANDIDATE_ROOT / ".github/workflows/land.yml"
-SELF_PATH = Path(__file__).resolve()
+# constraint: relative, not absolute: under a differing NOODLES_CANDIDATE_ROOT the scanned copy of
+# constraint: this module is a different file from `__file__`, so an absolute self-exclusion stops
+# constraint: excluding it and the scanner reports its own planted-negative string as residue.
+SELF_RELATIVE = Path("tests") / Path(__file__).name
 RESIDUE_GLOBS = (
     "*.py",
     "*.md",
@@ -52,7 +57,7 @@ def _protection_apply_residue(root: Path) -> list[str]:
     for pattern in RESIDUE_GLOBS:
         for path in root.glob(pattern):
             resolved = path.resolve()
-            if not path.is_file() or resolved in seen or resolved == SELF_PATH:
+            if not path.is_file() or resolved in seen or path.relative_to(root) == SELF_RELATIVE:
                 continue
             seen.add(resolved)
             if "protection-apply" in path.read_text(encoding="utf-8", errors="ignore"):
@@ -89,32 +94,6 @@ class ProtectionWriteCapabilityContractTests(unittest.TestCase):
         self.assertIsInstance(reason, str)
         self.assertIn("Administration:write", reason)
         self.assertIn("Contents:write", reason)
-
-    def test_protection_mutation_requirement_refuses_blocked_external_before_any_call(self) -> None:
-        """Simulates exactly the one declared surface #435 adjudicated - not the general
-        requirements-subseteq-capabilities reader #422 owns - entirely from the recorded data,
-        with a poisoned call recorder proving the refusal never reaches a provider call."""
-        policy = self.policy()
-        gh_api_calls: list[tuple] = []
-
-        def poisoned_gh_api(*args: object, **kwargs: object) -> None:
-            gh_api_calls.append((args, kwargs))
-            raise AssertionError("gh_api must never be attempted once protection_write=false refuses")
-
-        required_capability = "protection_write"
-        if policy.get(required_capability, False):
-            poisoned_gh_api("repos/x/branches/main/protection", method="PUT")
-            refusal = None
-        else:
-            refusal = {
-                "status": "BLOCKED_EXTERNAL",
-                "reason": f"missing Administration:write - {policy['protection_write_reason']}",
-            }
-
-        self.assertIsNotNone(refusal)
-        self.assertEqual(refusal["status"], "BLOCKED_EXTERNAL")
-        self.assertIn("Administration:write", refusal["reason"])
-        self.assertEqual(gh_api_calls, [])
 
 
 class ProtectionOperatorAppArrivalTopologyTests(unittest.TestCase):
