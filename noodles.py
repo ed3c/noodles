@@ -4101,6 +4101,58 @@ def ceremony_rerun(
     return {"verb": "rerun", "repository": repository, "branch": branch, "branch_tip": branch_tip, "run": selected, "dry_run": dry_run}
 
 
+BODY_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def ceremony_edit_body(
+    gh_api_fn: Callable[..., Any],
+    subject_value: str,
+    expected_before: str,
+    body: str,
+    refused_path: Path,
+) -> dict[str, Any]:
+    """Compare-and-swap one Issue body and prove the provider readback."""
+    subject = parse_subject(subject_value)
+    expected = expected_before.strip().lower()
+    if not BODY_DIGEST_RE.fullmatch(expected):
+        raise GateError(
+            f"ceremony edit-body requires the full 64-hex expected-before sha256, got {expected_before!r}"
+        )
+    endpoint = f"repos/{subject.repo}/issues/{subject.number}"
+    live = gh_api_fn(endpoint)
+    if not isinstance(live, dict) or "pull_request" in live:
+        raise GateError(f"subject does not resolve to an issue: {subject_value}")
+    live_body = str(live.get("body") or "")
+    before = issue_contract.body_digest(live_body)
+    if before != expected:
+        refused_path.parent.mkdir(parents=True, exist_ok=True)
+        refused_path.write_text(live_body, encoding="utf-8")
+        raise GateError(
+            f"ceremony edit-body refused {subject_value}: live body sha256 {before} != "
+            f"expected-before {expected}; live bytes persisted to {refused_path}"
+        )
+    intended = issue_contract.body_digest(body)
+    gh_api_fn(endpoint, method="PATCH", payload={"body": body})
+    readback = gh_api_fn(endpoint)
+    after = issue_contract.body_digest(
+        str((readback or {}).get("body") or "") if isinstance(readback, dict) else ""
+    )
+    if after != intended:
+        raise GateError(
+            f"ceremony edit-body readback failed for {subject_value}: "
+            f"live body sha256 {after} != intended {intended}"
+        )
+    return {
+        "verb": "edit-body",
+        "subject": subject_value,
+        "before_sha256": before,
+        "after_sha256": after,
+        "before_bytes": len(live_body.encode("utf-8")),
+        "after_bytes": len(body.encode("utf-8")),
+        "refused_body_path": str(refused_path),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="noodles")
     parser.add_argument("--root", default=None, help="repository root (testing/audit only)")
@@ -4200,6 +4252,11 @@ def build_parser() -> argparse.ArgumentParser:
     ceremony_rerun_command.add_argument("--run-id", type=int)
     ceremony_rerun_command.add_argument("--repository")
     ceremony_rerun_command.add_argument("--dry-run", action="store_true")
+    ceremony_edit_body_command = ceremony_sub.add_parser("edit-body")
+    ceremony_edit_body_command.add_argument("--subject", required=True)
+    ceremony_edit_body_command.add_argument("--expected-before", required=True)
+    ceremony_edit_body_command.add_argument("--body-file", required=True)
+    ceremony_edit_body_command.add_argument("--refused-body", required=True)
     ceremony_gh_command = ceremony_sub.add_parser("gh")
     ceremony_gh_command.add_argument("argv", nargs=argparse.REMAINDER)
     return parser
@@ -4423,6 +4480,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     workflow=args.workflow,
                     run_id=args.run_id,
                     dry_run=args.dry_run,
+                )
+                print(json.dumps(receipt, indent=2, sort_keys=True))
+                return 0
+            if args.ceremony_verb == "edit-body":
+                receipt = ceremony_edit_body(
+                    gh_api,
+                    args.subject,
+                    args.expected_before,
+                    Path(args.body_file).read_text(encoding="utf-8"),
+                    Path(args.refused_body),
                 )
                 print(json.dumps(receipt, indent=2, sort_keys=True))
                 return 0
