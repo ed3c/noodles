@@ -99,14 +99,6 @@
     },
     {
       "path": "tests/test_component_surface.py",
-      "test": "ComponentOwnerMapTests.test_noodles_py_unowned_definition_count_matches_the_agents_md_disclosure",
-      "literal": "18",
-      "disposition": "deferred",
-      "owner": "finding-7",
-      "reason": "Register finding 7 already owns this exact instance: `assertEqual(len(owned), 18)` blocks any candidate that adds an owner entry to `policy/component-owners.json`, the deadlock ed3c/noodles#285 widened out of the sibling assertion in the same method. Left to that entry and counted here."
-    },
-    {
-      "path": "tests/test_component_surface.py",
       "test": "ComponentSurfaceGateTests.test_missing_component_declaration_fails_closed",
       "literal": "1",
       "disposition": "invariant",

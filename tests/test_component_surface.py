@@ -566,12 +566,22 @@ class ComponentOwnerMapTests(unittest.TestCase):
         regression this ratchet exists for (an accidental deletion shrinking the count) while
         admitting legitimate growth. ed3c/noodles#278 owns building the fully self-computed version of
         this ratchet (and the separate `contract` glob "*" bypass); this floor is the narrower, urgent
-        unblock only."""
+        unblock only.
+
+        ed3c/noodles#326: the owned-entry half was still a strict `==`, and it deadlocks in exactly
+        the direction the drain has to move. `pull_request_target` runs this module from the default
+        branch against the candidate's `policy/component-owners.json`, so the first candidate that
+        assigns an owner to a previously unowned definition computes 19 against a literal only `main`
+        can hold, reds in trusted verify, and can never merge to update the literal. This is the
+        widen-acceptance step of that staged transition: the floor keeps catching the regression the
+        pin exists for - ownership silently shrinking - and stops refusing the growth the drain is.
+        The count it admits is now read from the candidate's own map, the same both-halves-from-the-
+        candidate cure ed3c/noodles#306 applied to the sibling disclosure."""
         source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
         defs = noodles.top_level_definitions(source, "noodles.py")
         owned = self.owners.get("noodles.py", {})
         self.assertGreaterEqual(len(defs), 139)
-        self.assertEqual(len(owned), 18)
+        self.assertGreaterEqual(len(owned), 18)
 
     def test_absent_map_is_inert_rather_than_red(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
