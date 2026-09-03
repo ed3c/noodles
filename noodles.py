@@ -132,11 +132,17 @@ RETRIEVAL_FIELDS = (
     "embedder",
     "backend",
     "index",
+    "index_owner",
     "candidates",
     "non_claims",
 )
 # constraint: grepai 0.30.0 populates vectors only from its watcher; `init` is the one-shot half.
 RETRIEVAL_INDEX_DAEMON_VERB = "watch"
+# constraint: ed3c/noodles#307 - the two argv the lock keeps for the vector population's owner. The
+# constraint: ceremony executes exactly one of them: the readback. `start_argv` exists so a receipt
+# constraint: can name the lifecycle that would populate the index, never so a batch verb can run it.
+RETRIEVAL_OWNER_START_ARGV = "start_argv"
+RETRIEVAL_OWNER_STATUS_ARGV = "status_argv"
 # constraint: one entry, because one provider is pinned in policy/retrieval.lock.json. A second name
 # constraint: nothing pins is an admitted provider with no caller and no digest - the set widens when
 # constraint: a lock entry arrives, not before.
@@ -4332,8 +4338,32 @@ def retrieval_init_argv_errors(pin: Mapping[str, Any]) -> list[str]:
             f"retrieval init_argv must stay one-shot; {RETRIEVAL_INDEX_DAEMON_VERB!r} is the long-running "
             "indexer and is owned by its operator, not by this batch ceremony"
         )
-    if not str(pin.get("index_owner", "")).strip():
-        errors.append("retrieval index_owner must name what populates the vectors, so an empty index has an addressee")
+    # constraint: ed3c/noodles#307 - index_owner used to be one prose sentence, so `index-absent` was
+    # constraint: a refusal naming someone else's command with nothing behind it. It is now a shape the
+    # constraint: machine can execute: who owns the lifecycle, the argv that starts it (recorded, never
+    # constraint: run here), and the argv that reads its state back before any query.
+    owner = pin.get("index_owner")
+    if not isinstance(owner, dict):
+        errors.append(
+            f"{retrieval_contract.LOCK_PATH} retrieval index_owner must be an object naming the owner of "
+            "the vector population and the argv that reads its state back, so an empty index has an addressee"
+        )
+        return errors
+    if not str(owner.get("owner", "")).strip():
+        errors.append("retrieval index_owner.owner must name who runs the lifecycle that populates the vectors")
+    for field in (RETRIEVAL_OWNER_START_ARGV, RETRIEVAL_OWNER_STATUS_ARGV):
+        owner_argv = owner.get(field)
+        if not isinstance(owner_argv, list) or not owner_argv or not all(isinstance(token, str) for token in owner_argv):
+            errors.append(f"retrieval index_owner.{field} must be a non-empty list of exact string tokens")
+        elif owner_argv[0] != command:
+            errors.append(f"retrieval index_owner.{field}[0] must be the pinned command {command!r}, got {owner_argv[0]!r}")
+    if owner.get(RETRIEVAL_OWNER_START_ARGV) == owner.get(RETRIEVAL_OWNER_STATUS_ARGV):
+        errors.append(
+            f"retrieval index_owner.{RETRIEVAL_OWNER_STATUS_ARGV} must be a readback distinct from "
+            f"{RETRIEVAL_OWNER_START_ARGV}; the ceremony reads the owner's state and never starts it"
+        )
+    if not str(owner.get("running_marker", "")).strip():
+        errors.append("retrieval index_owner.running_marker must name what the readback prints once the owner has run")
     return errors
 
 
@@ -4370,12 +4400,38 @@ def write_intent_receipt(path: Path, receipt: dict[str, Any], pin: Mapping[str, 
     return receipt
 
 
-def retrieval_index_admission(index_root: Path, clone: Path, commit: str) -> dict[str, Any]:
+def retrieval_index_owner_state(pin: Mapping[str, Any], index_root: Path) -> dict[str, Any]:
+    """ed3c/noodles#307 - read the vector population's admitted owner back before any query runs.
+
+    `index-absent` was correct and unowned: a refusal naming a command belonging to nobody. The cure
+    is not to soften the refusal into an empty result but to give the state it names an owner, so the
+    receipt carries who populates this index and whether that owner has actually run.
+
+    Exactly one argv is executed here, and it is the readback. `start_argv` is read for the receipt's
+    `lifecycle` string and is never passed to a subprocess, so no ceremony can start a daemon - the
+    property is structural rather than a rule someone has to remember, and
+    `RetrievalIndexOwnerTests` plants a sentinel behind both argv to prove which one ran."""
+    owner = pin["index_owner"]
+    result = run(list(owner[RETRIEVAL_OWNER_STATUS_ARGV]), cwd=index_root, check=False)
+    readback = (result.stdout or result.stderr or "").strip()
+    return {
+        "owner": str(owner["owner"]),
+        "lifecycle": " ".join(owner[RETRIEVAL_OWNER_START_ARGV]),
+        "status_argv": list(owner[RETRIEVAL_OWNER_STATUS_ARGV]),
+        "running": result.returncode == 0 and str(owner["running_marker"]) in readback,
+        "readback": readback or f"{owner[RETRIEVAL_OWNER_STATUS_ARGV][0]} exited {result.returncode} with no output",
+    }
+
+
+def retrieval_index_admission(index_root: Path, clone: Path, commit: str, owner: Mapping[str, Any]) -> dict[str, Any]:
     """Refuse a commit-mismatched or corrupted retrieval index before any query runs.
 
     Both checks are file and git reads, so hosted CI runs them with the retrieval binary absent. An
     empty or truncated index answers every query with a result that is byte-identical to a real miss,
-    which is exactly the misdiagnosis this surface exists to retire."""
+    which is exactly the misdiagnosis this surface exists to retire.
+
+    ed3c/noodles#307: the absent-index refusal names its owner and that owner's read-back state, so
+    the reader learns which lifecycle has to run rather than only that something did not."""
     head = git(clone, "rev-parse", "HEAD")
     if head != commit:
         raise GateError(f"index-mismatch: {clone} now sits at {head}, not the checked-out {commit}")
@@ -4383,7 +4439,9 @@ def retrieval_index_admission(index_root: Path, clone: Path, commit: str) -> dic
     if not index.is_file() or index.stat().st_size == 0:
         raise GateError(
             f"index-absent: no populated retrieval index at {index}; an unindexed clone answers every "
-            "query with an empty result that is indistinguishable from a real miss"
+            f"query with an empty result that is indistinguishable from a real miss. Vector population "
+            f"is owned by {owner['owner']} via `{owner['lifecycle']}`, read back as "
+            f"{'running' if owner['running'] else 'not running'}: {owner['readback']!r}"
         )
     return {"index_root": str(index_root), "index_bytes": index.stat().st_size, "index_sha256": sha256_file(index)}
 
@@ -4425,6 +4483,7 @@ def code_intel_intent(root: Path, checkout_receipt: str, query: str) -> dict[str
         "embedder": retrieval_spend_admission(pin),
         "backend": {},
         "index": {},
+        "index_owner": {},
         "candidates": [],
         "non_claims": list(RETRIEVAL_NON_CLAIMS),
     }
@@ -4436,11 +4495,14 @@ def code_intel_intent(root: Path, checkout_receipt: str, query: str) -> dict[str
         receipt["diagnostic"] = f"{failure} (pinned in {retrieval_contract.LOCK_PATH} as {pin['command']} {pin['version']})"
         return write_intent_receipt(intent_path, receipt, pin)
     receipt["backend"]["initialisation"] = ensure_retrieval_backend(workspace, pin)
+    # constraint: ed3c/noodles#307 - the owner's state is read back before the index is judged and
+    # constraint: before any query runs, so every intent receipt names who populates this index.
+    receipt["index_owner"] = retrieval_index_owner_state(pin, workspace)
     try:
-        receipt["index"] = retrieval_index_admission(workspace, clone, str(checkout["commit"]))
+        receipt["index"] = retrieval_index_admission(workspace, clone, str(checkout["commit"]), receipt["index_owner"])
     except GateError as failure:
         receipt["state"] = RETRIEVAL_INDEX_MISMATCH if "index-mismatch" in str(failure) else RETRIEVAL_INDEX_ABSENT
-        receipt["diagnostic"] = f"{failure}; vector population is owned by {pin['index_owner']!r}"
+        receipt["diagnostic"] = str(failure)
         return write_intent_receipt(intent_path, receipt, pin)
     search = retrieval_contract.pinned_search(pin, receipt["index"]["index_root"], error_cls=GateError)
     candidates = retrieval_contract.parse_candidates(search(query), error_cls=GateError)
@@ -4479,6 +4541,16 @@ def admit_intent_receipt(receipt: Any, pin: Mapping[str, Any]) -> dict[str, Any]
         raise GateError(f"intent receipt state is {receipt['state']!r}: {receipt.get('diagnostic') or 'no diagnostic recorded'}")
     if receipt["backend"].get("sha256") != pin["binary_sha256"]:
         raise GateError("intent receipt records a retrieval binary that is not the pinned digest")
+    # constraint: ed3c/noodles#307 - a candidates receipt must say whose index it read. Without this
+    # constraint: the answer's provenance stops at "some index existed", which is the unowned state
+    # constraint: this atom retires, one layer up from the refusal it retires it in.
+    owner = receipt["index_owner"] if isinstance(receipt["index_owner"], dict) else {}
+    if owner.get("owner") != pin["index_owner"]["owner"] or owner.get("status_argv") != list(
+        pin["index_owner"][RETRIEVAL_OWNER_STATUS_ARGV]
+    ):
+        raise GateError("intent receipt does not name the pinned owner of the vector population it queried")
+    if not str(owner.get("readback") or "").strip():
+        raise GateError("intent receipt records no readback of the index owner's state")
     if not receipt["candidates"]:
         raise GateError("intent receipt in the candidates state carries no candidates")
     for candidate in receipt["candidates"]:

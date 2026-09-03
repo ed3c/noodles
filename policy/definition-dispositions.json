@@ -102,6 +102,7 @@
           "repo_root",
           "repository_metrics",
           "requirement_definition_source",
+          "retrieval_index_owner_state",
           "retrieval_spend_admission",
           "rotation_env",
           "run",

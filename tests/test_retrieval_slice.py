@@ -63,6 +63,13 @@ def intent_receipt(**overrides: object) -> dict:
         },
         "backend": {"path": "/usr/local/bin/grepai", "sha256": PIN["binary_sha256"], "version_stdout": PIN["version"]},
         "index": {"index_root": "/session", "index_bytes": 4096, "index_sha256": "c" * 64},
+        "index_owner": {
+            "owner": PIN["index_owner"]["owner"],
+            "lifecycle": " ".join(PIN["index_owner"]["start_argv"]),
+            "status_argv": list(PIN["index_owner"]["status_argv"]),
+            "running": True,
+            "readback": PIN["index_owner"]["running_marker"],
+        },
         "candidates": [
             {
                 "path": "noodles.py",
@@ -112,6 +119,21 @@ class RetrievalMeteringTests(unittest.TestCase):
                 retrieval_contract.QUERY_PLACEHOLDER,
             ),
             "unowned index": (lambda pin: pin.update(index_owner="  "), "index_owner"),
+            # constraint: ed3c/noodles#307 - the vector population's owner is a shape the machine can
+            # constraint: execute, not a sentence: a prose owner, an owner with no addressee, a foreign
+            # constraint: command, a readback that is really the start argv, and a missing running
+            # constraint: marker each red, because each one leaves index-absent unowned again.
+            "prose owner": (lambda pin: pin.update(index_owner="grepai watch, ask the operator"), "must be an object"),
+            "owner with no addressee": (lambda pin: pin["index_owner"].update(owner="  "), "index_owner.owner"),
+            "foreign owner command": (
+                lambda pin: pin["index_owner"].update(status_argv=["other", "watch", "--status"]),
+                "pinned command",
+            ),
+            "readback that starts the daemon": (
+                lambda pin: pin["index_owner"].update(status_argv=list(PIN["index_owner"]["start_argv"])),
+                "never starts it",
+            ),
+            "no running marker": (lambda pin: pin["index_owner"].update(running_marker=""), "running_marker"),
         }
         for name, (mutate, phrase) in cases.items():
             with self.subTest(mutation=name):
@@ -143,23 +165,105 @@ class RetrievalIndexCurrencyTests(unittest.TestCase):
         self.index = self.root / retrieval_contract.INDEX_DIRNAME / retrieval_contract.INDEX_FILENAME
         self.index.parent.mkdir()
         self.index.write_bytes(b"pretend-vectors")
+        self.owner = {
+            "owner": PIN["index_owner"]["owner"],
+            "lifecycle": " ".join(PIN["index_owner"]["start_argv"]),
+            "status_argv": list(PIN["index_owner"]["status_argv"]),
+            "running": False,
+            "readback": "Status: not running",
+        }
 
     def test_a_populated_index_at_the_checked_out_commit_is_admitted(self) -> None:
-        admitted = noodles.retrieval_index_admission(self.root, self.clone, self.commit)
+        admitted = noodles.retrieval_index_admission(self.root, self.clone, self.commit, self.owner)
         self.assertEqual(admitted["index_bytes"], len(b"pretend-vectors"))
         self.assertEqual(admitted["index_sha256"], hashlib.sha256(b"pretend-vectors").hexdigest())
 
     def test_a_truncated_index_is_refused_rather_than_read_as_a_miss(self) -> None:
         self.index.write_bytes(b"")
         with self.assertRaisesRegex(noodles.GateError, "index-absent"):
-            noodles.retrieval_index_admission(self.root, self.clone, self.commit)
+            noodles.retrieval_index_admission(self.root, self.clone, self.commit, self.owner)
+
+    def test_the_absent_index_refusal_names_its_owner_and_that_owners_read_back_state(self) -> None:
+        """ed3c/noodles#307 planted negative: a clone nobody indexed still refuses rather than
+        returning an empty candidate list, and the refusal now names the lifecycle that would fix it
+        together with what that lifecycle's own readback said."""
+        self.index.write_bytes(b"")
+        with self.assertRaises(noodles.GateError) as refusal:
+            noodles.retrieval_index_admission(self.root, self.clone, self.commit, self.owner)
+        message = str(refusal.exception)
+        self.assertIn("index-absent", message)
+        self.assertIn(self.owner["owner"], message)
+        self.assertIn(self.owner["lifecycle"], message)
+        self.assertIn("not running", message)
+        self.assertIn(self.owner["readback"], message)
 
     def test_a_clone_moved_off_the_indexed_commit_is_refused(self) -> None:
         (self.clone / "module.py").write_text("def thing() -> int:\n    return 2\n", encoding="utf-8")
         cmd(["git", "add", "-A"], self.clone)
         cmd(["git", "commit", "-q", "-m", "two"], self.clone)
         with self.assertRaisesRegex(noodles.GateError, "index-mismatch"):
-            noodles.retrieval_index_admission(self.root, self.clone, self.commit)
+            noodles.retrieval_index_admission(self.root, self.clone, self.commit, self.owner)
+
+
+class RetrievalIndexOwnerTests(unittest.TestCase):
+    """ed3c/noodles#307: the vector population has an owner the machine reads back, and reading it
+    back is the only thing the ceremony ever runs.
+
+    Both argv are stubbed with sentinel-writing scripts, so "the ceremony never starts a daemon" is
+    decided by which file exists afterwards rather than by inspecting argv strings for a start verb.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="noodles-index-owner-", ignore_cleanup_errors=True)
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.started = self.root / "start.ran"
+        self.status = self.root / "status.ran"
+
+    def stub(self, name: str, sentinel: Path, stdout: str, exit_code: int = 0) -> str:
+        path = self.root / name
+        path.write_text(
+            f"#!/bin/sh\ntouch {sentinel}\nprintf '%s\\n' '{stdout}'\nexit {exit_code}\n", encoding="utf-8"
+        )
+        path.chmod(0o755)
+        return str(path)
+
+    def pin(self, stdout: str, exit_code: int = 0) -> dict:
+        planted = copy.deepcopy(PIN)
+        planted["index_owner"]["start_argv"] = [self.stub("start", self.started, "started"), "--background"]
+        planted["index_owner"]["status_argv"] = [self.stub("status", self.status, stdout, exit_code)]
+        return planted
+
+    def test_the_ceremony_reads_the_owner_back_and_never_runs_the_argv_that_starts_it(self) -> None:
+        state = noodles.retrieval_index_owner_state(self.pin("Status: running (pid 4242)"), self.root)
+
+        self.assertTrue(self.status.exists(), "the readback argv must run")
+        self.assertFalse(self.started.exists(), "the ceremony must never run the argv that starts the indexer")
+        self.assertIs(state["running"], True)
+        self.assertEqual(state["owner"], PIN["index_owner"]["owner"])
+        self.assertIn("--background", state["lifecycle"])
+        self.assertIn("Status: running", state["readback"])
+
+    def test_an_owner_that_has_not_run_is_read_back_as_not_running_rather_than_as_absent(self) -> None:
+        state = noodles.retrieval_index_owner_state(self.pin("Status: not running"), self.root)
+
+        self.assertIs(state["running"], False)
+        self.assertEqual(state["readback"], "Status: not running")
+        self.assertFalse(self.started.exists())
+
+    def test_a_readback_that_fails_is_not_running_and_still_carries_a_diagnostic(self) -> None:
+        state = noodles.retrieval_index_owner_state(self.pin("", 3), self.root)
+
+        self.assertIs(state["running"], False)
+        self.assertTrue(state["readback"].strip(), "a failed readback must still say something")
+
+    def test_the_ceremony_reads_the_owner_back_before_it_judges_the_index(self) -> None:
+        """The readback is not decoration: `code_intel_intent` records it before
+        `retrieval_index_admission` runs, so an index-absent receipt already knows its owner."""
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        readback = source.index("receipt[\"index_owner\"] = retrieval_index_owner_state(")
+        judged = source.index("retrieval_index_admission(workspace, clone,")
+        self.assertLess(readback, judged)
 
 
 class IntentReceiptAdmissionTests(unittest.TestCase):
@@ -314,6 +418,18 @@ class LiveRetrievalTests(unittest.TestCase):
                 (workspace / retrieval_contract.INDEX_DIRNAME / retrieval_contract.INDEX_FILENAME).exists(),
                 "initialisation must not populate vectors; that owner is the watcher",
             )
+
+    def test_the_real_pinned_owner_answers_its_own_readback(self) -> None:
+        """ed3c/noodles#307: the lock's `status_argv` is not a claim about what the tool supports.
+        This runs it against the installed pinned binary and requires a state, so a lock that names a
+        readback the tool does not have reds here rather than at the first index-absent receipt."""
+        with tempfile.TemporaryDirectory(prefix="noodles-index-owner-live-", ignore_cleanup_errors=True) as temp:
+            state = noodles.retrieval_index_owner_state(PIN, Path(temp))
+
+        self.assertEqual(state["status_argv"], list(PIN["index_owner"]["status_argv"]))
+        self.assertIn(state["running"], (True, False))
+        self.assertTrue(state["readback"].strip())
+        self.assertEqual(state["owner"], PIN["index_owner"]["owner"])
 
 
 if __name__ == "__main__":

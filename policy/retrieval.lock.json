@@ -7,7 +7,13 @@
     "argv": ["grepai", "search", "{query}", "--json", "--compact", "--limit", "5"],
     "version_argv": ["grepai", "version"],
     "init_argv": ["grepai", "init", "--yes", "--provider", "ollama", "--backend", "gob"],
-    "index_owner": "grepai watch (operator-owned long-running indexer; the intent ceremony never starts it)",
+    "index_owner": {
+      "owner": "operator",
+      "start_argv": ["grepai", "watch", "--background"],
+      "status_argv": ["grepai", "watch", "--status"],
+      "running_marker": "Status: running",
+      "purpose": "Vector population is a long-running indexer whose lifecycle belongs to the operator. The intent ceremony runs status_argv only; start_argv is recorded so the receipt can name the lifecycle, never so the ceremony can start it."
+    },
     "authority": "P",
     "embedder": {
       "provider": "ollama",
