@@ -40,7 +40,7 @@ OWNERSHIP_REGISTRY_PATH = "policy/ownership-keys.json"
 # constraint: own policy document; deleting the key here raises
 # constraint: KeyError inside the trusted verifier, which `./noodles verify --trusted-preview`
 # constraint: reproduced as two reds no rerun could clear. This is step 1 of widen -> flip -> retire:
-# constraint: the retirement atom, filed as findings-register entry 9, deletes the key once a
+# constraint: the retirement atom, filed as findings-register entry 10, deletes the key once a
 # constraint: default branch carrying the registry is what judges candidates.
 # constraint: ed3c/noodles#325 - a shorter owned value is not an identity a tracked tree can be
 # constraint: scanned for; it matches inside unrelated words and the registry would spend its rows

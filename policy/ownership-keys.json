@@ -21,31 +21,18 @@
       "id": "provider-source",
       "owner": "policy/providers.lock.json",
       "select": ["providers", "*", "source"],
-      "why": "The provider source URL is the identity half of a pinned external dependency. A second writer is how a retired provider survives in prose: the drift history this atom cites is provider pins copied into the README.",
-      "projections": [
-        {
-          "path": "tests/test_noodles.py",
-          "why": "The trusted provider-lock assertion compares the candidate's entries against a pinned list, so it necessarily carries this lock's values verbatim. ed3c/noodles#304 widened that list into a present-or-absent window for the staged compat removal, and ed3c/noodles#301 closes the window by restoring an exact pin - a full literal mirror of the lock, larger than the widened form, not a retirement of it. The mirror is the point: it is what pull_request_target runs from the default branch against every candidate, so this projection is the mechanical carrier of the refusal and stays a permanent read-only reader rather than a second writer."
-        }
-      ]
+      "why": "The provider source URL is the identity half of a pinned external dependency. A second writer is how a retired provider survives in prose: the drift history this atom cites is provider pins copied into the README. Registered with no projections because this tree measurably has none - the detector was run against the rebased head and only the owner carries these URLs.",
+      "projections": []
     },
     {
       "id": "provider-commit",
       "owner": "policy/providers.lock.json",
       "select": ["providers", "*", "commit"],
-      "why": "The exact 40-hex commit is what makes a provider pinned rather than floating. What this row refuses: a file outside the registry that writes one of the lock's commits, and an admitted projection that has fallen off the owner entirely by carrying none of its current commits. What it does NOT refuse, measured on this tree rather than assumed away: a projection citing several pins where only one moved still carries a live sibling value and stays green, because admission is per projection, not per value, and the registry declares no value SHAPE - so a stale 40-hex string inside an otherwise-current projection is invisible here. That partial staleness is the drift a README citing several pins actually produces, and it is a review concern until a per-value rule with a declared shape lands.",
+      "why": "The exact 40-hex commit is what makes a provider pinned rather than floating. What this row refuses: a file outside the registry that writes one of the lock's commits, and an admitted projection that has fallen off the owner entirely by carrying none of its current commits. What it does NOT refuse, measured on this tree rather than assumed away: a projection citing several pins where only one moved still carries a live sibling value and stays green, because admission is per projection, not per value, and the registry declares no value SHAPE - so a stale 40-hex string inside an otherwise-current projection is invisible here. That partial staleness is the drift a README citing several pins actually produces, and it is a review concern until a per-value rule with a declared shape lands. The refusal is not hypothetical: rebasing this atom onto a default branch it was authored before turned it red, because two projections this row once admitted - migrations/skills-shared/ledger.json, whose source_commit pins a skills-shared tree rather than a provider entry, and tests/test_noodles.py, whose literal lock mirror ed3c/noodles#301 replaced with a retired-name scan - had both stopped carrying any commit this lock currently holds. The detector named them; they are retired here rather than in prose.",
       "projections": [
         {
           "path": "docs/design/context-closure/README.md",
           "why": "The context-closure source table cites the exact pinned bytes it read. It is a projection of the lock, and when the lock moves this row makes the citation say so instead of silently describing a commit nobody fetches."
-        },
-        {
-          "path": "migrations/skills-shared/ledger.json",
-          "why": "The migration ledger records which pinned commit the skills-shared disposition was taken against; it is derived from the lock entry that still carries that commit."
-        },
-        {
-          "path": "tests/test_noodles.py",
-          "why": "Same trusted provider-lock assertion as the provider-source row: ed3c/noodles#301 closes the ed3c/noodles#304 window by restoring an exact literal mirror of this lock, so the projection grows rather than retires and stays the default branch's carrier of the pin."
         }
       ]
     },

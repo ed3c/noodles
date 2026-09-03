@@ -139,7 +139,7 @@ class OwnershipRegistryTests(unittest.TestCase):
         return json.loads((CANDIDATE_ROOT / skill_contract.OWNERSHIP_REGISTRY_PATH).read_text())
 
     def fixture(self, registry: dict, files: dict[str, str]) -> tuple[Path, set[str]]:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-ownership-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-ownership-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         for relative, text in {skill_contract.OWNERSHIP_REGISTRY_PATH: json.dumps(registry), **files}.items():
@@ -182,7 +182,7 @@ class OwnershipRegistryTests(unittest.TestCase):
         against the candidate's own policy, so deleting the key raises KeyError inside the trusted
         verifier - `./noodles verify --trusted-preview` reproduced exactly that as two reds no rerun
         could clear. The key has no reader in this tree, which is asserted here so the residue cannot
-        quietly become a second writer; the retirement is filed as findings-register entry 9."""
+        quietly become a second writer; the retirement is filed as findings-register entry 10."""
         source = (CANDIDATE_ROOT / "noodles.py").read_text()
         self.assertNotIn("validate_task_profile_single_source", source)
         self.assertNotIn("task_profile_literal_exempt_paths", source)
