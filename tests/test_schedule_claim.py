@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import contextlib
+import dataclasses
 import hashlib
 import io
+import os
 import tempfile
 import threading
 import unittest
@@ -1094,6 +1096,264 @@ class StruggleDetectorTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertNotIn("struggle_same_signature_attempts =", source)
                 self.assertNotIn("STRUGGLE_SAME_SIGNATURE_ATTEMPTS", source)
+
+
+# constraint: ed3c/noodles#407 - the six-mode fail-soft machine's fixtures live in this module rather
+# constraint: than a new one because a new tests/ module importing schedule_domain adds one
+# constraint: cross-surface import edge to `verify`, `carrier` and `docs`, whose standing counts are
+# constraint: disclosed in AGENTS.md and policy/fitness.json - both outside this atom's declared
+# constraint: write boundary, so a separate module could not be landed by this atom at all.
+FAILSOFT_SOURCE = "provider-event-adapter"
+FAILSOFT_OBSERVED_AT = "2026-09-03T11:41:00Z"
+
+
+def provider_reading(
+    *triggers: str, source: str = FAILSOFT_SOURCE, observed_at: str = FAILSOFT_OBSERVED_AT
+) -> schedule_domain.ProviderReading:
+    return schedule_domain.ProviderReading(triggers=triggers, source=source, observed_at=observed_at)
+
+
+class ProviderModeTransitionTests(unittest.TestCase):
+    """One fixture per transition class, each asserted in both directions.
+
+    Every reading is planted through the machine's own testable seam rather than by degrading a real
+    provider, which is what keeps the whole module side-effect free."""
+
+    def assert_transition(self, current: str, trigger: str, expected: str) -> None:
+        moved = schedule_domain.provider_mode_transition(current, provider_reading(trigger))
+        self.assertIsNotNone(moved, f"{trigger} must move {current}")
+        assert moved is not None
+        self.assertEqual((moved.from_mode, moved.to_mode, moved.trigger), (current, expected, trigger))
+        # constraint: the receipt must NAME the reading, not merely exist: source and instant both.
+        self.assertIn(f"trigger {trigger}", moved.receipt)
+        self.assertIn(f"source {FAILSOFT_SOURCE}", moved.receipt)
+        self.assertIn(f"observed_at {FAILSOFT_OBSERVED_AT}", moved.receipt)
+        self.assertEqual(schedule_domain.mode_transition_errors(moved), [])
+
+    def test_claude_unavailable_enters_codex_only(self) -> None:
+        self.assert_transition("NORMAL_HYBRID", "claude_unavailable", "CODEX_ONLY")
+
+    def test_codex_write_quota_pressure_enters_read_only_drain(self) -> None:
+        self.assert_transition("NORMAL_HYBRID", "codex_write_quota_pressure", "READ_ONLY_DRAIN")
+
+    def test_all_execution_providers_unavailable_enters_admission_only(self) -> None:
+        self.assert_transition("NORMAL_HYBRID", "execution_providers_unavailable", "ADMISSION_ONLY")
+
+    def test_budget_exhausted_enters_paused_budget(self) -> None:
+        self.assert_transition("NORMAL_HYBRID", "budget_exhausted", "PAUSED_BUDGET")
+
+    def test_landing_authority_lost_enters_paused_authority(self) -> None:
+        self.assert_transition("NORMAL_HYBRID", "landing_authority_lost", "PAUSED_AUTHORITY")
+
+    def test_every_table_row_has_its_own_fixture_direction(self) -> None:
+        """No transition class ships without a planted reading proving it fires."""
+        for trigger, mode in schedule_domain.PROVIDER_TRANSITION_TABLE:
+            with self.subTest(trigger=trigger):
+                self.assert_transition("NORMAL_HYBRID", trigger, mode)
+
+    def test_recovery_reading_reverses_each_transition_with_its_own_receipt(self) -> None:
+        for _, mode in schedule_domain.PROVIDER_TRANSITION_TABLE:
+            with self.subTest(mode=mode):
+                recovered = schedule_domain.provider_mode_transition(mode, provider_reading())
+                self.assertIsNotNone(recovered)
+                assert recovered is not None
+                self.assertEqual((recovered.from_mode, recovered.to_mode), (mode, "NORMAL_HYBRID"))
+                self.assertEqual(recovered.trigger, schedule_domain.CLEAR_READING)
+                self.assertIn(f"source {FAILSOFT_SOURCE}", recovered.receipt)
+                self.assertEqual(schedule_domain.mode_transition_errors(recovered), [])
+
+    def test_clear_reading_in_normal_hybrid_produces_no_transition(self) -> None:
+        """The other direction of every recovery fixture: no move, so no receipt to emit."""
+        self.assertIsNone(schedule_domain.provider_mode_transition("NORMAL_HYBRID", provider_reading()))
+
+    def test_reading_that_repeats_the_current_mode_produces_no_transition(self) -> None:
+        for trigger, mode in schedule_domain.PROVIDER_TRANSITION_TABLE:
+            with self.subTest(trigger=trigger):
+                self.assertIsNone(schedule_domain.provider_mode_transition(mode, provider_reading(trigger)))
+
+    def test_unmeasured_trigger_is_refused_rather_than_read_as_clear(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.provider_mode_transition("NORMAL_HYBRID", provider_reading("vibes_are_off"))
+        self.assertIn("vibes_are_off", str(caught.exception))
+
+    def test_unknown_current_mode_is_refused(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.provider_mode_transition("BEST_EFFORT", provider_reading())
+        self.assertIn("BEST_EFFORT", str(caught.exception))
+
+    def test_table_covers_exactly_the_degraded_modes(self) -> None:
+        """The modes are NORMAL_HYBRID plus one target per table row; no orphan mode, no orphan row."""
+        targets = {mode for _, mode in schedule_domain.PROVIDER_TRANSITION_TABLE}
+        self.assertEqual(targets | {"NORMAL_HYBRID"}, set(schedule_domain.PROVIDER_MODES))
+        self.assertEqual(len(schedule_domain.PROVIDER_MODES), len(schedule_domain.PROVIDER_TRANSITION_TABLE) + 1)
+
+
+class ProviderModeReceiptTests(unittest.TestCase):
+    """A transition without a receipt is itself a validator error - planted."""
+
+    def moved(self) -> schedule_domain.ModeTransition:
+        moved = schedule_domain.provider_mode_transition("NORMAL_HYBRID", provider_reading("budget_exhausted"))
+        assert moved is not None
+        return moved
+
+    def test_receiptless_transition_is_a_validator_error(self) -> None:
+        errors = schedule_domain.mode_transition_errors(dataclasses.replace(self.moved(), receipt=""))
+        self.assertTrue(errors)
+        self.assertIn("carries no receipt", errors[0])
+
+    def test_receipt_naming_a_different_move_is_a_validator_error(self) -> None:
+        honest = self.moved()
+        planted = dataclasses.replace(honest, receipt=honest.receipt.replace("to PAUSED_BUDGET", "to NORMAL_HYBRID"))
+        errors = schedule_domain.mode_transition_errors(planted)
+        self.assertTrue(errors)
+        self.assertIn("but the transition is", errors[0])
+
+    def test_honest_transition_passes_the_same_validator(self) -> None:
+        self.assertEqual(schedule_domain.mode_transition_errors(self.moved()), [])
+
+
+class ReadOnlyDrainVerbTests(unittest.TestCase):
+    """Each direction asserted: the drain admits its enumerated verbs and refuses execution verbs."""
+
+    def test_execution_verb_is_refused_with_the_mode_named(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.admit_verb("READ_ONLY_DRAIN", "execute_handoff")
+        message = str(caught.exception)
+        self.assertIn("READ_ONLY_DRAIN", message)
+        self.assertIn("execute_handoff", message)
+
+    def test_classification_verb_is_admitted(self) -> None:
+        self.assertEqual(schedule_domain.admit_verb("READ_ONLY_DRAIN", "classification"), "classification")
+
+    def test_every_enumerated_drain_verb_is_admitted(self) -> None:
+        for verb in sorted(schedule_domain.READ_ONLY_DRAIN_VERBS):
+            with self.subTest(verb=verb):
+                self.assertEqual(schedule_domain.admit_verb("READ_ONLY_DRAIN", verb), verb)
+
+    def test_other_modes_carry_no_enumerated_verb_set(self) -> None:
+        """Only READ_ONLY_DRAIN is enumerated by the ratified contract; nothing here invents more."""
+        for mode in schedule_domain.PROVIDER_MODES:
+            if mode == "READ_ONLY_DRAIN":
+                continue
+            with self.subTest(mode=mode):
+                self.assertEqual(schedule_domain.admit_verb(mode, "execute_handoff"), "execute_handoff")
+
+    def test_unknown_mode_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            schedule_domain.admit_verb("DRAINING", "classification")
+
+
+class IdentityHardGateTests(unittest.TestCase):
+    """No mode reachable by any transition admits an identity substitution."""
+
+    def test_planted_substitution_under_paused_budget_is_a_validator_error(self) -> None:
+        errors = schedule_domain.identity_substitution_errors("PAUSED_BUDGET", "github-app/noodles", "operator-pat")
+        self.assertTrue(errors)
+        self.assertIn("PAUSED_BUDGET", errors[0])
+        self.assertIn("operator-pat", errors[0])
+
+    def test_no_mode_admits_a_substitution(self) -> None:
+        for mode in schedule_domain.PROVIDER_MODES:
+            with self.subTest(mode=mode):
+                self.assertTrue(schedule_domain.identity_substitution_errors(mode, "declared", "substituted"))
+
+    def test_matching_identity_is_admitted_in_every_mode(self) -> None:
+        """The planted control's other direction: the refusal fires on substitution, not on presence."""
+        for mode in schedule_domain.PROVIDER_MODES:
+            with self.subTest(mode=mode):
+                self.assertEqual(schedule_domain.identity_substitution_errors(mode, "declared", "declared"), [])
+
+    def test_every_mode_reachable_by_a_transition_is_covered(self) -> None:
+        reachable = {"NORMAL_HYBRID"} | {mode for _, mode in schedule_domain.PROVIDER_TRANSITION_TABLE}
+        self.assertEqual(reachable, set(schedule_domain.PROVIDER_MODES))
+
+
+class BudgetDeferralClassificationTests(unittest.TestCase):
+    """Terminal-classification duty: a budget deferral that classifies nothing is a validator error."""
+
+    SUBJECTS = ("ed3c/noodles#407", "ed3c/noodles#408")
+    RETRY = "core quota bucket refills"
+
+    def classifications(self) -> tuple[schedule_domain.TerminalClassification, ...]:
+        return schedule_domain.budget_deferral_classifications(
+            provider_reading("budget_exhausted"), self.SUBJECTS, self.RETRY
+        )
+
+    def test_each_affected_subject_is_classified_deferred_budget_with_a_receipt(self) -> None:
+        produced = self.classifications()
+        self.assertEqual(tuple(item.subject for item in produced), self.SUBJECTS)
+        for item in produced:
+            with self.subTest(subject=item.subject):
+                self.assertEqual(item.terminal_class, schedule_domain.DEFERRED_BUDGET)
+                self.assertIn(f"budget_reading {FAILSOFT_SOURCE}@{FAILSOFT_OBSERVED_AT}", item.receipt)
+                self.assertIn(f"retry {self.RETRY}", item.receipt)
+        self.assertEqual(schedule_domain.budget_deferral_errors(self.SUBJECTS, produced), [])
+
+    def test_deferral_that_classifies_nothing_is_a_validator_error(self) -> None:
+        errors = schedule_domain.budget_deferral_errors(self.SUBJECTS, ())
+        self.assertTrue(errors)
+        self.assertIn("classified nothing", errors[0])
+
+    def test_partial_classification_names_the_unclassified_subject(self) -> None:
+        errors = schedule_domain.budget_deferral_errors(self.SUBJECTS, self.classifications()[:1])
+        self.assertTrue(any("ed3c/noodles#408" in error for error in errors))
+
+    def test_classification_under_another_class_is_refused(self) -> None:
+        planted = tuple(dataclasses.replace(item, terminal_class="RESOLVED") for item in self.classifications())
+        errors = schedule_domain.budget_deferral_errors(self.SUBJECTS, planted)
+        self.assertTrue(any("as RESOLVED" in error for error in errors))
+
+    def test_receipt_without_a_budget_reading_is_refused(self) -> None:
+        planted = tuple(
+            dataclasses.replace(
+                item, receipt=item.receipt.replace(f"{FAILSOFT_SOURCE}@{FAILSOFT_OBSERVED_AT}", "")
+            )
+            for item in self.classifications()
+        )
+        errors = schedule_domain.budget_deferral_errors(self.SUBJECTS, planted)
+        self.assertTrue(any("names no budget reading" in error for error in errors))
+
+    def test_receipt_naming_another_subject_is_refused(self) -> None:
+        planted = tuple(
+            dataclasses.replace(item, receipt=item.receipt.replace(item.subject, "ed3c/noodles#999", 1))
+            for item in self.classifications()
+        )
+        errors = schedule_domain.budget_deferral_errors(self.SUBJECTS, planted)
+        self.assertTrue(any("names subject ed3c/noodles#999" in error for error in errors))
+
+    def test_deferral_without_a_retry_condition_is_refused_at_production(self) -> None:
+        with self.assertRaises(ValueError):
+            schedule_domain.budget_deferral_classifications(provider_reading("budget_exhausted"), self.SUBJECTS, "  ")
+
+    def test_no_affected_subjects_needs_no_classification(self) -> None:
+        """A budget reading that defers nothing is not a failed duty; the duty is per deferred issue."""
+        self.assertEqual(schedule_domain.budget_deferral_errors((), ()), [])
+
+
+class FailSoftZeroWriteTests(unittest.TestCase):
+    """The claim is 'zero provider writes, zero new write surface'. Reduced, not asserted in prose."""
+
+    def test_the_whole_machine_writes_nothing_to_the_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-407-zero-write-", ignore_cleanup_errors=True) as name:
+            sandbox = Path(name)
+            before = sorted(path.relative_to(sandbox) for path in sandbox.rglob("*"))
+            cwd = Path.cwd()
+            os.chdir(sandbox)
+            try:
+                for trigger, mode in schedule_domain.PROVIDER_TRANSITION_TABLE:
+                    moved = schedule_domain.provider_mode_transition("NORMAL_HYBRID", provider_reading(trigger))
+                    assert moved is not None
+                    schedule_domain.mode_transition_errors(moved)
+                    schedule_domain.provider_mode_transition(mode, provider_reading())
+                    schedule_domain.identity_substitution_errors(mode, "declared", "substituted")
+                schedule_domain.admit_verb("READ_ONLY_DRAIN", "classification")
+                produced = schedule_domain.budget_deferral_classifications(
+                    provider_reading("budget_exhausted"), ("ed3c/noodles#407",), "quota refills"
+                )
+                schedule_domain.budget_deferral_errors(("ed3c/noodles#407",), produced)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
 
 
 if __name__ == "__main__":

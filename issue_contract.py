@@ -4,9 +4,11 @@ landing cannot strand its dependents behind a mirrored marker nobody patched.
 
 Stated ceiling of the evidence-qualification half (ed3c/noodles#317), the same way the completeness
 gate already disclaims prose judgment: `noodles-observer` and `noodles-capability-probe` are verified
-STRUCTURALLY - the marker is present, its section exists, both demonstration directions exist, and the
-command in each direction is byte-identical to the declared invocation. Nothing here can verify that
-the pasted outputs were not fabricated. The value is still real and two-fold. It is a forcing function:
+STRUCTURALLY - the marker is present, its section exists, both demonstration directions exist, the
+command in each direction is byte-identical to the declared invocation, and each direction records a
+status line in one closed form (ed3c/noodles#409). Nothing here can verify that the pasted outputs
+were not fabricated, and a status line is a paste like any other; what it removes is the half that
+could pass by NARRATION alone, because a status has no prose spelling to hide a failed command in. The value is still real and two-fold. It is a forcing function:
 the author must actually run the planted direction, and that is the exact moment an observer that
 structurally cannot see what it claims dies - because the planted violation produces silence. And it
 converts composed truth into checkable truth: the demonstration is a runnable pair any monitor, judge,
@@ -14,6 +16,7 @@ or successor can replay, so a fabricated demonstration is no longer a safe lie. 
 catch stays owned by monitors and judges, by design."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import re
 from typing import Any, Collection, Mapping, Sequence
@@ -111,6 +114,24 @@ EVIDENCE_SECTIONS: tuple[tuple[str, str, str, str, tuple[tuple[str, str], ...]],
         "prescribes no external tool behavior in its acceptance",
         (),
     ),
+)
+# constraint: ed3c/noodles#409 - the one part of a demonstration its author cannot narrate. Prose
+# constraint: output can be paraphrased into any verdict the author wants; a status cannot, so each
+# constraint: half owes one. ONE closed mechanical form with three admitted spellings, named in the
+# constraint: refusal message itself the way the marker semantics already are: `EXIT=<n>` for a
+# constraint: shell status, the runner's own verdict line for a suite that prints one, and
+# constraint: `EXIT=unrecorded` for a receipt whose status genuinely was never captured. The third
+# constraint: is deliberate and is the migration's honest exit: a recorded demonstration is never
+# constraint: re-executed to manufacture a zero, so an unknown status is DECLARED - one greppable
+# constraint: token - instead of invented. It is a hole with a name and a count, which is strictly
+# constraint: what an unvalidated status was not.
+STATUS_UNRECORDED = "unrecorded"
+STATUS_LINE_RE = re.compile(
+    rf"^[^A-Za-z0-9]*(?:EXIT=(?:[0-9]+|{STATUS_UNRECORDED})|OK(?:[ \t]*\([^)]*\))?|FAILED[ \t]*\([^)]*\))[ \t]*$"
+)
+STATUS_LINE_FORM = (
+    "'EXIT=<n>', the runner's own verdict line ('OK', 'OK (skipped=N)', 'FAILED (failures=N)'), "
+    f"or 'EXIT={STATUS_UNRECORDED}' when the receipt genuinely never captured one"
 )
 PROVIDER_AUTHORITY_TOKENS = ("provider", "github")
 PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body", "provider/direct", "closure readback", "merge readback", "provider landing")
@@ -274,6 +295,115 @@ def boundary_conflict(candidate: tuple[str, ...], active: tuple[str, ...]) -> st
             if longer[: len(shorter)] == shorter:
                 return "/".join(longer)
     return None
+
+
+# constraint: ed3c/noodles#390 - a surface some OTHER admitted mandate forces into the same commit is
+# constraint: co-permitted by construction, and the pairing is held here, at the one place a write
+# constraint: boundary is interpreted, rather than in each atom author's memory. Two standing mandates
+# constraint: each forced bytes outside every declared boundary and the two rules were individually
+# constraint: correct and jointly unsatisfiable; binding the exemption to the mandate makes the
+# constraint: collision impossible instead of remembered, and keeps it exactly as narrow as the
+# constraint: mandate - retire the mandate, delete the row, and the exemption dies with it.
+CO_MANDATE_REGISTRY_PATH = "policy/co-mandates.json"
+CO_MANDATE_FIELDS = frozenset({"surface", "mandate", "forced_by", "reason", "receipt"})
+# constraint: ed3c/noodles#390 - two probes deliberately unlike each other: a bare root file carrying
+# constraint: no extension, and a deep dotted path. A glob matching BOTH is the whole tree however it
+# constraint: is spelled, which refuses `**` and `*?*` as well as `*`. Refusing only the literal `*`
+# constraint: would leave the one shape no planted negative can catch behind a spelling.
+WHOLE_TREE_PROBES = ("noodles", ".github/workflows/verify.yml")
+
+
+def _co_mandate_row_errors(row: Any) -> list[str]:
+    """Every fault in one registry row, named one by one.
+
+    ONE rule, shared by the schema gate and by the judge below, so the two can never disagree about
+    what a usable row is: a row the gate would refuse is a row the judge co-permits nothing for.
+
+    `forced_by` may not be the whole tree. A row whose condition every change set satisfies is not an
+    exemption tied to a mandate, it is the boundary deleted, and it would be the one shape of this
+    registry that no planted negative could ever catch. Stated ceiling: the two probes catch a glob
+    that matches BOTH, so `*`, `**` and `*?*` are refused while a near-total glob like `*.*` is not -
+    it still cannot co-permit for a change set of extensionless files, and narrowing further would
+    need a rule about what a mandate may mean rather than about what a glob matches."""
+    if not isinstance(row, Mapping):
+        return [f"co-mandate row must be an object, got {type(row).__name__}"]
+    surface = row.get("surface")
+    label = surface if isinstance(surface, str) and surface else "<unnamed>"
+    if set(row) != CO_MANDATE_FIELDS:
+        return [f"co-mandate row {label} must carry exactly {', '.join(sorted(CO_MANDATE_FIELDS))}, got {', '.join(sorted(map(str, row)))}"]
+    errors: list[str] = []
+    if not isinstance(surface, str) or _boundary_segments(surface) is None:
+        errors.append(f"co-mandate row {label} surface must be one exact repository-relative path")
+    mandate = row.get("mandate")
+    if not isinstance(mandate, str) or not SUBJECT_RE.match(mandate):
+        errors.append(f"co-mandate row {label} mandate must name the forcing atom as owner/repo#N, got {mandate!r}")
+    forced_by = row.get("forced_by")
+    if not isinstance(forced_by, list) or not forced_by or not all(isinstance(item, str) and item for item in forced_by):
+        errors.append(f"co-mandate row {label} forced_by must be a non-empty list of change-set globs")
+    elif any(all(fnmatch.fnmatchcase(probe, glob) for probe in WHOLE_TREE_PROBES) for glob in forced_by):
+        errors.append(f"co-mandate row {label} forced_by names the whole tree, which co-permits its surface unconditionally rather than tying it to {mandate!r}")
+    for field in ("reason", "receipt"):
+        if not isinstance(row.get(field), str) or not row[field].strip():
+            errors.append(f"co-mandate row {label} must carry a written {field}")
+    return errors
+
+
+def co_mandate_errors(registry: Any) -> list[str]:
+    """Every schema fault in the co-mandate registry, named one by one.
+
+    A row pairs the co-permitted surface with the mandate that forces it, the change-set globs that
+    make that mandate apply, a written reason, and the live receipt that paid for the row. Two rows
+    for one surface would let a retired mandate keep an exemption its sibling row appears to justify,
+    so a duplicate surface is a refusal rather than a merge."""
+    if not isinstance(registry, Mapping):
+        return [f"{CO_MANDATE_REGISTRY_PATH} must be an object"]
+    if registry.get("schema_version") != 1:
+        return [f"{CO_MANDATE_REGISTRY_PATH} must contain exactly schema_version 1"]
+    rows = registry.get("co_mandates")
+    if not isinstance(rows, list):
+        return [f"{CO_MANDATE_REGISTRY_PATH} co_mandates must be a list of rows"]
+    errors = [error for row in rows for error in _co_mandate_row_errors(row)]
+    seen: set[str] = set()
+    for row in rows:
+        surface = row.get("surface") if isinstance(row, Mapping) else None
+        if isinstance(surface, str) and surface in seen:
+            errors.append(f"{CO_MANDATE_REGISTRY_PATH} registers {surface} twice; one surface has one forcing mandate")
+        elif isinstance(surface, str):
+            seen.add(surface)
+    return errors
+
+
+def co_permitted_surfaces(changed_paths: Collection[str], registry: Any) -> dict[str, str]:
+    """Each registered surface THIS change set's own forcing condition holds for, and its mandate.
+
+    The condition is read off the change set alone, because that is all a judge standing in front of
+    a commit has. A row co-permits nothing to a change set that carries only its surface: the
+    exemption exists for the ledger row a trusted-test addition forces, never for the ledger row on
+    its own. A row the schema gate would refuse is skipped rather than trusted, so a malformed or
+    over-broad registry fails closed to today's behaviour instead of opening the boundary."""
+    permitted: dict[str, str] = {}
+    if not isinstance(registry, Mapping) or not isinstance(registry.get("co_mandates"), list):
+        return permitted
+    for row in registry["co_mandates"]:
+        if _co_mandate_row_errors(row):
+            continue
+        surface = str(row["surface"])
+        if any(path != surface and any(fnmatch.fnmatchcase(path, glob) for glob in row["forced_by"]) for path in changed_paths):
+            permitted[surface] = str(row["mandate"])
+    return permitted
+
+
+def boundary_escapes(changed_paths: Collection[str], boundary: Sequence[str], registry: Any) -> tuple[str, ...]:
+    """Every changed path this declared boundary does not admit, co-mandated surfaces excepted.
+
+    The one interpretation point every caller that asserts a boundary reaches through, so a lane
+    filter, a judge and any future gate inherit the same answer instead of each restating the rule.
+    Containment itself still delegates to `boundary_conflict`; all this adds is the registry."""
+    permitted = co_permitted_surfaces(changed_paths, registry)
+    return tuple(sorted(
+        path for path in changed_paths
+        if path not in permitted and boundary_conflict((path,), tuple(boundary)) is None
+    ))
 
 
 def derive_dependencies(body: str, subject: str) -> str | None:
@@ -506,8 +636,16 @@ def _observed_output(block: str, invocation: str) -> list[str]:
     return [line.strip() for line in after if line.strip() and line.strip() != "```"]
 
 
+def _status_line(block: str, invocation: str) -> str | None:
+    """The first observed line under the invocation that is a recognizable status, or None."""
+    return next((line for line in _observed_output(block, invocation) if STATUS_LINE_RE.match(line)), None)
+
+
 def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, where: str) -> list[str]:
-    """Command identity plus an observed output, in one block. Nothing here judges the output's truth."""
+    """Command identity, an observed output, and a recorded status, in one block.
+
+    Nothing here judges the output's truth - and that is exactly why the status is required. Output
+    is narratable; a status is not."""
     if invocation not in block:
         return [
             f"'## {heading}' {where} does not run the declared noodles-{marker} invocation "
@@ -518,6 +656,12 @@ def _invocation_reasons(marker: str, heading: str, invocation: str, block: str, 
         return [
             f"'## {heading}' {where} runs the declared noodles-{marker} invocation but carries no "
             "observed output under it; write what it actually printed, including 'no output'"
+        ]
+    if _status_line(block, invocation) is None:
+        return [
+            f"'## {heading}' {where} records output for the declared noodles-{marker} invocation "
+            f"{invocation!r} but no status line; add one line of the form {STATUS_LINE_FORM}. "
+            "Output can be narrated convincingly; an exit status cannot"
         ]
     return []
 

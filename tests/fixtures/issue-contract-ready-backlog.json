@@ -85,6 +85,11 @@
       "id": "ready-observer-demonstration-both-directions",
       "subject": "ed3c/noodles#900021",
       "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900021 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-observer: git status --porcelain --ignored -->\n<!-- noodles-capability-probe: none -->\n\n## Physical trigger\n\nThe zero-residue clause claims `.noodle/` runtime state is absent after the run.\n\n## Goal\n\nPreserve a ready repository atom carrying a two-direction observer demonstration.\n\n## Observer demonstration\n\nGREEN (clean subject):\n\n```\n$ git status --porcelain --ignored\n(no output)\n```\n\nRED (planted violation, `.noodle/state.json` written):\n\n```\n$ git status --porcelain --ignored\n!! .noodle/state.json\n```\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom.\n\n## Non-claims\n\n- This fixture is not a mirror of current provider state.\n"
+    },
+    {
+      "id": "ready-observer-demonstration-recorded-status",
+      "subject": "ed3c/noodles#900022",
+      "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#900022 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: none -->\n<!-- noodles-observer: git status --porcelain --ignored -->\n<!-- noodles-capability-probe: none -->\n\n## Physical trigger\n\nThe zero-residue clause claims `.noodle/` runtime state is absent after the run.\n\n## Goal\n\nPreserve a ready repository atom whose two-direction demonstration records a status per half.\n\n## Observer demonstration\n\nGREEN (clean subject):\n\n```\n$ git status --porcelain --ignored\n(no output)\nEXIT=0\n```\n\nRED (planted violation, `.noodle/state.json` written):\n\n```\n$ git status --porcelain --ignored\n!! .noodle/state.json\nEXIT=0\n```\n\n## Physical acceptance\n\n- The exact issue contract parses as a ready atom.\n\n## Non-claims\n\n- This fixture is not a mirror of current provider state.\n"
     }
   ]
 }

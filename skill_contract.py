@@ -1096,6 +1096,197 @@ def publish_schedule_output(root: Path, candidate_path: Path) -> Path:
     return destination
 
 
+
+def validate_test_runner_contract(root: Path) -> list[str]:
+    """Keep the repository's one tracked test entrypoint executable and complete."""
+
+    path = root / "tests/run.sh"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return [f"tests/run.sh is unreadable: {exc}"]
+
+    active_top_level: list[tuple[int, str]] = []
+    function_depth = 0
+    function_start = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\s*\(\)\s*\{\s*$")
+    for line_number, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if function_depth:
+            function_depth += stripped.count("{") - stripped.count("}")
+            if function_depth <= 0:
+                function_depth = 0
+            continue
+        if function_start.fullmatch(stripped):
+            function_depth = 1
+            continue
+        active_top_level.append((line_number, stripped))
+
+    required = {
+        "strict mode": lambda line: line == "set -euo pipefail",
+        "zero-residue EXIT trap": lambda line: line == "trap residue_gate EXIT",
+        "full unittest discovery": lambda line: re.fullmatch(
+            r'(?:PYTHONPATH="\$ROOT"\s+)?python3 -m unittest discover -s tests(?: -v)?',
+            line,
+        )
+        is not None,
+        "repository verification": lambda line: line == "./noodles verify --json",
+    }
+    diagnostics = {
+        "strict mode": "tests/run.sh must enable set -euo pipefail at top level",
+        "zero-residue EXIT trap": "tests/run.sh must install trap residue_gate EXIT at top level",
+        "full unittest discovery": "tests/run.sh must run python3 -m unittest discover -s tests at top level",
+        "repository verification": "tests/run.sh must run ./noodles verify --json at top level",
+    }
+    positions: dict[str, int] = {}
+    errors: list[str] = []
+    for label, predicate in required.items():
+        matches = [line_number for line_number, line in active_top_level if predicate(line)]
+        if len(matches) != 1:
+            errors.append(diagnostics[label])
+        else:
+            positions[label] = matches[0]
+
+    if len(positions) == len(required):
+        ordered = [positions[label] for label in required]
+        if ordered != sorted(ordered):
+            errors.append(
+                "tests/run.sh required order must be strict mode, zero-residue EXIT trap, "
+                "full unittest discovery, then repository verification"
+            )
+
+    verification_line = positions.get("repository verification", len(lines) + 1)
+    for line_number, line in active_top_level:
+        if line_number < verification_line and re.fullmatch(r"exit(?:\s+0)?\s*;?", line):
+            errors.append(
+                f"tests/run.sh has an unconditional successful exit before repository verification "
+                f"at line {line_number}"
+            )
+            break
+    return errors
+
+
+def test_standard_diff(
+    base_root: Path,
+    candidate_root: Path,
+    changed_files: Sequence[str],
+) -> dict[str, Any]:
+    """Describe oracle-surface drift without granting the description authority."""
+
+    oracle_files = {
+        "github_protection.py",
+        "feature_contract.py",
+        ".github/workflows/verify.yml",
+        ".github/workflows/land.yml",
+    }
+    changed = sorted(
+        {
+            path
+            for path in changed_files
+            if path.startswith("tests/") or path in oracle_files
+        }
+    )
+
+    def snapshot(root: Path) -> tuple[dict[str, str], dict[str, int], list[str]]:
+        functions: dict[str, str] = {}
+        totals = {"skip": 0, "assertion": 0, "planted_negative_control": 0}
+        observation_errors: list[str] = []
+
+        class TestVisitor(ast.NodeVisitor):
+            def __init__(self, relative: str) -> None:
+                self.relative = relative
+                self.scope: list[str] = []
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                self.scope.append(node.name)
+                self.generic_visit(node)
+                self.scope.pop()
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_function(node)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._visit_function(node)
+
+            def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+                if node.name.startswith("test_"):
+                    identifier = "::".join((self.relative, ".".join((*self.scope, node.name))))
+                    functions[identifier] = ast.dump(node, include_attributes=False)
+                    if "planted" in identifier.lower():
+                        totals["planted_negative_control"] += 1
+                    for item in ast.walk(node):
+                        if isinstance(item, ast.Assert):
+                            totals["assertion"] += 1
+                        elif isinstance(item, ast.Call):
+                            called = item.func.id if isinstance(item.func, ast.Name) else (
+                                item.func.attr if isinstance(item.func, ast.Attribute) else ""
+                            )
+                            if called.startswith("assert"):
+                                totals["assertion"] += 1
+                            if called == "skipTest":
+                                totals["skip"] += 1
+                    for decorator in node.decorator_list:
+                        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+                        called = target.id if isinstance(target, ast.Name) else (
+                            target.attr if isinstance(target, ast.Attribute) else ""
+                        )
+                        if called in {"skip", "skipIf", "skipUnless", "expectedFailure"}:
+                            totals["skip"] += 1
+                self.scope.append(node.name)
+                self.generic_visit(node)
+                self.scope.pop()
+
+        tests_root = root / "tests"
+        if not tests_root.is_dir():
+            return functions, totals, ["tests directory is absent"]
+        for path in sorted(tests_root.rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+            except (OSError, SyntaxError) as exc:
+                observation_errors.append(f"{relative}: {exc}")
+                continue
+            TestVisitor(relative).visit(tree)
+        return functions, totals, observation_errors
+
+    base_functions, base_totals, base_errors = snapshot(base_root)
+    candidate_functions, candidate_totals, candidate_errors = snapshot(candidate_root)
+    base_names = set(base_functions)
+    candidate_names = set(candidate_functions)
+    added = sorted(candidate_names - base_names)
+    removed = sorted(base_names - candidate_names)
+    modified = sorted(
+        name
+        for name in base_names & candidate_names
+        if base_functions[name] != candidate_functions[name]
+    )
+    authority_surfaces = sorted(set(changed) & oracle_files)
+    return {
+        "authority": "N",
+        "classification": "metadata-only",
+        "changed_oracle_surfaces": changed,
+        "changed_test_files": [path for path in changed if path.startswith("tests/")],
+        "test_functions": {
+            "added": added,
+            "removed": removed,
+            "modified": modified,
+            "counts": {
+                "added": len(added),
+                "removed": len(removed),
+                "modified": len(modified),
+            },
+        },
+        "deltas": {
+            name: candidate_totals[name] - base_totals[name]
+            for name in ("skip", "assertion", "planted_negative_control")
+        },
+        "runner_changed": "tests/run.sh" in changed,
+        "workflow_authority_changed": bool(authority_surfaces),
+        "workflow_authority_surfaces": authority_surfaces,
+        "observation_errors": base_errors + candidate_errors,
+    }
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     if len(args) == 2 and args[0] == "summary":

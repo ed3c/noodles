@@ -58,7 +58,6 @@
           "gha_outcome",
           "gha_pull_request_admission",
           "gha_task_identity",
-          "gha_within_boundary",
           "git",
           "git_ok",
           "graphql_issue_records",

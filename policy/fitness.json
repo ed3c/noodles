@@ -8,12 +8,12 @@
   "min_test_to_executable_ratio": 0.2,
   "max_enabled_providers": 2,
   "max_cross_surface_import_edges": {
-    "carrier": 39,
-    "docs": 87,
-    "schedule": 43,
+    "carrier": 40,
+    "docs": 88,
+    "schedule": 44,
     "verify": 35
   },
-  "max_unowned_top_level_definitions": 121,
+  "max_unowned_top_level_definitions": 120,
   "max_workflows": 5,
   "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",

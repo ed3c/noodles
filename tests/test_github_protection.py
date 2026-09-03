@@ -171,8 +171,37 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertEqual(audit["token_boundary"]["source"], "NOODLES_GITHUB_PROTECTION_TOKEN")
         self.assertTrue(audit["token_boundary"]["separate_from_gh_token"])
         self.assertEqual(audit["provider_response"]["accepted_github_permissions"], "administration=read")
-        self.assertEqual(audit["required_checks"], ["verify"])
+        self.assertEqual(audit["required_checks"], ["verify", "candidate-self-tests"])
         self.assertEqual(audit["target_required_checks"], ["verify", "candidate-self-tests"])
+
+    def test_protection_observer_refuses_missing_candidate_self_tests_context(self) -> None:
+        incomplete = protection_fixture()
+        incomplete["required_status_checks"] = {
+            "strict": True,
+            "contexts": ["verify"],
+            "checks": [{"context": "verify", "app_id": 15368}],
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NOODLES_REQUIRE_PROTECTION_READ_TOKEN": "1",
+                "NOODLES_GITHUB_PROTECTION_TOKEN": "app-token",
+                "GH_TOKEN": "default-token",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                noodles.GateError,
+                "required checks absent from branch protection: .*candidate-self-tests",
+            ):
+                github_protection.protection_readback(
+                    lambda endpoint, **kwargs: ({}, incomplete),
+                    noodles.GateError,
+                    "ed3c/noodles",
+                    "main",
+                    "verify",
+                )
 
     def test_protection_apply_requires_both_independent_jobs(self) -> None:
         writes: list[tuple[str, str, dict]] = []
