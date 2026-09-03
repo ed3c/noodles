@@ -102,6 +102,11 @@ PR_ORIGIN_RE = re.compile(
 )
 COMPONENT_MAP_PATH = "policy/components.json"
 COMPONENT_OWNER_MAP_PATH = "policy/component-owners.json"
+DEFINITION_DISPOSITION_PATH = "policy/definition-dispositions.json"
+# constraint: ed3c/noodles#326 - length is not an input to a seam, so a disposition record that
+# constraint: argues from it is refused in the written shape of the argument.
+LENGTH_MOTIVATION_RE = re.compile(r"\b(?:\d+\s*(?:lines?|loc)|line[- ]counts?|number of lines|file (?:size|length)|too (?:long|large|big))\b", re.I)
+DISCLOSED_EDGE_RE = re.compile(r"([^\s>]+\.py) -> ([^\s>]+\.py)")
 SUPERVISE_LOG_RELATIVE = ".noodle/supervise.log"
 SUPERVISE_TAIL_LINES = 40
 SUPERVISE_POLL_SECONDS = 1.0
@@ -865,6 +870,10 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
     errors.extend(validate_comment_tags(root, paths))
+    # constraint: ed3c/noodles#326 - reads the CANDIDATE's own tree and its own records, the same way
+    # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
+    # constraint: adds a top-level definition must disposition it in that same commit, and can.
+    errors.extend(definition_disposition_errors(root))
     errors.extend(findings_register_errors(root, policy_root))
     schedule_receipt = root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
     if schedule_receipt.exists():
@@ -1701,6 +1710,110 @@ def component_owner_errors(
                 errors.append(
                     f"{path}:{name} is owned by {', '.join(owning)} but this candidate declares {component!r}"
                 )
+    return errors
+# constraint: ed3c/noodles#326 - the ownership gravity well, drained against the landed measurements
+# constraint: rather than against length. The input is ed3c/noodles#276's own resolver refined from
+# constraint: file granularity to definition granularity: direction(d) is the set of components whose
+# constraint: declared surface admits the FILE and admits every repo-local module the definition d
+# constraint: couples to. A definition whose direction is a non-empty proper subset of that universe
+# constraint: has a measured owner and is owned in place; one whose direction is empty couples to
+# constraint: modules from disjoint surfaces and has no legal owner to assign; one whose direction is
+# constraint: the whole universe is admitted by every component that admits the file, so naming an
+# constraint: owner would invent a boundary the disclosed edges do not show. The last two stay at the
+# constraint: engine root under a written class reason, and this gate is what turns "unowned" from a
+# constraint: silence into a disposition: every top-level definition of every file the owner map
+# constraint: names is in exactly one of the two records, or this reds.
+# constraint: tests/test_component_surface.py::DefinitionDispositionTests recomputes direction(d)
+# constraint: independently and holds both records to it. Both halves are read from the CANDIDATE -
+# constraint: the tree and the records - so a candidate that adds a definition cures its own red in
+# constraint: the same commit, the ed3c/noodles#306 shape rather than the ed3c/noodles#285 deadlock.
+def definition_dispositions(root: Path) -> dict[str, Any]:
+    """The written disposition of every definition policy/component-owners.json does not own.
+
+    Absent on a tree that predates the record, which `component_owner_map` needs for the same reason
+    and describes. Present-but-malformed is a refusal."""
+    path = root / DEFINITION_DISPOSITION_PATH
+    if not path.exists():
+        return {}
+    payload = load_json(path)
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "engine_root", "moved"}
+        or payload["schema_version"] != 1
+        or not isinstance(payload["engine_root"], dict)
+        or not isinstance(payload["moved"], dict)
+    ):
+        raise GateError(f"{DEFINITION_DISPOSITION_PATH} must contain exactly schema_version 1, an engine_root object and a moved object")
+    return payload
+def definition_disposition_errors(root: Path) -> list[str]:
+    """Every top-level definition of every owner-mapped file carries exactly one disposition.
+
+    Three legal ones: owned in place by policy/component-owners.json, moved to a module whose seam
+    the record cites in disclosed-edge form, or left at the engine root under a written class reason.
+    A definition in neither record, in both, or under two class reasons at once is named one by one.
+
+    A moved record must cite the edges that justify its destination, the destination's OWN source
+    must carry each cited edge - a new module states the seam it was cut at, where a reader opening
+    it looks - and it must name definitions the destination really carries, so the citation is
+    load-bearing rather than decorative. No reason anywhere in the record may argue from length,
+    because length is not an input to a seam, and an edge citation does not launder one. Ceiling,
+    stated rather than implied: that last check reads the written shape of a length argument, never
+    the author's motive, and it cannot see one made in other words."""
+    try:
+        owners = component_owner_map(root)
+        records = definition_dispositions(root)
+    except GateError as exc:
+        return [str(exc)]
+    if not owners:
+        return []
+    if not records:
+        return [f"{COMPONENT_OWNER_MAP_PATH} owns definitions but {DEFINITION_DISPOSITION_PATH} is absent, so everything it does not own is undispositioned"]
+    errors: list[str] = []
+    for path, owned in sorted(owners.items()):
+        source = root / path
+        if not source.is_file():
+            errors.append(f"{COMPONENT_OWNER_MAP_PATH} owns {path}, which this tree does not carry")
+            continue
+        present = set(top_level_definitions(source.read_text(encoding="utf-8"), path))
+        classes = records["engine_root"].get(path) or {}
+        if not isinstance(classes, dict):
+            errors.append(f"{DEFINITION_DISPOSITION_PATH} engine_root {path} must map class labels to reasoned definition lists")
+            classes = {}
+        reasoned: dict[str, str] = {}
+        for label, record in sorted(classes.items()):
+            reason = record.get("reason") if isinstance(record, dict) else None
+            names = record.get("definitions") if isinstance(record, dict) else None
+            if not isinstance(reason, str) or not reason.strip() or not isinstance(names, list) or not names:
+                errors.append(f"{DEFINITION_DISPOSITION_PATH} engine_root {path}:{label} must carry a written reason and a non-empty definitions list")
+                continue
+            for name in names:
+                if str(name) in reasoned:
+                    errors.append(f"{DEFINITION_DISPOSITION_PATH} engine_root {path}:{name} is reasoned twice, under {reasoned[str(name)]} and {label}")
+                reasoned[str(name)] = label
+        errors.extend(f"{path}:{name} is both owned in {COMPONENT_OWNER_MAP_PATH} and reasoned at the engine root" for name in sorted(set(reasoned) & set(owned)))
+        errors.extend(f"{DEFINITION_DISPOSITION_PATH} engine_root {path}:{name} is not a top-level definition of {path}" for name in sorted(set(reasoned) - present))
+        errors.extend(f"{path}:{name} is neither owned in {COMPONENT_OWNER_MAP_PATH} nor dispositioned in {DEFINITION_DISPOSITION_PATH}" for name in sorted(present - set(owned) - set(reasoned)))
+    for destination, record in sorted(records["moved"].items()):
+        edges = record.get("edges") if isinstance(record, dict) else None
+        names = record.get("definitions") if isinstance(record, dict) else None
+        if not isinstance(edges, list) or not edges or not isinstance(names, list) or not names:
+            errors.append(f"{DEFINITION_DISPOSITION_PATH} moved {destination} must cite at least one disclosed edge and name at least one moved definition")
+            continue
+        target = root / destination
+        if not target.is_file():
+            errors.append(f"{DEFINITION_DISPOSITION_PATH} moved names {destination}, which this tree does not carry")
+            continue
+        text = target.read_text(encoding="utf-8")
+        for edge in edges:
+            match = DISCLOSED_EDGE_RE.fullmatch(str(edge))
+            if not match or not all((root / side).is_file() for side in match.groups()):
+                errors.append(f"{DEFINITION_DISPOSITION_PATH} moved {destination} cites {edge!r}, which is not a disclosed edge between two files this tree carries")
+            elif str(edge) not in text:
+                errors.append(f"{DEFINITION_DISPOSITION_PATH} moved {destination} cites {edge!r}, which {destination}'s own source does not carry: a new module states the seam it was cut at")
+        carried = set(top_level_definitions(text, destination))
+        errors.extend(f"{DEFINITION_DISPOSITION_PATH} moved {destination} claims {name}, which {destination} does not define" for name in sorted(set(map(str, names)) - carried))
+    if LENGTH_MOTIVATION_RE.search((root / DEFINITION_DISPOSITION_PATH).read_text(encoding="utf-8")):
+        errors.append(f"{DEFINITION_DISPOSITION_PATH} argues from length, which ed3c/noodles#326 excludes as an input: a seam comes from the disclosed edges")
     return errors
 def pinned_entries(root: Path) -> set[str]:
     """Identity path of every pinned unit in this tree's `policy/*.lock.json` files.
