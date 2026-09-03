@@ -1,7 +1,11 @@
-"""Deterministic executor admission: every exact Issue is classified `gha-agentic`, `gha-runtime`, or
-`local-noodle` from its own declared tokens before any claim, branch, checkout, or worktree exists.
-Duplicate, malformed, missing, and unknown declarations each carry their own diagnostic; the durable
-control corpus supplies both positive controls and every planted negative named in ed3c/noodles#187."""
+"""Deterministic executor admission: every exact Issue is classified into one of the admitted executor
+lanes from its own declared tokens before any claim, branch, checkout, or worktree exists. Duplicate,
+malformed, missing, and unknown declarations each carry their own diagnostic; the durable control
+corpus supplies both positive controls and every planted negative named in ed3c/noodles#187.
+
+ed3c/noodles#450 admits the fourth value, `codex-cloud`, and pins the three #187 landed against it:
+admitting a lane must move neither the lane nor the checkout any existing declaration routes to, and an
+executor value that is still not in the enum must still be refused by name."""
 from __future__ import annotations
 
 import json
@@ -168,9 +172,94 @@ class AdmissionControlTests(unittest.TestCase):
         self.assertEqual(admission["checkout"], issue_contract.MANAGED_WORKTREE)
 
     def test_contradictory_runtime_lane_without_a_runtime_is_refused(self) -> None:
+        # constraint: ed3c/noodles#450 - this assertion used to pin the `none` row's admitted tuple
+        # constraint: as a literal, which is the ed3c/noodles#285 shape: `pull_request_target` runs
+        # constraint: the DEFAULT BRANCH's copy of this module against the candidate, so any
+        # constraint: candidate that legitimately moved the row was compared against a tuple only
+        # constraint: main held and no rerun or rebase could turn it green. Widened here to derive
+        # constraint: the expectation from CAPABILITY_TABLE, the row's own owner, so the atom that
+        # constraint: flips the row lands under this same acceptance. What is asserted stays the
+        # constraint: property, not the membership: gha-runtime - the lane that exists to execute a
+        # constraint: deterministic runtime - is the excluded one, and the local superset remains.
         admission = noodles.parse_issue_contract(body(1, runtime="none"), f"{REPOSITORY}#1")["admission"]
         self.assertEqual(admission["status"], "executor_refused")
-        self.assertEqual(admission["admitted_lanes"], ("gha-agentic", issue_contract.LOCAL_LANE))
+        self.assertEqual(
+            set(admission["admitted_lanes"]),
+            set(issue_contract.CAPABILITY_TABLE["runtime"]["none"]),
+        )
+        self.assertNotIn("gha-runtime", admission["admitted_lanes"])
+        self.assertIn(issue_contract.LOCAL_LANE, admission["admitted_lanes"])
+
+
+class CodexCloudAdmissionTests(unittest.TestCase):
+    """ed3c/noodles#450 - the fourth lane, and the three it must not disturb.
+
+    The enum is the admission layer's vocabulary: a lane it cannot name is a lane the machine cannot
+    route, gate, or measure. `codex-cloud` runs inference in the operator's subscription cloud and
+    writes through the Codex App identity, so it supplies exactly what a sandboxed lane supplies -
+    portable runtimes and github-only evidence - and none of the local-only capabilities."""
+
+    def admission(self, **overrides: object) -> dict[str, object]:
+        return noodles.parse_issue_contract(body(1, **overrides), f"{REPOSITORY}#1")["admission"]
+
+    def test_regression_pin_the_three_landed_executor_values_route_unchanged(self) -> None:
+        # constraint: ed3c/noodles#450 - lane and checkout ARE the routing answer, so admitting a
+        # constraint: fourth value is proven inert by pinning both for one declaration each of the
+        # constraint: three lanes ed3c/noodles#187 landed, including the checkout rule this atom
+        # constraint: re-keyed from a hosted allowlist onto the local lane's absent worktree.
+        for executor, runtime, checkout in (
+            ("gha-agentic", "none", issue_contract.EPHEMERAL_CHECKOUT),
+            ("gha-runtime", "bun-ts", issue_contract.EPHEMERAL_CHECKOUT),
+            (issue_contract.LOCAL_LANE, "usb-device", issue_contract.MANAGED_WORKTREE),
+        ):
+            with self.subTest(executor=executor):
+                admission = self.admission(executor=executor, runtime=runtime)
+                self.assertTrue(admission["admitted"], admission)
+                self.assertEqual(admission["lane"], executor)
+                self.assertEqual(admission["checkout"], checkout)
+
+    def test_positive_control_codex_cloud_routes_to_its_own_lane_on_an_ephemeral_checkout(self) -> None:
+        # constraint: ed3c/noodles#450 - the portable runtime rows, which codex-cloud inherits by
+        # constraint: construction. `none` is absent on purpose: that row's flip is the follow-up
+        # constraint: half of the staged transition this atom widens acceptance for.
+        for runtime in ("python", "bun-ts", "shell"):
+            with self.subTest(runtime=runtime):
+                admission = self.admission(executor=issue_contract.CODEX_CLOUD_LANE, runtime=runtime)
+                self.assertTrue(admission["admitted"], admission)
+                self.assertEqual(admission["lane"], issue_contract.CODEX_CLOUD_LANE)
+                self.assertEqual(admission["status"], "admitted")
+                # constraint: ed3c/noodles#450 - a managed worktree is a thing only the operator's
+                # constraint: machine has; the cloud sandbox never gets one.
+                self.assertEqual(admission["checkout"], issue_contract.EPHEMERAL_CHECKOUT)
+
+    def test_planted_negative_codex_cloud_is_refused_every_host_only_capability(self) -> None:
+        local_only = tuple(
+            token
+            for token, lanes in issue_contract.CAPABILITY_TABLE["runtime"].items()
+            if lanes == (issue_contract.LOCAL_LANE,)
+        )
+        self.assertTrue(local_only)
+        for runtime in local_only:
+            with self.subTest(runtime=runtime):
+                admission = self.admission(executor=issue_contract.CODEX_CLOUD_LANE, runtime=runtime)
+                self.assertEqual(admission["status"], "executor_refused")
+                self.assertIsNone(admission["lane"])
+                self.assertEqual(admission["admitted_lanes"], (issue_contract.LOCAL_LANE,))
+        refused = self.admission(executor=issue_contract.CODEX_CLOUD_LANE, evidence="drive-full-v1")
+        self.assertEqual(refused["status"], "executor_refused")
+        self.assertEqual(refused["admitted_lanes"], (issue_contract.LOCAL_LANE,))
+
+    def test_planted_negative_an_unadmitted_executor_value_is_still_refused_by_name(self) -> None:
+        # constraint: ed3c/noodles#450 - admitting one value must not soften the enum into a family:
+        # constraint: a near miss on the new token is refused exactly as `kitchen-sink` is, and the
+        # constraint: diagnostic names the whole admitted set so the author is never left guessing.
+        for unadmitted in ("codex", "codex-cloud-preview", "chatgpt", "CODEX-CLOUD", "codex_cloud"):
+            with self.subTest(value=unadmitted):
+                with self.assertRaises(noodles.GateError) as raised:
+                    noodles.parse_issue_contract(body(1, executor=unadmitted), f"{REPOSITORY}#1")
+                diagnostic = str(raised.exception)
+                self.assertIn(f"unknown noodles-executor {unadmitted!r}", diagnostic)
+                self.assertIn(", ".join(issue_contract.EXECUTOR_LANES), diagnostic)
 
 
 class FakeProvider:

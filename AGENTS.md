@@ -90,7 +90,7 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
 <!-- noodles-component: name -->
 <!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
-<!-- noodles-executor: gha-agentic|gha-runtime|local-noodle -->
+<!-- noodles-executor: gha-agentic|gha-runtime|codex-cloud|local-noodle -->
 <!-- noodles-runtime: bun-ts|gui-simulator|host-toolchain|none|persistent-daemon|private-network|python|shell|unbounded-duration|usb-device -->
 <!-- noodles-write-boundary: path[, path]|none -->
 <!-- noodles-evidence: drive-full-v1|github-only-v1 -->
@@ -123,15 +123,58 @@ Trusted code judges HOW a value is derived and disclosed; it never remembers WHA
 Executor admission classifies the exact Issue before any claim, branch, checkout, or worktree exists.
 `issue_contract.CAPABILITY_TABLE` is the single bounded table — data, not a policy DSL: each `runtime`
 and `evidence` token names the exact lanes that can physically supply it, and the admitted lane set is
-the intersection. GitHub-hosted lanes supply only portable, non-interactive, bounded-duration work with
-no private device or network dependency; `usb-device`, `gui-simulator`, `private-network`,
-`persistent-daemon`, `host-toolchain`, `unbounded-duration`, and `drive-full-v1` evidence are
-`local-noodle` only, and `none` is contradictory on `gha-runtime`. A duplicate marker, a malformed
-value, an unknown value, and a missing marker each produce their own diagnostic; nothing defaults to a
-lane. A hosted lane gets only the ephemeral execute branch for that run and never a managed worktree;
-the local lane additionally emits one idempotent provider-backed handoff task keyed by the source Issue
-body digest and bound to target, required local capability, and write boundary, while Noodle remains the
-sole owner of the persistent worktree lifecycle.
+the intersection. The sandboxed lanes — GitHub-hosted and subscription-cloud alike — supply only
+portable, non-interactive, bounded-duration work with no private device or network dependency;
+`usb-device`, `gui-simulator`, `private-network`, `persistent-daemon`, `host-toolchain`,
+`unbounded-duration`, and `drive-full-v1` evidence are `local-noodle` only, and `none` is
+contradictory on `gha-runtime`, the lane whose whole purpose is executing a deterministic runtime.
+A duplicate marker, a malformed value, an unknown value, and a missing marker
+each produce their own diagnostic; nothing defaults to a lane. `local-noodle` is the only lane with a
+managed worktree, so it is the sole lane the checkout rule keys on: every other admitted lane gets only
+the ephemeral execute branch for that run. The local lane additionally emits one idempotent
+provider-backed handoff task keyed by the source Issue body digest and bound to target, required local
+capability, and write boundary, while Noodle remains the sole owner of the persistent worktree
+lifecycle.
+
+`ed3c/noodles#450` adds the fourth row, `codex-cloud`, because the lane was already running unnamed.
+The receipt, `git ls-remote` on 2026-09-04: thirteen `refs/heads/codex/issue-*` branches stood on the
+provider, and `codex/issue-70-task-model-routing`'s tip `4bd436b` is the exact commit `main` carries as
+`Merge pull request #96` — a cloud-authored candidate the machine had already landed — while the enum
+admitted only three values. A lane the enum cannot name is a lane the machine cannot route, gate, or
+measure; it runs as an unlabeled operator habit instead. The row: inference runs in
+the operator's ChatGPT/Codex cloud (an OpenAI-hosted sandbox, so no inference key ever enters Actions —
+this is an alternative to the blocked `ed3c/noodles#267`/`#308` lane, not its supersession, and both may
+coexist); writes reach the repository through the Codex GitHub App identity as `codex/*` candidate
+branches; billing is the operator's subscription rather than a metered provider key or Actions minutes
+spent on inference. What it may not do: it never merges, never schedules, and holds no durable
+execution state — the Issue body remains the only task authority and the cloud agent reads it there.
+It inherits the portable runtime rows and `github-only-v1` evidence by construction and none of the
+local-only ones. It is deliberately absent from the `none` runtime row, and that absence is a staged
+transition rather than a judgement: `pull_request_target` runs the DEFAULT BRANCH's copy of
+`tests/test_executor_admission.py` against the candidate, and that copy pinned the `none` row's
+admitted tuple as a literal, so a candidate that moved the row was compared against a value only
+`main` held and no rerun or rebase could turn it green — the `ed3c/noodles#285` shape again, caught
+here by `./noodles verify --trusted-preview` before the branch existed rather than by CI after it.
+This atom lands the widen half: the pin is converted to a derivation from `CAPABILITY_TABLE` itself,
+asserting the property (`gha-runtime` is the excluded lane, the local superset remains) instead of
+the membership. The flip is its own follow-up. Until it lands, a `codex-cloud` atom declares a
+concrete runtime, which is narrower and fails closed.
+Its candidates buy no bypass. The `codex/*` naming is invisible to every gate: `verify_pull_request`
+keys on the exact head SHA, the declared markers, and the changed files, so a `codex-cloud` candidate
+meets the same component-surface, ownership, import-edge, feature-journey and repository gates as any
+other, and wherever a boundary judgement runs at all it is `issue_contract.boundary_escapes` over
+changed paths and the co-mandate registry — a function that is never handed a branch name, so no
+lane's branch shape can buy an exemption from it. Stated ceiling, because "the same write-boundary
+validation as every candidate" is weaker than it sounds: `verify_pull_request` runs that
+path-containment gate on the `gha-agentic` lane alone, so `codex-cloud` inherits exactly the treatment
+`local-noodle` already has — the declared boundary feeds claim-time disjointness and the handoff, not
+a land-time path gate. #450 admits a lane and refuses it any special case; extending containment to
+every non-hosted candidate would change refusal behaviour for every `local-noodle` atom on the tree
+and is its own future atom, not this row. The two-line
+`noodles-origin` PR body stays admitted on `gha-agentic` only, so a `codex-cloud` PR body is still
+exactly one `Refs owner/repo#N` line. Merge authority is unmoved: the App proposes, the machine
+disposes, and a `codex-cloud` atom whose PR is merged by any other identity falls under the existing
+merged-via plus bundle-completion duty.
 
 Every trusted verify run packages its own evidence before it emits a landing receipt.
 `noodles.evidence_publication` reads the candidate as untrusted bytes — verification receipt,
