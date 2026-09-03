@@ -28,11 +28,9 @@ fallback atoms keeps its acceptance in its own issue body, each gate keeps its
 semantics in its own code, and this document says what to run, in what order,
 and what a failure means.
 
-Read in this order the first time:
-§1 the formula (what the machine is for) → §2 the topology and mode machine
-(what degradation is allowed to look like) → §3 running a wave → §4 landing →
-§5 what is still unbuilt → §6 what is still open → §7 why things are the way
-they are.
+Read in order the first time: §1 the formula → §2 the topology and mode machine
+→ §3 running a wave → §4 landing → §5 what is unbuilt → §6 what is open → §7
+why things are the way they are.
 
 ---
 
@@ -339,15 +337,21 @@ before trusting this paragraph on a different host or a newer CLI.
 
 ### 3.0 Model routing
 
-`policy/fitness.json` owns the admitted Codex task profiles and is the only
-place to read them:
+`policy/fitness.json` owns the admitted Codex task profiles — one model and one
+reasoning effort per task type — and is the only place to read them:
 
 ```bash
 python3 -c "import json;print(json.load(open('policy/fitness.json'))['required_codex_task_profiles'])"
 ```
 
-At this landing: `schedule` → `gpt-5.6-luna` / effort `high`; `execute` →
-`gpt-5.6-sol` / effort `high`. Do not hard-code these anywhere; read them.
+**This document deliberately does not reproduce the values.** Writing them here
+would create a second copy that drifts, and the repository refuses it
+mechanically: `validate_task_profile_single_source` fails `./noodles verify`
+with *"pins task model '<name>'; derive it from policy/fitness.json via
+`skill_contract.task_profiles`"* for any tracked file outside the declared
+exempt set. That refusal fired on the first draft of this very section, which is
+the cheapest possible demonstration that the rule is a gate and not advice. Read
+the values; never quote them.
 
 ### 3.1 Pick the pool and prove admission before spending anything
 
@@ -400,9 +404,12 @@ The prompt is three concatenated parts, in this order:
 ### 3.5 Run the lane
 
 ```bash
+# derive the model from the SSOT; never paste it into a script or a document
+MODEL=$(python3 -c "import json;print(json.load(open('policy/fitness.json'))['required_codex_task_profiles']['execute']['model'])")
+
 codex exec --json \
   -C "$LANE/repo" \
-  -m gpt-5.6-sol \
+  -m "$MODEL" \
   -s workspace-write \
   --output-schema "$WAVE/lane-report.schema.json" \
   -o "$LANE/last-message.txt" \
