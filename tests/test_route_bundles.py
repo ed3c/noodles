@@ -297,5 +297,259 @@ class NativeCompatNamespaceTests(unittest.TestCase):
             self.assertIn("arena", runtime_contract.live_only_native_skills())
 
 
+# constraint: ed3c/noodles#170 - the dual-dialect lane-event adapter's controls live in this module
+# constraint: rather than one of their own, because this is already the tests file that imports
+# constraint: provider_contract. A SECOND tests file importing it is a new cross-surface import edge
+# constraint: for schedule, verify and docs at once; that ratchet is disclosed in AGENTS.md and
+# constraint: ceilinged in policy/fitness.json to only ever shrink, and paying three counts of
+# constraint: standing architectural debt to buy a nicer filename is the wrong trade.
+# constraint: Fixture provenance, because the atom's point is that neither dialect is invented:
+# constraint: tests/fixtures/lane-events-codex-turn-completed.jsonl is a VERBATIM RECORDING of one
+# constraint: real `codex exec --json --sandbox read-only` run on codex-cli 0.149.0 (2026-09-03,
+# constraint: prompt "Reply with exactly: ok", process exit status 0) - its two `item.completed`
+# constraint: events of item type `error` arriving under a `turn.completed` terminal are why an
+# constraint: "error" in a stream is a notice and not a verdict. lane-events-claude-session.ndjson is
+# constraint: HAND-WRITTEN AND SYNTHETIC, but every event type in it is one this repository really
+# constraint: emits into .noodle/sessions/<id>/events.ndjson - `action` (tests.support.handoff_fixture),
+# constraint: `stage_message` and `handoff_verify_rerun_intent` (runtime_contract) - and the record
+# constraint: shape is the one runtime_contract._session_events reads.
+LANE_FIXTURES = Path(__file__).resolve().parent / "fixtures"
+LANE_GRACE = 900.0
+
+
+def lane_fixture(name: str) -> list[dict]:
+    text = (LANE_FIXTURES / name).read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+class CodexLaneDialectTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.events = lane_fixture("lane-events-codex-turn-completed.jsonl")
+
+    def test_the_recorded_run_normalizes_to_a_completed_lane_that_served_work(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX, self.events,
+            quiet_grace_seconds=LANE_GRACE, exit_status=0, reconciled=True,
+        )
+        self.assertEqual(receipt["health"], provider_contract.LANE_HEALTHY)
+        self.assertEqual(receipt["terminal"]["state"], provider_contract.LANE_COMPLETED)
+        self.assertEqual(receipt["provider"]["reading"], provider_contract.PROVIDER_SERVED)
+        self.assertIs(receipt["provider"]["available"], True)
+
+    def test_the_typed_usage_object_is_published_rather_than_a_quota_label_being_guessed(self) -> None:
+        """The disclosed refusal: no `exhausted` reading exists, the measured numbers are carried."""
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX, self.events, quiet_grace_seconds=LANE_GRACE, exit_status=0
+        )
+        self.assertIn("input_tokens", receipt["provider"]["usage"])
+        self.assertEqual(
+            receipt["provider"]["usage"],
+            next(event for event in self.events if event["type"] == "turn.completed")["usage"],
+            "the usage object is carried verbatim off the typed terminal event, not recomputed",
+        )
+        # constraint: the refusal is asserted on the module's own vocabulary, not on one call's
+        # constraint: outcome: a candidate that adds a quota label reds here, which is the only way
+        # constraint: this stays a decision rather than a comment.
+        self.assertEqual(
+            {name for name in vars(provider_contract) if name.startswith("PROVIDER_")},
+            {"PROVIDER_SERVED", "PROVIDER_REFUSED", "PROVIDER_UNOBSERVED"},
+        )
+
+    def test_error_items_are_notices_and_never_move_the_verdict(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX, self.events,
+            quiet_grace_seconds=LANE_GRACE, exit_status=0, reconciled=True,
+        )
+        self.assertTrue(any("skills context budget" in notice for notice in receipt["notices"]))
+        self.assertEqual(receipt["health"], provider_contract.LANE_HEALTHY)
+
+    def test_planted_negative_a_completed_turn_with_nothing_reconciled_is_not_healthy(self) -> None:
+        """Unobserved reconciliation is not reconciliation - it lands in the state a human reads."""
+        for reconciled in (False, None):
+            with self.subTest(reconciled=reconciled):
+                receipt = provider_contract.lane_health_receipt(
+                    provider_contract.LANE_DIALECT_CODEX, self.events,
+                    quiet_grace_seconds=LANE_GRACE, exit_status=0, reconciled=reconciled,
+                )
+                self.assertEqual(receipt["health"], provider_contract.LANE_COMPLETED_UNRECONCILED)
+
+    def test_a_stream_error_before_any_work_reads_as_the_provider_refusing_the_lane(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX,
+            [{"type": "thread.started"}, {"type": "error", "message": "provider refused"}],
+            quiet_grace_seconds=LANE_GRACE, exit_status=1,
+        )
+        self.assertEqual(receipt["provider"]["reading"], provider_contract.PROVIDER_REFUSED)
+        self.assertIs(receipt["provider"]["available"], False)
+        self.assertEqual(receipt["health"], provider_contract.LANE_BLOCKED_EXTERNAL)
+
+    def test_a_failure_after_the_provider_served_work_is_the_lane_dying_not_the_provider(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX,
+            [*self.events[:-1], {"type": "turn.failed", "error": {"message": "died mid-turn"}}],
+            quiet_grace_seconds=LANE_GRACE, exit_status=1,
+        )
+        self.assertEqual(receipt["provider"]["reading"], provider_contract.PROVIDER_SERVED)
+        self.assertEqual(receipt["health"], provider_contract.LANE_DEAD)
+
+    def test_an_event_type_the_map_does_not_know_is_named_rather_than_guessed(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX,
+            [{"type": "turn.started"}, {"type": "turn.interrupted"}],
+            quiet_grace_seconds=LANE_GRACE,
+        )
+        self.assertEqual(receipt["unmapped_types"], ["turn.interrupted"])
+        self.assertEqual(receipt["kinds"], [provider_contract.LANE_STARTED])
+
+
+class ClaudeLaneDialectTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.events = lane_fixture("lane-events-claude-session.ndjson")
+
+    def test_a_blocking_stage_message_parks_the_lane_on_someone_else(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CLAUDE, self.events,
+            quiet_grace_seconds=LANE_GRACE, silent_seconds=10_000.0,
+        )
+        self.assertEqual(receipt["kinds"][-1], provider_contract.LANE_PARKED)
+        self.assertEqual(receipt["health"], provider_contract.LANE_BLOCKED_EXTERNAL)
+
+    def test_the_terminal_state_of_a_claude_lane_comes_from_the_process_exit_lane(self) -> None:
+        """The disclosed asymmetry: this stream carries no terminal lifecycle event, so the receipt
+        names which evidence lane decided rather than pretending the stream did."""
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CLAUDE, self.events[:2],
+            quiet_grace_seconds=LANE_GRACE, exit_status=0, reconciled=True,
+        )
+        self.assertEqual(receipt["terminal"]["source"], "process_exit")
+        self.assertEqual(receipt["health"], provider_contract.LANE_HEALTHY)
+
+    def test_a_non_zero_exit_after_served_work_is_dead(self) -> None:
+        receipt = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CLAUDE, self.events[:1],
+            quiet_grace_seconds=LANE_GRACE, exit_status=3,
+        )
+        self.assertEqual(receipt["health"], provider_contract.LANE_DEAD)
+        self.assertEqual(receipt["terminal"]["source"], "process_exit")
+
+    def test_an_unknown_dialect_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown lane event dialect 'gemini'"):
+            provider_contract.lane_health_receipt("gemini", [], quiet_grace_seconds=LANE_GRACE)
+
+
+class LaneSilenceReadingTests(unittest.TestCase):
+    """The three running states, each with its own antecedent, expressed in normalized kinds so the
+    decision is shown to be dialect-free at the point where it is actually made."""
+
+    def health(self, kinds: list[str], *, silent_seconds: float | None) -> str:
+        terminal = provider_contract.lane_terminal_state(kinds, None)
+        return provider_contract.lane_health(
+            kinds, terminal, provider_contract.provider_reading(kinds, terminal, None),
+            silent_seconds=silent_seconds, quiet_grace_seconds=LANE_GRACE, reconciled=None,
+        )
+
+    def test_inside_the_grace_a_lane_is_healthy(self) -> None:
+        self.assertEqual(
+            self.health([provider_contract.LANE_PROGRESS], silent_seconds=1.0), provider_contract.LANE_HEALTHY
+        )
+
+    def test_a_started_turn_that_has_gone_quiet_is_quiet_for_a_reason(self) -> None:
+        self.assertEqual(
+            self.health([provider_contract.LANE_STARTED], silent_seconds=LANE_GRACE + 1),
+            provider_contract.LANE_QUIET_VALID,
+        )
+
+    def test_planted_negative_a_mid_stream_lane_that_goes_quiet_is_suspected_stalled(self) -> None:
+        self.assertEqual(
+            self.health(
+                [provider_contract.LANE_STARTED, provider_contract.LANE_PROGRESS], silent_seconds=LANE_GRACE + 1
+            ),
+            provider_contract.LANE_SUSPECTED_STALLED,
+        )
+
+    def test_unobserved_silence_cannot_suspect_a_stall(self) -> None:
+        self.assertEqual(
+            self.health([provider_contract.LANE_STARTED, provider_contract.LANE_PROGRESS], silent_seconds=None),
+            provider_contract.LANE_QUIET_VALID,
+        )
+
+    def test_every_declared_health_state_is_reachable(self) -> None:
+        """No state exists only in the constant tuple: each is produced by a call below."""
+        reached = {
+            self.health([provider_contract.LANE_PROGRESS], silent_seconds=1.0),
+            self.health([provider_contract.LANE_STARTED], silent_seconds=LANE_GRACE + 1),
+            self.health(
+                [provider_contract.LANE_STARTED, provider_contract.LANE_PROGRESS], silent_seconds=LANE_GRACE + 1
+            ),
+            self.health([provider_contract.LANE_PARKED], silent_seconds=1.0),
+            provider_contract.lane_health_receipt(
+                provider_contract.LANE_DIALECT_CODEX, [{"type": "turn.completed"}],
+                quiet_grace_seconds=LANE_GRACE, exit_status=0,
+            )["health"],
+            provider_contract.lane_health_receipt(
+                provider_contract.LANE_DIALECT_CODEX,
+                [{"type": "item.completed", "item": {"type": "agent_message"}}, {"type": "turn.failed"}],
+                quiet_grace_seconds=LANE_GRACE, exit_status=1,
+            )["health"],
+        }
+        self.assertEqual(reached, set(provider_contract.LANE_HEALTH_STATES))
+
+
+class LaneOutputBoundaryTests(unittest.TestCase):
+    """The conjunct the amendment makes load-bearing: no provider-specific branch leaves the output.
+
+    Asserted twice and mechanically, because a prose promise is not a boundary. First: the same
+    normalized sequence expressed in each dialect's OWN raw events must produce receipts that differ
+    in nothing but the provider name. Second: the receipt key set must be identical across both
+    dialects and every health state, so no dialect can add or drop a field."""
+
+    CODEX_PROGRESS = [{"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "x"}}]
+    CLAUDE_PROGRESS = [{"type": "action", "payload": {"message": None}}]
+
+    def test_both_dialects_reduce_the_same_lane_to_the_same_receipt(self) -> None:
+        codex = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CODEX, self.CODEX_PROGRESS,
+            quiet_grace_seconds=LANE_GRACE, exit_status=0, silent_seconds=1.0, reconciled=True,
+        )
+        claude = provider_contract.lane_health_receipt(
+            provider_contract.LANE_DIALECT_CLAUDE, self.CLAUDE_PROGRESS,
+            quiet_grace_seconds=LANE_GRACE, exit_status=0, silent_seconds=1.0, reconciled=True,
+        )
+        self.assertEqual(codex["provider"]["name"], provider_contract.LANE_DIALECT_CODEX)
+        self.assertEqual(claude["provider"]["name"], provider_contract.LANE_DIALECT_CLAUDE)
+        codex["provider"] = {key: value for key, value in codex["provider"].items() if key != "name"}
+        claude["provider"] = {key: value for key, value in claude["provider"].items() if key != "name"}
+        self.assertEqual(codex, claude)
+
+    def test_the_receipt_shape_does_not_vary_by_dialect_or_by_health_state(self) -> None:
+        shapes = set()
+        for dialect, events in (
+            (provider_contract.LANE_DIALECT_CODEX, self.CODEX_PROGRESS),
+            (provider_contract.LANE_DIALECT_CLAUDE, self.CLAUDE_PROGRESS),
+        ):
+            for exit_status in (None, 0, 1):
+                receipt = provider_contract.lane_health_receipt(
+                    dialect, events, quiet_grace_seconds=LANE_GRACE, exit_status=exit_status
+                )
+                shapes.add((
+                    tuple(sorted(receipt)),
+                    tuple(sorted(receipt["provider"])),
+                    tuple(sorted(receipt["terminal"])),
+                ))
+        self.assertEqual(len(shapes), 1, shapes)
+
+    def test_the_decision_function_has_no_dialect_argument_to_leak(self) -> None:
+        terminal = provider_contract.lane_terminal_state([provider_contract.LANE_COMPLETED], 0)
+        self.assertEqual(
+            provider_contract.lane_health(
+                [provider_contract.LANE_COMPLETED], terminal,
+                provider_contract.provider_reading([provider_contract.LANE_COMPLETED], terminal, None),
+                silent_seconds=None, quiet_grace_seconds=LANE_GRACE, reconciled=True,
+            ),
+            provider_contract.LANE_HEALTHY,
+        )
+        self.assertNotIn("dialect", provider_contract.lane_health.__code__.co_varnames)
+
+
 if __name__ == "__main__":
     unittest.main()
