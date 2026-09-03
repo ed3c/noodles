@@ -1686,6 +1686,270 @@ class MintZeroWriteTests(unittest.TestCase):
                 os.chdir(cwd)
             self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
 
+# constraint: ed3c/noodles#393 - the declared-capacity controller's fixtures share this module for the
+# constraint: reason the #407 block above states. The two memory readings below are the incident's
+# constraint: REAL readings, carried from the issue's observer demonstration rather than invented.
+# constraint: sysctl vm.swapusage, 2026-09-03 12:0x - total = 3072.00M used = 2029.88M free = 1042.12M
+GREEN_SWAP_USED_MB = 2029.88
+# constraint: sysctl vm.swapusage, 2026-09-03 11:41 - total = 4096.00M used = 2416.25M free = 1679.75M
+RED_SWAP_USED_MB = 2416.25
+DECLARED_CAPACITY = schedule_domain.DeclaredCapacity(
+    swap_ceiling_mb=3072.00, swap_headroom_floor_mb=1024.00, landing_queue_target=2
+)
+
+
+def capacity_reading(*, swap_used_mb: float = GREEN_SWAP_USED_MB, depth: int = 0) -> schedule_domain.CapacityReading:
+    return schedule_domain.CapacityReading(swap_used_mb=swap_used_mb, landing_queue_depth=depth)
+
+
+class MemoryHeadroomAdmissionTests(unittest.TestCase):
+    """Both directions, planted through the controller's seam rather than by exhausting the host."""
+
+    def test_the_storm_reading_refuses_the_next_dispatch_slot_naming_signal_and_reading(self) -> None:
+        refusal = schedule_domain.capacity_refusal(
+            "dispatch-slot", capacity_reading(swap_used_mb=RED_SWAP_USED_MB), DECLARED_CAPACITY
+        )
+        self.assertIsNotNone(refusal)
+        assert refusal is not None
+        self.assertIn("signal host_memory_headroom", refusal)
+        self.assertIn(f"swap_used={RED_SWAP_USED_MB:.2f}M", refusal)
+        self.assertIn("floor=1024.00M", refusal)
+        self.assertEqual(schedule_domain.refusal_reason_errors(refusal), [])
+
+    def test_the_recovering_reading_admits_the_same_slot(self) -> None:
+        self.assertIsNone(schedule_domain.capacity_refusal("dispatch-slot", capacity_reading(), DECLARED_CAPACITY))
+
+    def test_the_same_gate_admits_and_refuses_a_full_suite_run(self) -> None:
+        """The Goal gates two slots on one pair of signals; the slot is named so a receipt says which."""
+        refusal = schedule_domain.capacity_refusal(
+            "full-suite", capacity_reading(swap_used_mb=RED_SWAP_USED_MB), DECLARED_CAPACITY
+        )
+        assert refusal is not None
+        self.assertIn("slot full-suite", refusal)
+        self.assertIsNone(schedule_domain.capacity_refusal("full-suite", capacity_reading(), DECLARED_CAPACITY))
+
+    def test_headroom_is_measured_against_the_declared_ceiling_not_the_observed_total(self) -> None:
+        """The incident's own inversion: the storm reported MORE free swap (1679.75M) than the
+        recovery (1042.12M), because the kernel grew total from 3072M to 4096M. A controller reading
+        the observed total would have admitted straight into the near-shutdown."""
+        self.assertGreater(4096.00 - RED_SWAP_USED_MB, 3072.00 - GREEN_SWAP_USED_MB)
+        self.assertIsNotNone(
+            schedule_domain.capacity_refusal(
+                "dispatch-slot", capacity_reading(swap_used_mb=RED_SWAP_USED_MB), DECLARED_CAPACITY
+            )
+        )
+
+    def test_headroom_exactly_at_the_floor_is_admitted(self) -> None:
+        """The floor is a floor: at it, not below it. The recovery reading sits 18.12M above it."""
+        at_floor = schedule_domain.CapacityReading(
+            swap_used_mb=DECLARED_CAPACITY.swap_ceiling_mb - DECLARED_CAPACITY.swap_headroom_floor_mb,
+            landing_queue_depth=0,
+        )
+        self.assertIsNone(schedule_domain.capacity_refusal("dispatch-slot", at_floor, DECLARED_CAPACITY))
+
+    def test_an_unnamed_slot_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            schedule_domain.capacity_refusal("  ", capacity_reading(), DECLARED_CAPACITY)
+
+
+class LandingQueueDepthTests(unittest.TestCase):
+    """A planted queue at target depth defers new slot admission; below target, admission proceeds."""
+
+    def test_a_queue_at_target_depth_defers_admission(self) -> None:
+        refusal = schedule_domain.capacity_refusal("dispatch-slot", capacity_reading(depth=2), DECLARED_CAPACITY)
+        self.assertIsNotNone(refusal)
+        assert refusal is not None
+        self.assertIn("signal landing_queue_depth", refusal)
+        self.assertIn("depth=2", refusal)
+        self.assertIn("target=2", refusal)
+        self.assertEqual(schedule_domain.refusal_reason_errors(refusal), [])
+
+    def test_a_queue_below_target_admits(self) -> None:
+        self.assertIsNone(
+            schedule_domain.capacity_refusal("dispatch-slot", capacity_reading(depth=1), DECLARED_CAPACITY)
+        )
+
+    def test_a_landing_that_drains_the_queue_reopens_admission(self) -> None:
+        """The deferral is feedback, not a latch: the same controller admits once the queue drains."""
+        self.assertIsNotNone(
+            schedule_domain.capacity_refusal("dispatch-slot", capacity_reading(depth=3), DECLARED_CAPACITY)
+        )
+        self.assertIsNone(
+            schedule_domain.capacity_refusal("dispatch-slot", capacity_reading(depth=1), DECLARED_CAPACITY)
+        )
+
+    def test_memory_is_checked_before_queue_depth(self) -> None:
+        """A host with no headroom must not be admitted because its queue happens to be short."""
+        refusal = schedule_domain.capacity_refusal(
+            "dispatch-slot", capacity_reading(swap_used_mb=RED_SWAP_USED_MB, depth=0), DECLARED_CAPACITY
+        )
+        assert refusal is not None
+        self.assertIn("signal host_memory_headroom", refusal)
+
+
+class CapacityRefusalReasonTests(unittest.TestCase):
+    """Planted negative: a refusal reason that names no signal/reading is a validator error."""
+
+    def test_a_reason_naming_no_signal_is_a_validator_error(self) -> None:
+        errors = schedule_domain.refusal_reason_errors("not right now")
+        self.assertTrue(errors)
+        self.assertIn("names no signal and no reading", errors[0])
+
+    def test_a_reason_naming_an_undeclared_signal_is_a_validator_error(self) -> None:
+        errors = schedule_domain.refusal_reason_errors(
+            "NOODLES_CAPACITY_REFUSED: slot dispatch-slot signal operator_hunch reading depth=2"
+        )
+        self.assertTrue(errors)
+        self.assertIn("operator_hunch", errors[0])
+
+    def test_a_reason_naming_a_signal_but_no_measured_reading_is_a_validator_error(self) -> None:
+        errors = schedule_domain.refusal_reason_errors(
+            "NOODLES_CAPACITY_REFUSED: slot dispatch-slot signal landing_queue_depth reading too deep"
+        )
+        self.assertTrue(errors)
+        self.assertIn("no measured reading", errors[0])
+
+    def test_every_refusal_the_controller_emits_passes_its_own_validator(self) -> None:
+        for planted in (capacity_reading(swap_used_mb=RED_SWAP_USED_MB), capacity_reading(depth=2)):
+            with self.subTest(planted=planted):
+                refusal = schedule_domain.capacity_refusal("dispatch-slot", planted, DECLARED_CAPACITY)
+                assert refusal is not None
+                self.assertEqual(schedule_domain.refusal_reason_errors(refusal), [])
+
+
+class TopologicalOrderingTests(unittest.TestCase):
+    """Two schedulable atoms where one is a chain tail: the shallower is selected first."""
+
+    CHAIN = {"ed3c/noodles#407": (), "ed3c/noodles#408": ("ed3c/noodles#407",)}
+
+    def test_the_shallower_atom_is_selected_first(self) -> None:
+        self.assertEqual(schedule_domain.admission_order(self.CHAIN)[0], "ed3c/noodles#407")
+
+    def test_depth_is_the_length_of_the_chain_beneath_a_subject(self) -> None:
+        self.assertEqual(
+            schedule_domain.topological_depth({"a": (), "b": ("a",), "c": ("b",), "d": ("a",)}),
+            {"a": 0, "b": 1, "c": 2, "d": 1},
+        )
+
+    def test_a_deep_tail_is_offered_last_even_when_its_subject_sorts_first(self) -> None:
+        """Depth beats the name, or the ordering key would be decorative."""
+        self.assertEqual(schedule_domain.admission_order({"aaa": ("zzz",), "zzz": ()}), ("zzz", "aaa"))
+
+    def test_a_dependency_outside_the_map_does_not_deepen_a_subject(self) -> None:
+        """Already-landed or foreign dependencies are not chains this scheduler waits through."""
+        self.assertEqual(schedule_domain.topological_depth({"a": ("landed/elsewhere#1",)}), {"a": 0})
+
+    def test_a_dependency_cycle_is_refused_rather_than_ordered(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            schedule_domain.admission_order({"a": ("b",), "b": ("a",)})
+        self.assertIn("cycle", str(caught.exception))
+
+    def test_siblings_at_one_depth_keep_a_deterministic_order(self) -> None:
+        self.assertEqual(schedule_domain.admission_order({"b": (), "a": (), "c": ("a",)}), ("a", "b", "c"))
+
+
+class WriteBoundaryCollisionKeyTests(unittest.TestCase):
+    """ed3c/noodles#393 operator amendment, 2026-09-03: the collision key binds at candidate
+    production, so the rebase tax is never paid at landing."""
+
+    SHARED = {"ed3c/noodles#407": ("tests",), "ed3c/noodles#408": ("tests", "docs")}
+    DISJOINT = {"ed3c/noodles#407": ("schedule_domain.py",), "ed3c/noodles#408": ("noodles.py",)}
+
+    def test_two_atoms_sharing_one_boundary_segment_are_serialized_with_the_overlap_named(self) -> None:
+        order = schedule_domain.admission_order({"ed3c/noodles#407": (), "ed3c/noodles#408": ()})
+        admitted, refusals = schedule_domain.codispatch_admission(order, self.SHARED)
+        self.assertEqual(admitted, ("ed3c/noodles#407",))
+        self.assertEqual(len(refusals), 1)
+        self.assertIn("subject ed3c/noodles#408", refusals[0])
+        self.assertIn("held behind ed3c/noodles#407", refusals[0])
+        self.assertIn("on boundary tests", refusals[0])
+        self.assertIsNotNone(schedule_domain.COLLISION_SERIALIZED_RE.search(refusals[0]))
+
+    def test_disjoint_boundaries_co_dispatch(self) -> None:
+        """The other direction: the key serializes collisions, it does not serialize everything."""
+        order = schedule_domain.admission_order({"ed3c/noodles#407": (), "ed3c/noodles#408": ()})
+        admitted, refusals = schedule_domain.codispatch_admission(order, self.DISJOINT)
+        self.assertEqual(admitted, ("ed3c/noodles#407", "ed3c/noodles#408"))
+        self.assertEqual(refusals, ())
+
+    def test_overlap_is_judged_segment_wise_through_the_shared_exit(self) -> None:
+        """`tests` must not collide with `tests2`. Asserted here because the whole value of routing
+        through issue_contract.boundary_conflict is that this semantics cannot drift into a second
+        predicate (the ed3c/noodles#272 shape)."""
+        admitted, refusals = schedule_domain.codispatch_admission(("a", "b"), {"a": ("tests",), "b": ("tests2",)})
+        self.assertEqual(admitted, ("a", "b"))
+        self.assertEqual(refusals, ())
+
+    def test_a_nested_prefix_still_collides(self) -> None:
+        admitted, refusals = schedule_domain.codispatch_admission(
+            ("a", "b"), {"a": ("tests",), "b": ("tests/support.py",)}
+        )
+        self.assertEqual(admitted, ("a",))
+        self.assertIn("on boundary tests/support.py", refusals[0])
+
+    def test_an_undeclared_boundary_fails_closed(self) -> None:
+        """A lane that could write anywhere cannot be proven disjoint from anything."""
+        admitted, refusals = schedule_domain.codispatch_admission(("a", "b"), {"a": ("noodles.py",), "b": None})
+        self.assertEqual(admitted, ("a",))
+        self.assertIn("undeclared", refusals[0])
+        self.assertIn("subject b", refusals[0])
+
+    def test_an_empty_boundary_reserves_nothing_and_always_co_dispatches(self) -> None:
+        """`()` and `None` are deliberately different values: declared-nothing vs declared-nothing-yet."""
+        admitted, refusals = schedule_domain.codispatch_admission(("a", "b"), {"a": ("tests",), "b": ()})
+        self.assertEqual(admitted, ("a", "b"))
+        self.assertEqual(refusals, ())
+
+    def test_the_ordering_key_decides_who_keeps_the_slot(self) -> None:
+        """A collision is resolved in admission order, so the shallower atom is not displaced by a
+        deep tail that happens to be named first."""
+        order = schedule_domain.admission_order({"aaa": ("zzz",), "zzz": ()})
+        self.assertEqual(order, ("zzz", "aaa"))
+        admitted, refusals = schedule_domain.codispatch_admission(order, {"aaa": ("tests",), "zzz": ("tests",)})
+        self.assertEqual(admitted, ("zzz",))
+        self.assertIn("subject aaa held behind zzz", refusals[0])
+
+    def test_the_admitted_set_is_pairwise_disjoint(self) -> None:
+        """The property the slot actually promises, asserted over a mixed planted set."""
+        boundaries = {
+            "a": ("tests",),
+            "b": ("tests/support.py",),
+            "c": ("noodles.py",),
+            "d": ("noodles.py", "docs"),
+            "e": ("schedule_domain.py",),
+        }
+        admitted, refusals = schedule_domain.codispatch_admission(sorted(boundaries), boundaries)
+        self.assertEqual(admitted, ("a", "c", "e"))
+        self.assertEqual(len(refusals), 2)
+        for left in admitted:
+            for right in admitted:
+                if left < right:
+                    with self.subTest(pair=(left, right)):
+                        self.assertIsNone(issue_contract.boundary_conflict(boundaries[left], boundaries[right]))
+
+
+class CapacityZeroWriteTests(unittest.TestCase):
+    """The controller reads; queue depth is read, never written, and the landing surface is untouched."""
+
+    def test_the_gate_writes_nothing_to_the_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-393-zero-write-", ignore_cleanup_errors=True) as name:
+            sandbox = Path(name)
+            before = sorted(path.relative_to(sandbox) for path in sandbox.rglob("*"))
+            cwd = Path.cwd()
+            os.chdir(sandbox)
+            try:
+                for planted in (
+                    capacity_reading(),
+                    capacity_reading(swap_used_mb=RED_SWAP_USED_MB),
+                    capacity_reading(depth=2),
+                ):
+                    refusal = schedule_domain.capacity_refusal("dispatch-slot", planted, DECLARED_CAPACITY)
+                    schedule_domain.refusal_reason_errors(refusal or "")
+                schedule_domain.admission_order({"a": (), "b": ("a",)})
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
+
 
 if __name__ == "__main__":
     unittest.main()

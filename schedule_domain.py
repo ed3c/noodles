@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
+
+# constraint: ed3c/noodles#393 - the write-boundary collision key reuses CONCURRENCY.WRITE_BOUNDARY.001's
+# constraint: own overlap exit rather than carrying a second predicate. Adds no cross-surface import
+# constraint: edge: no component's globs admit schedule_domain.py while excluding issue_contract.py.
+import issue_contract
 
 
 @dataclass(frozen=True)
@@ -704,3 +709,185 @@ def mint_receipt_errors(minted: MintedGeneration) -> list[str]:
     if context.strip() != minted.context.strip():
         errors.append(f"mint receipt names context {context!r}, but the mint carries {minted.context!r}")
     return errors
+
+
+# constraint: ed3c/noodles#393 - CONCURRENCY.DECLARED_CAPACITY.001. Measured live 2026-09-03: three
+# constraint: concurrent dispatch waves put six-plus full test suites on the host at once, swap
+# constraint: approached its ceiling, and the operator reported a near forced-shutdown. The
+# constraint: post-incident adjudication also derived the landing-side physics: under a strict
+# constraint: required check a landing queue of depth n costs ~n^2/2 verify runs to clear, so implement
+# constraint: width beyond "keep the queue at depth 1-2" has NEGATIVE marginal value. Both rules lived
+# constraint: only as dispatcher discipline in a session ledger - the per-operator-memory class this
+# constraint: machine exists to delete. Feedback control, never prediction: two live readings.
+CAPACITY_SIGNALS = ("host_memory_headroom", "landing_queue_depth")
+CAPACITY_REFUSAL_RE = re.compile(r"NOODLES_CAPACITY_REFUSED: slot (\S+) signal (\S+) reading (\S.*)")
+
+
+@dataclass(frozen=True)
+class DeclaredCapacity:
+    """What this host declares it can carry. Declared, not inferred - the requirement's own heading
+    demands declarations live where they can be read.
+
+    `swap_ceiling_mb` is the host's DECLARED swap allotment and is deliberately not the observed
+    total. The incident proves why: under the storm the kernel grew total from 3072M to 4096M, so the
+    RED reading showed MORE free swap (1679.75M) than the recovering GREEN one (1042.12M). Any
+    controller that measured headroom against the observed total would therefore have read the storm
+    as roomier than the recovery and admitted straight into the near-shutdown. Measuring against a
+    fixed declared ceiling makes swap growth visible as the pressure it is."""
+
+    swap_ceiling_mb: float
+    swap_headroom_floor_mb: float
+    landing_queue_target: int
+
+
+@dataclass(frozen=True)
+class CapacityReading:
+    """The two live signals, exactly as their observers state them.
+
+    `swap_used_mb` comes from `sysctl vm.swapusage`; `landing_queue_depth` is the count of open
+    awaiting_land pull requests for the repository. Neither is estimated, and there is no third."""
+
+    swap_used_mb: float
+    landing_queue_depth: int
+
+
+def capacity_refusal(slot: str, reading: CapacityReading, declared: DeclaredCapacity) -> str | None:
+    """The refusal this reading commands for `slot`, or None when the slot is admitted.
+
+    `slot` names WHICH admission was refused - a dispatch slot or a full-suite run - because both are
+    gated by the same two signals and a refusal that does not say what it refused is unusable in a
+    receipt. Every refusal names the signal AND the reading that refused it: a refusal naming neither
+    is indistinguishable from a policy nobody measured, which is the state this atom replaces.
+
+    Memory is checked before queue depth: memory is the signal that nearly killed the host, and a
+    host with no headroom must not be admitted merely because its landing queue happens to be short."""
+    if not str(slot).strip():
+        raise ValueError("a capacity admission must name the slot it is admitting")
+    headroom = declared.swap_ceiling_mb - reading.swap_used_mb
+    if headroom < declared.swap_headroom_floor_mb:
+        return (
+            f"NOODLES_CAPACITY_REFUSED: slot {slot} signal host_memory_headroom reading "
+            f"swap_used={reading.swap_used_mb:.2f}M declared_ceiling={declared.swap_ceiling_mb:.2f}M "
+            f"headroom={headroom:.2f}M floor={declared.swap_headroom_floor_mb:.2f}M"
+        )
+    if reading.landing_queue_depth >= declared.landing_queue_target:
+        return (
+            f"NOODLES_CAPACITY_REFUSED: slot {slot} signal landing_queue_depth reading "
+            f"depth={reading.landing_queue_depth} target={declared.landing_queue_target}"
+        )
+    return None
+
+
+def refusal_reason_errors(reason: str) -> list[str]:
+    """Why this refusal reason fails to name a signal and the reading that refused it.
+
+    A refusal reason that names no signal/reading is a validator error, not a warning: an
+    unattributed refusal cannot be argued with, cannot be waited out, and cannot be told apart from a
+    controller that is simply broken."""
+    match = CAPACITY_REFUSAL_RE.search(reason or "")
+    if not match:
+        return [f"capacity refusal {reason!r} names no signal and no reading"]
+    _, signal, measurement = match.groups()
+    errors: list[str] = []
+    if signal not in CAPACITY_SIGNALS:
+        errors.append(f"capacity refusal names signal {signal!r}, which is not one of {list(CAPACITY_SIGNALS)}")
+    if not re.search(r"=-?\d", measurement):
+        errors.append(f"capacity refusal names signal {signal} but no measured reading: {measurement!r}")
+    return errors
+
+
+def topological_depth(dependencies_by_subject: Mapping[str, Sequence[str]]) -> dict[str, int]:
+    """Each subject's dependency-chain depth: 0 for a root, 1 + its deepest dependency otherwise.
+
+    A dependency outside the map is depth 0 - it is already landed or lives elsewhere, and either way
+    it is not a chain this scheduler has to wait through. A cycle is refused rather than assigned a
+    depth: a cyclic dependency declaration is a contract error, and silently ordering it would hide
+    the error behind a plausible-looking queue."""
+    depths: dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def depth(subject: str) -> int:
+        if subject in depths:
+            return depths[subject]
+        if subject in visiting:
+            raise ValueError(f"dependency cycle reaches {subject!r}; a cyclic chain has no topological depth")
+        visiting.add(subject)
+        found = max(
+            (1 + depth(dependency) for dependency in dependencies_by_subject.get(subject, ()) if dependency in dependencies_by_subject),
+            default=0,
+        )
+        visiting.discard(subject)
+        depths[subject] = found
+        return found
+
+    for subject in dependencies_by_subject:
+        depth(subject)
+    return depths
+
+
+def admission_order(dependencies_by_subject: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    """The order scarce slots are offered in: shallowest chain first, then by subject.
+
+    Deep chain tails are deprioritized because they cannot land until everything beneath them has,
+    so a slot spent on a tail buys a branch that waits; a slot spent on a shallow atom buys one that
+    can land this generation and drain the queue the n^2 physics punishes."""
+    depths = topological_depth(dependencies_by_subject)
+    return tuple(sorted(depths, key=lambda subject: (depths[subject], subject)))
+
+
+# constraint: ed3c/noodles#393 - operator amendment 2026-09-03, arriving on the issue body after this
+# constraint: atom's first commit: the ordering key alone spends slots well but still lets two atoms
+# constraint: with overlapping declared write boundaries run at once, and every such pair pays the
+# constraint: rebase tax at LANDING, where it is most expensive and where the n^2 queue physics
+# constraint: multiplies it. The cure named by the amendment is to never PRODUCE high-collision
+# constraint: candidates concurrently, so the collision key binds at candidate production - one slot
+# constraint: admits a set whose declared boundaries are pairwise disjoint, and a colliding atom is
+# constraint: serialized behind the one it collides with, named together with the overlapping prefix.
+COLLISION_SERIALIZED_RE = re.compile(
+    r"NOODLES_COLLISION_SERIALIZED: subject (\S+) held behind (\S+) on boundary (\S+)"
+)
+
+
+def codispatch_admission(
+    order: Sequence[str], boundaries: Mapping[str, tuple[str, ...] | None]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """`(co-dispatched subjects, serialization refusals)` for one slot, in `order`.
+
+    Overlap is judged by `issue_contract.boundary_conflict`, the SAME exit
+    `CONCURRENCY.WRITE_BOUNDARY.001` admission already uses - segment-wise, so `tests` never collides
+    with `tests2`. Carrying a second overlap predicate here is the exact drift ed3c/noodles#272 paid
+    for in the repair path, where a refusal and its named remedy correlated on different keys and
+    manufactured a dead end.
+
+    An undeclared boundary (`None`) fails closed: a lane that could write anywhere cannot be proven
+    disjoint from anything, so it is serialized rather than optimistically co-dispatched. An empty
+    tuple reserves nothing and always co-dispatches - the two are deliberately different values,
+    because "declared nothing" and "declared nothing yet" are different states.
+
+    Greedy in `order` on purpose: the ordering key has already decided who deserves the slot most, so
+    collisions are resolved in that order rather than by re-optimizing, and the first-named atom
+    keeps its priority instead of being displaced by a later sibling."""
+    admitted: list[str] = []
+    refusals: list[str] = []
+    for subject in order:
+        declared = boundaries.get(subject)
+        if declared is None:
+            refusals.append(
+                f"NOODLES_COLLISION_UNDECLARED: subject {subject} held: its write boundary is "
+                "undeclared, so disjointness from the slot cannot be proven"
+            )
+            continue
+        collision: tuple[str, str] | None = None
+        for sibling in admitted:
+            overlap = issue_contract.boundary_conflict(declared, boundaries[sibling] or ())
+            if overlap:
+                collision = (sibling, overlap)
+                break
+        if collision is None:
+            admitted.append(subject)
+        else:
+            refusals.append(
+                f"NOODLES_COLLISION_SERIALIZED: subject {subject} held behind {collision[0]} "
+                f"on boundary {collision[1]}"
+            )
+    return tuple(admitted), tuple(refusals)
