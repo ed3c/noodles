@@ -1576,6 +1576,116 @@ class ClosureZeroWriteTests(unittest.TestCase):
                 os.chdir(cwd)
             self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
 
+# constraint: ed3c/noodles#410 - the mint's fixtures share this module for the reason the #407 block
+# constraint: above states: a new tests/ module importing schedule_domain moves cross-surface edge
+# constraint: counts disclosed outside this atom's declared write boundary.
+class GenerationMintTests(unittest.TestCase):
+    def test_successive_mints_are_unique_and_monotonic(self) -> None:
+        mint = schedule_domain.GenerationMint()
+        minted = [mint.mint(f"wave {index}") for index in range(1, 6)]
+        identifiers = [item.identifier for item in minted]
+        self.assertEqual(len(set(identifiers)), len(identifiers))
+        self.assertEqual([item.ordinal for item in minted], [1, 2, 3, 4, 5])
+        # constraint: monotonic in the identifier itself, not only in the registry: a ledger that
+        # constraint: sorts by key must sort by generation without consulting the mint.
+        self.assertEqual(identifiers, sorted(identifiers))
+
+    def test_the_same_context_minted_twice_yields_two_distinct_identifiers(self) -> None:
+        """Uniqueness is the mint's job, not the caller's: two waves named alike are still two waves."""
+        mint = schedule_domain.GenerationMint()
+        first, second = mint.mint("wave 27"), mint.mint("wave 27")
+        self.assertNotEqual(first.identifier, second.identifier)
+        self.assertLess(first.ordinal, second.ordinal)
+
+    def test_each_mint_carries_a_receipt_naming_the_generation_context(self) -> None:
+        minted = schedule_domain.GenerationMint().mint("scheduler fallback canary")
+        self.assertIn("context scheduler fallback canary", minted.receipt)
+        self.assertIn(f"id {minted.identifier}", minted.receipt)
+        self.assertEqual(schedule_domain.mint_receipt_errors(minted), [])
+
+    def test_a_receipt_naming_another_id_is_a_validator_error(self) -> None:
+        minted = schedule_domain.GenerationMint().mint("wave 27")
+        planted = dataclasses.replace(minted, receipt=minted.receipt.replace(minted.identifier, "g000099-forged", 1))
+        errors = schedule_domain.mint_receipt_errors(planted)
+        self.assertTrue(errors)
+        self.assertIn("g000099-forged", errors[0])
+
+    def test_a_receipt_naming_another_context_is_a_validator_error(self) -> None:
+        """Id and ordinal can both match while the receipt claims a different generation - which is
+        the forgery shape that survives an id-only check."""
+        minted = schedule_domain.GenerationMint().mint("wave 27")
+        planted = dataclasses.replace(minted, receipt=minted.receipt.replace("context wave 27", "context wave 99"))
+        errors = schedule_domain.mint_receipt_errors(planted)
+        self.assertTrue(errors)
+        self.assertIn("wave 99", errors[0])
+
+    def test_a_receiptless_mint_is_a_validator_error(self) -> None:
+        minted = schedule_domain.GenerationMint().mint("wave 27")
+        errors = schedule_domain.mint_receipt_errors(dataclasses.replace(minted, receipt=""))
+        self.assertTrue(errors)
+        self.assertIn("carries no receipt", errors[0])
+
+    def test_an_unmintable_context_is_refused(self) -> None:
+        for context in ("", "   ", "wave/27", "WAVE#27!"):
+            with self.subTest(context=context):
+                with self.assertRaises(ValueError):
+                    schedule_domain.GenerationMint().mint(context)
+
+    def test_the_registry_carries_every_minted_id_and_nothing_else(self) -> None:
+        mint = schedule_domain.GenerationMint()
+        minted = [mint.mint("wave 27"), mint.mint("wave 28")]
+        self.assertEqual([item.identifier for item in mint.registry], sorted(item.identifier for item in minted))
+
+
+class UnmintedIdentifierRefusalTests(unittest.TestCase):
+    """Both directions: a never-minted id is refused by name, a minted id passes the same consumer."""
+
+    def setUp(self) -> None:
+        self.mint = schedule_domain.GenerationMint()
+        self.minted = self.mint.mint("wave 27")
+
+    def test_a_never_minted_identifier_is_a_validator_error_naming_the_id(self) -> None:
+        errors = schedule_domain.minted_id_errors(self.mint, "wave-27-final-FINAL")
+        self.assertTrue(errors)
+        self.assertIn("wave-27-final-FINAL", errors[0])
+        self.assertIn("never minted", errors[0])
+
+    def test_a_minted_identifier_passes_the_same_consumer(self) -> None:
+        self.assertEqual(schedule_domain.minted_id_errors(self.mint, self.minted.identifier), [])
+
+    def test_an_identifier_minted_by_another_registry_is_refused(self) -> None:
+        """Forgery is not only free-form text: a well-shaped id from a foreign mint is unminted here,
+        which is exactly the case a syntax check would have waved through."""
+        other = schedule_domain.GenerationMint()
+        errors = schedule_domain.minted_id_errors(other, self.minted.identifier)
+        self.assertTrue(errors)
+        self.assertIn(self.minted.identifier, errors[0])
+        self.assertEqual(schedule_domain.minted_id_errors(self.mint, self.minted.identifier), [])
+
+    def test_an_absent_identifier_is_a_distinct_refusal_rather_than_a_silent_pass(self) -> None:
+        with self.assertRaises(ValueError):
+            schedule_domain.minted_id_errors(self.mint, "   ")
+
+
+class MintZeroWriteTests(unittest.TestCase):
+    """"Zero-write predicate on validation: checking an id performs no writes." """
+
+    def test_validating_an_identifier_writes_nothing_to_the_filesystem(self) -> None:
+        mint = schedule_domain.GenerationMint()
+        minted = mint.mint("wave 27")
+        with tempfile.TemporaryDirectory(prefix="noodles-410-zero-write-", ignore_cleanup_errors=True) as name:
+            sandbox = Path(name)
+            before = sorted(path.relative_to(sandbox) for path in sandbox.rglob("*"))
+            cwd = Path.cwd()
+            os.chdir(sandbox)
+            try:
+                schedule_domain.minted_id_errors(mint, minted.identifier)
+                schedule_domain.minted_id_errors(mint, "never-minted")
+                schedule_domain.mint_receipt_errors(minted)
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(sorted(path.relative_to(sandbox) for path in sandbox.rglob("*")), before)
+
 
 if __name__ == "__main__":
     unittest.main()

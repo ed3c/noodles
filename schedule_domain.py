@@ -605,3 +605,102 @@ def generation_closure(state: GenerationState) -> ClosureVerdict:
         )
     blockers.extend(f"ledgers_committed: {ledger} is uncommitted" for ledger in state.uncommitted_ledgers)
     return ClosureVerdict(closed=not blockers, blockers=tuple(blockers))
+
+
+# constraint: ed3c/noodles#410 - AUTONOMY.SUPERVISED_RUNNER.001, admission-mechanization item: wave
+# constraint: and generation identifiers must be machine-minted. Today wave labels are
+# constraint: dispatcher-authored strings; in the pure-Codex fallback an agent-invented identifier is
+# constraint: a collision and forgery surface on every ledger key, run record, and receipt that cites
+# constraint: it, with no validator refusing it. One producer, one registry, one refusal.
+GENERATION_ID_RE = re.compile(r"g(\d{6})-[a-z0-9][a-z0-9-]*")
+GENERATION_MINT_RECEIPT_RE = re.compile(r"NOODLES_GENERATION_MINT: id (\S+) ordinal (\d+) context (\S.*)")
+
+
+@dataclass(frozen=True)
+class MintedGeneration:
+    identifier: str
+    ordinal: int
+    context: str
+    receipt: str
+
+
+class GenerationMint:
+    """The single producer of generation/wave identifiers, with the registry that refuses the rest.
+
+    Monotonicity is carried IN the identifier rather than only in the registry: the ordinal is
+    zero-padded, so lexicographic order over minted ids equals mint order, and a ledger that sorts by
+    key sorts by generation without consulting anything. That is the whole reason the ordinal is not
+    a bare counter kept privately - a join key the machine can verify beats one it has to trust.
+
+    Not persistent, deliberately. The registry is process state that a caller hands to whichever
+    consumer validates against it; the ratified non-claim says the registry starts at adoption and no
+    historical wave label is renamed, so there is nothing to load and a store would be a second
+    source of truth this atom does not need.
+    # ponytail: in-memory registry, no store. If minted ids must survive a restart, give this a
+    # ponytail: `from_receipts(text)` reader over the receipt stream it already emits - the receipts
+    # ponytail: carry ordinal and context, so the registry is reconstructible without a new format.
+    """
+
+    def __init__(self) -> None:
+        self._ordinal = 0
+        self._minted: dict[str, MintedGeneration] = {}
+
+    def mint(self, context: str) -> MintedGeneration:
+        """The next identifier for `context`, unique and strictly greater than every earlier one.
+
+        A blank context is refused rather than defaulted: the receipt has to name what the generation
+        was minted FOR, and an unnamed context makes the receipt unusable as evidence."""
+        slug = "-".join(str(context).lower().split())
+        if not GENERATION_ID_RE.fullmatch(f"g000000-{slug}"):
+            raise ValueError(
+                f"generation context {context!r} is not a mintable label; use lowercase words, digits and hyphens"
+            )
+        self._ordinal += 1
+        identifier = f"g{self._ordinal:06d}-{slug}"
+        minted = MintedGeneration(
+            identifier=identifier,
+            ordinal=self._ordinal,
+            context=str(context),
+            receipt=f"NOODLES_GENERATION_MINT: id {identifier} ordinal {self._ordinal} context {context}",
+        )
+        self._minted[identifier] = minted
+        return minted
+
+    def minted(self, identifier: str) -> MintedGeneration | None:
+        """This registry's record for `identifier`, or None. Reads only."""
+        return self._minted.get(identifier)
+
+    @property
+    def registry(self) -> tuple[MintedGeneration, ...]:
+        return tuple(self._minted[key] for key in sorted(self._minted))
+
+
+def minted_id_errors(mint: GenerationMint, identifier: str) -> list[str]:
+    """Why this identifier may not be cited by a machine-side consumer.
+
+    This is the single refusal every ledger and run-record writer routes through: an agent-supplied
+    identifier that was never minted is a validator error naming the id, not a warning and not a
+    silently-accepted key. Zero writes - it reads the registry and returns a list."""
+    if not str(identifier).strip():
+        raise ValueError("a machine-side consumer must present an identifier to validate")
+    if mint.minted(identifier) is None:
+        return [
+            f"generation identifier {identifier!r} was never minted; machine-side consumers cite minted ids only"
+        ]
+    return []
+
+
+def mint_receipt_errors(minted: MintedGeneration) -> list[str]:
+    """Why this mint receipt fails to name the generation context it was minted for."""
+    match = GENERATION_MINT_RECEIPT_RE.search(minted.receipt or "")
+    if not match:
+        return [f"mint of {minted.identifier} carries no receipt naming its generation context"]
+    identifier, ordinal, context = match.groups()
+    errors: list[str] = []
+    if identifier != minted.identifier:
+        errors.append(f"mint receipt names id {identifier}, but the mint carries {minted.identifier}")
+    if int(ordinal) != minted.ordinal:
+        errors.append(f"mint receipt names ordinal {ordinal}, but the mint carries {minted.ordinal}")
+    if context.strip() != minted.context.strip():
+        errors.append(f"mint receipt names context {context!r}, but the mint carries {minted.context!r}")
+    return errors
