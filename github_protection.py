@@ -42,6 +42,37 @@ MODEL_EVAL_GH_ISSUE_FIXTURE = {
     "url": "https://github.com/ed3c/noodles/issues/70",
 }
 MODEL_EVAL_GH_FIXTURE_BYTES = (json.dumps(MODEL_EVAL_GH_ISSUE_FIXTURE, separators=(",", ":")) + "\n").encode("utf-8")
+# constraint: ed3c/noodles#358 - the word the three-way diagnostic prints for the one representation
+# constraint: that is allowed to be missing, so "no trailer" and "a trailer naming something else"
+# constraint: can never read the same in a refusal a human is deciding a merge on.
+TRAILER_ABSENT = "no Refs trailer"
+def subject_agreement_error(body_subject: str, trailer_subjects: Sequence[str], flipped_subject: str) -> str | None:
+    """The diagnostic for a three-way subject divergence at the landing seam, or None when they agree.
+
+    ed3c/noodles#358 - a wave-18 candidate reached green-eligibility with a PR body naming one subject
+    while the branch's commit trailer and diff served another, and the landing machine closes the
+    issue the BODY names. Every drift check passed, because the wrongly-named issue was itself already
+    awaiting land: no single representation was internally inconsistent, only the three together.
+
+    Identity is compared, not label. `flipped_subject` is the Issue body's own `noodles-subject`
+    marker rather than the number the PR addressed, so an Issue that declares a foreign subject cannot
+    be laundered into agreement by the URL it was fetched from. `trailer_subjects` is every DISTINCT
+    `Refs` subject the head commit carries, so the empty case is absence (never a refusal - the
+    trailer is optional by contract) and the two-or-more case needs no rule of its own: distinct
+    subjects cannot all equal the body's. All three are named on refusal because the reader's next
+    question is always which two of the three are the pair that agree.
+
+    Home note, so the placement is not a mystery later: this rule judges the agreement of three
+    provider-side artifacts, which is this module's charter, and `noodles.py` could not host it - its
+    unowned-top-level-definition ratchet (`policy/fitness.json`) sits exactly at what its tree
+    measures, and both that ceiling and the owner map are outside this atom's write boundary."""
+    if flipped_subject == body_subject and all(subject == body_subject for subject in trailer_subjects):
+        return None
+    return (
+        "candidate subject-agreement gate failed: PR body names "
+        f"{body_subject}, head commit trailer names {', '.join(trailer_subjects) or TRAILER_ABSENT}, "
+        f"flipped issue names {flipped_subject}"
+    )
 def sha256_json(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
