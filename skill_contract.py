@@ -1224,7 +1224,7 @@ def test_standard_diff(
                             )
                             if called.startswith("assert"):
                                 totals["assertion"] += 1
-                            if called in {"skip", "skipIf", "skipUnless", "skipTest"}:
+                            if called == "skipTest":
                                 totals["skip"] += 1
                     for decorator in node.decorator_list:
                         target = decorator.func if isinstance(decorator, ast.Call) else decorator
