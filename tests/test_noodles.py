@@ -864,6 +864,21 @@ class RepositoryGateTests(unittest.TestCase):
         for executable in ("noodles.py", "feature_contract.py"):
             self.assertNotIn("#112", (CANDIDATE_ROOT / executable).read_text())
 
+    def test_trusted_transition_rule_keeps_its_physical_receipt(self) -> None:
+        """ed3c/noodles#274 keeps the observed instance attached to the rule it justifies."""
+        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        staged_transition = next(
+            paragraph
+            for paragraph in system_contract.split("\n\n")
+            if "exactly one supported path, the staged transition" in paragraph
+        )
+        for receipt_part in (
+            "PR `ed3c/noodles#129`",
+            "verify run `33366751879`",
+            "`.trusted/tests/test_noodles.py:298`",
+        ):
+            self.assertIn(receipt_part, staged_transition)
+
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
