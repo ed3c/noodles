@@ -873,7 +873,32 @@ class RepositoryGateTests(unittest.TestCase):
         # constraint: assertIn only - a strict-equal against a literal reachable from CANDIDATE_ROOT
         # constraint: is what tests/test_trusted_literals.py sweeps, and its ledger lives in policy/,
         # constraint: outside this atom's declared write-boundary.
-        system_contract = (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        self._assert_staged_transition_paragraph_carries_the_receipt(
+            (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        )
+
+    def test_staged_transition_receipt_control_reds_on_a_rule_stated_without_it(self) -> None:
+        # constraint: planted control - proves the containment oracle above is falsifiable rather than
+        # constraint: vacuous, in the same shape as the two-state controls elsewhere in this class. The
+        # constraint: negative this atom's acceptance names is therefore durable, not a one-time
+        # constraint: out-of-band inverse edit whose receipt closes with the lane that ran it.
+        with self.assertRaises(AssertionError):
+            self._assert_staged_transition_paragraph_carries_the_receipt(
+                "Trusted-transition rejection has exactly one supported path, the staged transition:\n"
+                "widen, flip, retire.\n\nAn unrelated paragraph.\n"
+            )
+        with self.assertRaises(AssertionError):
+            self._assert_staged_transition_paragraph_carries_the_receipt(
+                "A paragraph naming PR `ed3c/noodles#129`, verify run `33366751879` and\n"
+                "`.trusted/tests/test_noodles.py:298` but never stating the rule.\n"
+            )
+
+    def _assert_staged_transition_paragraph_carries_the_receipt(self, system_contract: str) -> None:
+        # constraint: ceiling, stated rather than chased - the anchor is prose the candidate owns, so a
+        # constraint: candidate that REWORDS the rule reds against main's copy of this test and cannot
+        # constraint: fix it from inside its own PR: the staged transition is that candidate's supported
+        # constraint: path, which is the rule this very paragraph states. The anchor is kept to the
+        # constraint: rule's operative clause rather than the whole sentence to keep that surface small.
         anchor = "exactly one supported path, the staged transition"
         paragraph = next((block for block in system_contract.split("\n\n") if anchor in block), "")
         self.assertIn(anchor, paragraph)
