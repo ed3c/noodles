@@ -864,6 +864,50 @@ class RepositoryGateTests(unittest.TestCase):
         for executable in ("noodles.py", "feature_contract.py"):
             self.assertNotIn("#112", (CANDIDATE_ROOT / executable).read_text())
 
+    def test_trusted_transition_rule_keeps_its_physical_receipt(self) -> None:
+        """ed3c/noodles#274 keeps the observed instance attached to the rule it justifies."""
+        self._assert_staged_transition_keeps_its_receipt(
+            (CANDIDATE_ROOT / "contracts/system-v1.md").read_text()
+        )
+
+    def test_staged_transition_receipt_control_reds_without_the_receipt(self) -> None:
+        # constraint: planted control - proves the containment oracle above is falsifiable rather than
+        # constraint: vacuous, in the same shape as test_admission_termination_shape_rejects_mismatched_
+        # constraint: states in this class. Without it the negative this atom's acceptance names lives
+        # constraint: only in the lane log that ran the inverse edit, and closes when that record does.
+        with self.assertRaises(AssertionError):
+            self._assert_staged_transition_keeps_its_receipt(
+                "Trusted-transition rejection has exactly one supported path, the staged transition:\n"
+                "widen, flip, retire.\n\nAn unrelated paragraph.\n"
+            )
+        with self.assertRaises(AssertionError):
+            self._assert_staged_transition_keeps_its_receipt(
+                "A paragraph naming PR `ed3c/noodles#129`, verify run `33366751879` and\n"
+                "`.trusted/tests/test_noodles.py:298` but never stating the rule.\n"
+            )
+
+    def _assert_staged_transition_keeps_its_receipt(self, system_contract: str) -> None:
+        # constraint: the `next` default and the anchor assertion below exist so an absent paragraph
+        # constraint: reds with a named expectation rather than a bare StopIteration - ENFORCEMENT.
+        # constraint: LADDER_MIGRATION.001, three paragraphs above the text this guards, requires the
+        # constraint: diagnostic to name the supported path rather than only the violation.
+        # constraint: ceiling, stated rather than chased - the anchor is prose the candidate owns, so a
+        # constraint: candidate that REWORDS the rule reds against main's copy of this test and cannot
+        # constraint: fix it from inside its own PR: the staged transition is that candidate's supported
+        # constraint: path, which is the rule this very paragraph states.
+        anchor = "exactly one supported path, the staged transition"
+        staged_transition = next(
+            (paragraph for paragraph in system_contract.split("\n\n") if anchor in paragraph),
+            "",
+        )
+        self.assertIn(anchor, staged_transition)
+        for receipt_part in (
+            "PR `ed3c/noodles#129`",
+            "verify run `33366751879`",
+            "`.trusted/tests/test_noodles.py:298`",
+        ):
+            self.assertIn(receipt_part, staged_transition)
+
     def test_unpinned_provider_is_rejected(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)

@@ -217,3 +217,262 @@ def parse_struggle_declarations(text: str) -> list[dict[str, Any]]:
         {"subject": subject, "attempts": int(attempts), "reason": reason, "signature": signature.strip()}
         for subject, attempts, reason, signature in STRUGGLE_DECLARATION_RE.findall(text)
     ]
+
+
+# constraint: ed3c/noodles#407 - PROVIDER.BUDGET_FAIL_SOFT.001. The pure-Codex fallback is ratified
+# constraint: provider degradation that must never become governance degradation, but a provider
+# constraint: outage was handled as an improvised act: the hardest invariant of the design ("quota
+# constraint: exhaustion never substitutes an identity") lived as dispatcher discipline with no
+# constraint: mechanical carrier. Everything below is read-only over readings the event adapter
+# constraint: (ed3c/noodles#170) produces; this module consumes readings and never produces one, so
+# constraint: the whole mechanism's side-effect budget is one receipt stream and zero provider writes.
+PROVIDER_MODES = (
+    "NORMAL_HYBRID",
+    "CODEX_ONLY",
+    "READ_ONLY_DRAIN",
+    "ADMISSION_ONLY",
+    "PAUSED_BUDGET",
+    "PAUSED_AUTHORITY",
+)
+
+# constraint: the adjudicated transition table, inline so the machine is self-contained and a reader
+# constraint: never has to reconstruct it from the issue body: Claude unavailable -> CODEX_ONLY;
+# constraint: Codex write-quota pressure -> READ_ONLY_DRAIN; all execution providers unavailable ->
+# constraint: ADMISSION_ONLY; total budget exhausted -> PAUSED_BUDGET; GitHub App / landing authority
+# constraint: lost -> PAUSED_AUTHORITY. Recovery readings reverse each transition with their own
+# constraint: receipt, which is why a clear reading is a first-class row rather than a fall-through.
+# ponytail: the table is ordered most-restrictive-first and the first matching trigger wins. That
+# ponytail: precedence is THIS atom's declared tie-break, not an operator adjudication - the ratified
+# ponytail: contract names one trigger per transition and is silent on a reading carrying several.
+# ponytail: If simultaneity is ever adjudicated differently, reorder this tuple; nothing else reads
+# ponytail: an ordering, so a table row is the whole upgrade path.
+PROVIDER_TRANSITION_TABLE = (
+    ("landing_authority_lost", "PAUSED_AUTHORITY"),
+    ("budget_exhausted", "PAUSED_BUDGET"),
+    ("execution_providers_unavailable", "ADMISSION_ONLY"),
+    ("codex_write_quota_pressure", "READ_ONLY_DRAIN"),
+    ("claude_unavailable", "CODEX_ONLY"),
+)
+PROVIDER_TRIGGERS = frozenset(trigger for trigger, _ in PROVIDER_TRANSITION_TABLE)
+# constraint: the recovery direction's own trigger name: a reading that carries no degradation
+# constraint: trigger is itself evidence, and its transition needs a receipt exactly like the others.
+CLEAR_READING = "clear_reading"
+
+# constraint: READ_ONLY_DRAIN's admitted verbs, enumerated by the ratified contract. The mode exists
+# constraint: because write quota is the scarce thing, so the drain keeps every verb that reads,
+# constraint: classifies, or prepares, and refuses every verb that executes.
+READ_ONLY_DRAIN_VERBS = frozenset(
+    {
+        "dedupe",
+        "admission_dry_run",
+        "classification",
+        "reader_only_monitoring",
+        "ledger_reconciliation",
+        "next_wave_preparation",
+    }
+)
+
+MODE_TRANSITION_RECEIPT_RE = re.compile(
+    r"NOODLES_MODE_TRANSITION: from (\S+) to (\S+) trigger (\S+) source (\S+) observed_at (\S+)"
+)
+# constraint: the DEFERRED_BUDGET receipt is parsed rather than substring-scanned, so a receipt whose
+# constraint: budget reading was blanked out reads as ABSENT instead of as a present-but-empty field.
+BUDGET_DEFERRAL_RECEIPT_RE = re.compile(
+    r"NOODLES_TERMINAL_CLASS: subject (\S+) class (\S+) budget_reading (\S+) retry (\S.*)"
+)
+
+
+@dataclass(frozen=True)
+class ProviderReading:
+    """One measured provider-state reading, in the terms the event adapter already carries.
+
+    `triggers` are MEASURED facts drawn from `PROVIDER_TRIGGERS`, never opinions: an unknown trigger
+    is refused rather than ignored, because a reading the machine cannot act on must not read as a
+    clear reading. `source` and `observed_at` exist so the receipt names the reading rather than
+    merely naming the conclusion - a receipt that cannot be traced back to an observation is the
+    prose fallback this atom deletes."""
+
+    triggers: tuple[str, ...]
+    source: str
+    observed_at: str
+
+
+@dataclass(frozen=True)
+class ModeTransition:
+    from_mode: str
+    to_mode: str
+    trigger: str
+    receipt: str
+
+
+def mode_transition_receipt(from_mode: str, to_mode: str, trigger: str, reading: ProviderReading) -> str:
+    """The one exact line a mode transition is declared on.
+
+    Legible rather than hashed for the reason `attempt_signature` is: the supervisor has to see WHICH
+    reading moved the machine, and a digest names nothing."""
+    return (
+        f"NOODLES_MODE_TRANSITION: from {from_mode} to {to_mode} trigger {trigger} "
+        f"source {reading.source} observed_at {reading.observed_at}"
+    )
+
+
+def provider_mode_transition(current_mode: str, reading: ProviderReading) -> ModeTransition | None:
+    """The transition this reading commands from `current_mode`, or None when it commands nothing.
+
+    Both directions are the same code path on purpose: a degradation trigger selects its adjudicated
+    mode, and a reading carrying no trigger selects NORMAL_HYBRID. That makes recovery a transition
+    with its own receipt rather than an untracked fall-back, and makes "a clear reading produces no
+    transition" true only where it should be - already in NORMAL_HYBRID.
+
+    Zero writes: this returns a value. Nothing here touches a provider, a ledger, or the filesystem."""
+    if current_mode not in PROVIDER_MODES:
+        raise ValueError(f"unknown provider mode {current_mode!r}; the machine carries {list(PROVIDER_MODES)}")
+    unknown = sorted({str(trigger) for trigger in reading.triggers} - PROVIDER_TRIGGERS)
+    if unknown:
+        raise ValueError(
+            f"provider reading from {reading.source} carries unmeasured triggers {unknown}; "
+            f"the transition table carries {sorted(PROVIDER_TRIGGERS)}"
+        )
+    present = set(reading.triggers)
+    trigger, target = CLEAR_READING, "NORMAL_HYBRID"
+    for candidate, mode in PROVIDER_TRANSITION_TABLE:
+        if candidate in present:
+            trigger, target = candidate, mode
+            break
+    if target == current_mode:
+        return None
+    return ModeTransition(current_mode, target, trigger, mode_transition_receipt(current_mode, target, trigger, reading))
+
+
+def mode_transition_errors(transition: ModeTransition) -> list[str]:
+    """Why this transition's receipt fails to name its own trigger reading, one reason at a time.
+
+    A transition without a receipt - or with one that names a different move than the transition
+    carries - is a validator error, not a warning: the receipt IS the transition's evidence, so a
+    transition that cannot be read back never happened as far as the supervisor is concerned."""
+    errors: list[str] = []
+    if transition.to_mode not in PROVIDER_MODES:
+        errors.append(f"mode transition names unknown target mode {transition.to_mode!r}")
+    if transition.trigger != CLEAR_READING and transition.trigger not in PROVIDER_TRIGGERS:
+        errors.append(f"mode transition names unmeasured trigger {transition.trigger!r}")
+    match = MODE_TRANSITION_RECEIPT_RE.search(transition.receipt or "")
+    if not match:
+        errors.append(
+            f"mode transition {transition.from_mode}->{transition.to_mode} carries no receipt naming its trigger reading"
+        )
+        return errors
+    from_mode, to_mode, trigger, _, _ = match.groups()
+    if (from_mode, to_mode, trigger) != (transition.from_mode, transition.to_mode, transition.trigger):
+        errors.append(
+            f"mode transition receipt names {from_mode}->{to_mode} on {trigger}, but the transition is "
+            f"{transition.from_mode}->{transition.to_mode} on {transition.trigger}"
+        )
+    return errors
+
+
+def admit_verb(mode: str, verb: str) -> str:
+    """`verb`, when `mode` admits it; a refusal naming the mode otherwise.
+
+    Only READ_ONLY_DRAIN carries an enumerated verb set, because only READ_ONLY_DRAIN is the mode the
+    ratified contract enumerates. This is the half that converts "the dispatcher remembers what
+    degraded mode allows" into "the forbidden verb does not run"."""
+    if mode not in PROVIDER_MODES:
+        raise ValueError(f"unknown provider mode {mode!r}; the machine carries {list(PROVIDER_MODES)}")
+    if mode == "READ_ONLY_DRAIN" and verb not in READ_ONLY_DRAIN_VERBS:
+        raise ValueError(
+            f"{mode} refuses execution verb {verb!r}; it admits only {sorted(READ_ONLY_DRAIN_VERBS)}"
+        )
+    return verb
+
+
+def identity_substitution_errors(mode: str, declared_identity: str, active_identity: str) -> list[str]:
+    """Why this identity pairing is a substitution, under `mode`.
+
+    The mode is named in the diagnostic but is NOT an input to the verdict: no mode reachable by any
+    transition admits a substitution, which is the point - degradation may reduce what runs, never
+    who runs it. A fallback that swaps identity under quota pressure is the one failure this whole
+    machine exists to make unreachable, so it reds under NORMAL_HYBRID exactly as under
+    PAUSED_BUDGET."""
+    if mode not in PROVIDER_MODES:
+        raise ValueError(f"unknown provider mode {mode!r}; the machine carries {list(PROVIDER_MODES)}")
+    if active_identity == declared_identity:
+        return []
+    return [
+        f"identity substitution refused under {mode}: declared identity {declared_identity!r} was "
+        f"replaced by {active_identity!r}; quota exhaustion never substitutes an identity"
+    ]
+
+
+@dataclass(frozen=True)
+class TerminalClassification:
+    """One admitted issue's receipted terminal class.
+
+    Produced here for DEFERRED_BUDGET and consumed by the generation-closure predicate
+    (ed3c/noodles#408); the shape is shared so the producer and the predicate cannot disagree about
+    what a receipted class looks like."""
+
+    subject: str
+    terminal_class: str
+    receipt: str
+    retry_condition: str
+
+
+DEFERRED_BUDGET = "DEFERRED_BUDGET"
+
+
+def budget_deferral_classifications(
+    reading: ProviderReading, affected_subjects: Sequence[str], retry_condition: str
+) -> tuple[TerminalClassification, ...]:
+    """DEFERRED_BUDGET for each admitted issue this budget reading defers, receipt included.
+
+    The retry condition is required rather than defaulted: a deferral with no named condition to
+    retry under is indistinguishable from abandonment, and the closure predicate would count it as a
+    terminal state nobody will ever revisit."""
+    if not str(retry_condition).strip():
+        raise ValueError("a budget deferral must name the condition it retries under")
+    return tuple(
+        TerminalClassification(
+            subject=subject,
+            terminal_class=DEFERRED_BUDGET,
+            receipt=(
+                f"NOODLES_TERMINAL_CLASS: subject {subject} class {DEFERRED_BUDGET} "
+                f"budget_reading {reading.source}@{reading.observed_at} retry {retry_condition}"
+            ),
+            retry_condition=retry_condition,
+        )
+        for subject in affected_subjects
+    )
+
+
+def budget_deferral_errors(
+    affected_subjects: Sequence[str], classifications: Sequence[TerminalClassification]
+) -> list[str]:
+    """Why this budget deferral failed its classification duty.
+
+    Entering PAUSED_BUDGET - or deferring work on budget in any mode - is only legal once every
+    affected admitted issue carries a DEFERRED_BUDGET receipt naming the budget reading and the
+    retry condition. A budget deferral that classifies nothing is the exact shape that lets a
+    generation look closed while work silently evaporated, so it is a validator error."""
+    errors: list[str] = []
+    classified = {item.subject: item for item in classifications}
+    if affected_subjects and not classifications:
+        errors.append(
+            f"budget deferral classified nothing while deferring {sorted(set(affected_subjects))}; "
+            f"each affected admitted issue must carry a {DEFERRED_BUDGET} receipt"
+        )
+    for subject in sorted(set(affected_subjects) - set(classified)):
+        errors.append(f"budget deferral leaves {subject} unclassified; it must carry a {DEFERRED_BUDGET} receipt")
+    for subject in sorted(classified):
+        item = classified[subject]
+        if item.terminal_class != DEFERRED_BUDGET:
+            errors.append(f"budget deferral classified {subject} as {item.terminal_class}, not {DEFERRED_BUDGET}")
+        if not str(item.retry_condition).strip():
+            errors.append(f"{DEFERRED_BUDGET} receipt for {subject} names no retry condition")
+        match = BUDGET_DEFERRAL_RECEIPT_RE.search(item.receipt or "")
+        if not match:
+            errors.append(
+                f"{DEFERRED_BUDGET} receipt for {subject} names no budget reading and no retry condition"
+            )
+        elif match.group(1) != subject:
+            errors.append(f"{DEFERRED_BUDGET} receipt for {subject} names subject {match.group(1)}")
+    return errors

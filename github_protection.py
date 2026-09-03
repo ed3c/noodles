@@ -360,10 +360,9 @@ def target_protection_contexts(required_check: str) -> tuple[str, ...]:
     independent candidate job was still running or already red.  The protection
     surface is their confluence, so the writer converges it on both contexts.
 
-    This is the widening half of the trusted transition.  `protection_observe`
-    continues to enforce the previously trusted check until this writer has been
-    applied and read back on the provider; the following flip can then make the
-    candidate check mandatory without deadlocking its own introducing PR.
+    The widening half of the trusted transition landed before the provider was
+    updated.  The observer now consumes this same target set after the provider
+    readback proved both contexts live, so writer and observer cannot drift.
     """
     return tuple(dict.fromkeys((required_check, CANDIDATE_SELF_TESTS_CHECK)))
 
@@ -389,8 +388,12 @@ def protection_observe(
     contexts.update(str(item.get("context")) for item in checks if item.get("context"))
     if not status.get("strict"):
         raise error_cls("branch protection must require strict up-to-date status checks")
-    if required_check not in contexts:
-        raise error_cls(f"required check {required_check!r} absent from branch protection: {sorted(contexts)}")
+    missing_contexts = set(target_protection_contexts(required_check)) - contexts
+    if missing_contexts:
+        raise error_cls(
+            f"required checks absent from branch protection: {sorted(missing_contexts)}; "
+            f"observed {sorted(contexts)}"
+        )
     reviews = protection.get("required_pull_request_reviews")
     if not isinstance(reviews, dict):
         raise error_cls("branch protection must require pull requests")
@@ -428,7 +431,7 @@ def protection_audit(
         "repository": repo,
         "branch": branch,
         "required_check": required_check,
-        "required_checks": [required_check],
+        "required_checks": list(target_protection_contexts(required_check)),
         "target_required_checks": list(target_protection_contexts(required_check)),
         "provider_response": {
             "sha256": sha256_json(protection),
