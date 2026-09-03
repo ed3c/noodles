@@ -835,5 +835,103 @@ class ConcurrencyProofLockTests(unittest.TestCase):
             self.assertEqual(self.proof_errors(root), [])
 
 
+class TestStandardContractTests(unittest.TestCase):
+    def mutated_copy(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-test-standard-", ignore_cleanup_errors=True)
+        root = Path(temp.name) / "repo"
+        copy_tracked(CANDIDATE_ROOT, root)
+        return temp, root
+
+    def runner_errors(self, root: Path) -> list[str]:
+        return skill_contract.validate_test_runner_contract(root)
+
+    def mutate_runner(self, root: Path, old: str, new: str) -> None:
+        path = root / "tests/run.sh"
+        content = path.read_text(encoding="utf-8")
+        replaced = content.replace(old, new, 1)
+        self.assertNotEqual(content, replaced, f"fixture drift: missing {old!r}")
+        path.write_text(replaced, encoding="utf-8")
+
+    def test_shipped_runner_satisfies_the_structural_contract(self) -> None:
+        self.assertEqual(self.runner_errors(CANDIDATE_ROOT), [])
+
+    def test_planted_required_steps_fail_with_specific_diagnostics(self) -> None:
+        cases = (
+            ("set -euo pipefail", "set -eu", "must enable set -euo pipefail"),
+            (
+                'PYTHONPATH="$ROOT" python3 -m unittest discover -s tests -v',
+                'PYTHONPATH="$ROOT" python3 -m unittest discover -s tests/unit -v',
+                "must run python3 -m unittest discover -s tests",
+            ),
+            ("./noodles verify --json", "true", "must run ./noodles verify --json"),
+            ("trap residue_gate EXIT", "true", "must install trap residue_gate EXIT"),
+        )
+        for old, new, diagnostic in cases:
+            with self.subTest(diagnostic=diagnostic):
+                temp, root = self.mutated_copy()
+                with temp:
+                    self.mutate_runner(root, old, new)
+                    self.assertTrue(any(diagnostic in item for item in self.runner_errors(root)))
+
+    def test_planted_early_success_exit_fails(self) -> None:
+        temp, root = self.mutated_copy()
+        with temp:
+            self.mutate_runner(root, 'cd "$ROOT"', 'cd "$ROOT"\nexit 0')
+            self.assertTrue(
+                any("unconditional successful exit" in item for item in self.runner_errors(root))
+            )
+
+    def test_required_text_in_a_comment_or_uncalled_function_does_not_count(self) -> None:
+        temp, root = self.mutated_copy()
+        with temp:
+            self.mutate_runner(
+                root,
+                "./noodles verify --json",
+                "# ./noodles verify --json\nunused_verifier() {\n  ./noodles verify --json\n}",
+            )
+            self.assertTrue(
+                any("must run ./noodles verify --json" in item for item in self.runner_errors(root))
+            )
+
+    def test_oracle_diff_is_explicitly_metadata_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-test-diff-") as directory:
+            base = Path(directory) / "base"
+            candidate = Path(directory) / "candidate"
+            (base / "tests").mkdir(parents=True)
+            (candidate / "tests").mkdir(parents=True)
+            (base / "tests/test_sample.py").write_text(
+                "import unittest\n\n"
+                "class SampleTests(unittest.TestCase):\n"
+                "    def test_keep(self):\n"
+                "        self.assertTrue(True)\n"
+                "    def test_planted_remove(self):\n"
+                "        self.assertEqual(1, 1)\n",
+                encoding="utf-8",
+            )
+            (candidate / "tests/test_sample.py").write_text(
+                "import unittest\n\n"
+                "class SampleTests(unittest.TestCase):\n"
+                "    @unittest.skip('observer only')\n"
+                "    def test_keep(self):\n"
+                "        self.assertEqual(2, 2)\n"
+                "    def test_add(self):\n"
+                "        assert True\n",
+                encoding="utf-8",
+            )
+            report = skill_contract.test_standard_diff(
+                base,
+                candidate,
+                ("tests/test_sample.py", "tests/run.sh", ".github/workflows/verify.yml"),
+            )
+            self.assertEqual(report["authority"], "N")
+            self.assertEqual(report["classification"], "metadata-only")
+            self.assertEqual(report["test_functions"]["counts"], {"added": 1, "removed": 1, "modified": 1})
+            self.assertEqual(report["deltas"]["skip"], 1)
+            self.assertEqual(report["deltas"]["planted_negative_control"], -1)
+            self.assertTrue(report["runner_changed"])
+            self.assertTrue(report["workflow_authority_changed"])
+            self.assertEqual(report["observation_errors"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
