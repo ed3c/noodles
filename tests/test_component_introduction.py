@@ -204,6 +204,8 @@ class VerifyPullRequestIntroductionGateTests(unittest.TestCase):
                 return HEAD_SHA
             if args == ("rev-parse", "HEAD^{tree}"):
                 return "d" * 40
+            if args == ("log", "-1", "--format=%B", "HEAD"):
+                return f"introduce a component\n\nRefs {SUBJECT}\n"
             raise AssertionError(f"unexpected git call: {args}")
 
         with mock.patch.object(noodles, "issue_read", return_value={"state": "open", "body": body}), \

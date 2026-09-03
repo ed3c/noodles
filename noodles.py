@@ -2304,12 +2304,28 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     if subject.repo != repository:
         raise GateError("v1 requires issue and PR to be in the same repository")
     issue = issue_read(subject_value)
-    contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
+    # constraint: ed3c/noodles#358 - `expected_subject` is deliberately NOT passed here. It compared
+    # constraint: the same two strings the agreement below compares, so leaving it would refuse the
+    # constraint: body-vs-flipped-issue divergence first and make that leg of the three-way
+    # constraint: diagnostic a state only a fixture could construct. One owner, reachable from
+    # constraint: production. Every other caller keeps it: they have no third representation to name.
+    contract = parse_issue_contract(issue.get("body") or "")
     if issue.get("state") != "open" or contract["state"] != "awaiting_land":
         raise GateError("issue must be open and awaiting_land before PR verification")
     actual_head = git(candidate_root, "rev-parse", "HEAD")
     if actual_head != head_sha:
         raise GateError(f"candidate checkout {actual_head} != event head {head_sha}")
+    # constraint: ed3c/noodles#358 - three representations of one subject meet at this seam and the
+    # constraint: landing machine binds closure to exactly one of them (the body), so they are
+    # constraint: compared here, after the exact-head gate has proved the trailer is read from the
+    # constraint: commit the event names and after the flipped Issue's awaiting_land state is known.
+    disagreement = github_protection.subject_agreement_error(
+        subject_value,
+        sorted(set(REF_RE.findall(git(candidate_root, "log", "-1", "--format=%B", "HEAD")))),
+        contract["subject"],
+    )
+    if disagreement:
+        raise GateError(disagreement)
     changed_files = merge_base_changed_files(repository, base_ref, head_sha)
     components = component_map(root)
     surface_errors = component_surface_errors(contract["component"], components, changed_files)

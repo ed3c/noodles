@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +16,7 @@ from tests.support import (
     ISSUE_FEATURE_MARKER,
     cmd,
     control_checkout_fixture,
+    copy_tracked,
     handoff_fixture,
     write_acceptance_evidence,
 )
@@ -610,3 +612,253 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(any(args == ("fetch", "--quiet", "origin", "main") for args in command_log))
         self.assertTrue(any(args == ("merge", "--ff-only", "origin/main") for args in command_log))
         self.assertFalse(any(args and args[0] in {"checkout", "reset"} for args in command_log))
+
+
+AGREEMENT_REPOSITORY = "ed3c/noodles"
+AGREEMENT_SUBJECT = f"{AGREEMENT_REPOSITORY}#900358"
+# constraint: ed3c/noodles#358 - the wave-18 near-miss in its recorded numbers: PR334's body named
+# constraint: #301 while the branch it carried was #304's work. Both are kept so the fixture is the
+# constraint: incident rather than a re-imagining of it.
+AGREEMENT_BODY_SUBJECT = f"{AGREEMENT_REPOSITORY}#301"
+AGREEMENT_TRAILER_SUBJECT = f"{AGREEMENT_REPOSITORY}#304"
+AGREEMENT_HEAD_SHA = "e" * 40
+
+
+def agreement_issue_body(subject: str = AGREEMENT_SUBJECT, state: str = "awaiting_land") -> str:
+    return (
+        "<!-- noodles-role: repository-mutating-atom -->\n"
+        f"<!-- noodles-target: {AGREEMENT_REPOSITORY} -->\n"
+        f"<!-- noodles-subject: {subject} -->\n"
+        f"<!-- noodles-state: {state} -->\n"
+        "<!-- noodles-component: verify -->\n"
+        "<!-- noodles-depends-on: none -->\n\n"
+        "## Goal\n\nBind landing to identity, not label.\n\n"
+        "## Physical acceptance\n\n- Planted controls fail closed.\n\n"
+        "## Non-claims\n\n- The trailer is never made mandatory.\n"
+    )
+
+
+class SubjectAgreementRuleTests(unittest.TestCase):
+    """ed3c/noodles#358 - the divergence table as a pure function: no provider, no git, no fixture.
+
+    The landing machine binds closure to the PR BODY, authors bind their work to the commit TRAILER,
+    and the ceremony flips the state of an ISSUE. Wave-18 produced a candidate where the first two
+    named different subjects and every check that existed still passed, because the wrongly-named
+    issue was itself already `awaiting_land`. The near-miss was composed, not local, which is why the
+    rule takes all three at once rather than being three pairwise checks in three places."""
+
+    def test_positive_control_all_three_naming_one_subject_is_agreement(self) -> None:
+        rule = github_protection.subject_agreement_error
+
+        self.assertIsNone(rule(AGREEMENT_SUBJECT, [AGREEMENT_SUBJECT], AGREEMENT_SUBJECT))
+        self.assertIsNone(rule(AGREEMENT_SUBJECT, [], AGREEMENT_SUBJECT))
+        self.assertIsNone(rule(AGREEMENT_SUBJECT, [AGREEMENT_SUBJECT, AGREEMENT_SUBJECT], AGREEMENT_SUBJECT))
+
+    def test_planted_negative_a_body_trailer_split_is_refused_naming_all_three(self) -> None:
+        diagnostic = github_protection.subject_agreement_error(
+            AGREEMENT_BODY_SUBJECT, [AGREEMENT_TRAILER_SUBJECT], AGREEMENT_BODY_SUBJECT
+        )
+
+        self.assertIsNotNone(diagnostic)
+        self.assertIn(AGREEMENT_BODY_SUBJECT, diagnostic)
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, diagnostic)
+        self.assertIn("PR body names", diagnostic)
+        self.assertIn("head commit trailer names", diagnostic)
+        self.assertIn("flipped issue names", diagnostic)
+
+    def test_planted_negative_a_flipped_issue_declaring_a_foreign_subject_is_refused(self) -> None:
+        diagnostic = github_protection.subject_agreement_error(
+            AGREEMENT_BODY_SUBJECT, [AGREEMENT_BODY_SUBJECT], AGREEMENT_TRAILER_SUBJECT
+        )
+
+        self.assertIsNotNone(diagnostic)
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, diagnostic)
+        self.assertIn("flipped issue names", diagnostic)
+
+    def test_planted_negative_two_different_trailers_cannot_both_be_the_bound_subject(self) -> None:
+        diagnostic = github_protection.subject_agreement_error(
+            AGREEMENT_BODY_SUBJECT, [AGREEMENT_BODY_SUBJECT, AGREEMENT_TRAILER_SUBJECT], AGREEMENT_BODY_SUBJECT
+        )
+
+        self.assertIsNotNone(diagnostic)
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, diagnostic)
+
+    def test_an_absent_trailer_reads_differently_from_a_trailer_naming_something_else(self) -> None:
+        # constraint: ed3c/noodles#358 - the one representation allowed to be missing must not print
+        # constraint: as an empty gap in a refusal a human is deciding a merge on, so absence has a word.
+        absent = github_protection.subject_agreement_error(
+            AGREEMENT_BODY_SUBJECT, [], AGREEMENT_TRAILER_SUBJECT
+        )
+        naming_another = github_protection.subject_agreement_error(
+            AGREEMENT_BODY_SUBJECT, [AGREEMENT_TRAILER_SUBJECT], AGREEMENT_BODY_SUBJECT
+        )
+
+        self.assertIn(github_protection.TRAILER_ABSENT, absent)
+        self.assertNotIn(github_protection.TRAILER_ABSENT, naming_another)
+
+
+class VerifySubjectAgreementTests(unittest.TestCase):
+    """ed3c/noodles#358 - the same rule at the seam it defends, through `verify_pull_request`.
+
+    `run_verify` mocks git so the divergence table stays fast; the last control does NOT, so the argv
+    the gate reads a commit message with is bound to git's real behaviour. A mocked trailer read
+    agrees with a wrong `git log` invocation just as happily as with a right one."""
+
+    def run_verify(self, *, pr_subject: str, issue: str, message: str) -> object:
+        temp = tempfile.TemporaryDirectory(prefix="noodles-subject-agreement-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        event_path = base / "event.json"
+        event_path.write_text(
+            json.dumps(
+                {
+                    "pull_request": {
+                        "number": 358,
+                        "head": {"sha": AGREEMENT_HEAD_SHA},
+                        "base": {"ref": "main"},
+                        "draft": False,
+                        "body": f"Refs {pr_subject}",
+                    },
+                    "repository": {"full_name": AGREEMENT_REPOSITORY},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def fake_git(_root: Path, *args: str, check: bool = True) -> str:
+            if args == ("rev-parse", "HEAD"):
+                return AGREEMENT_HEAD_SHA
+            if args == ("rev-parse", "HEAD^{tree}"):
+                return "f" * 40
+            if args == ("log", "-1", "--format=%B", "HEAD"):
+                return message
+            raise AssertionError(f"unexpected git call: {args}")
+
+        with mock.patch.object(noodles, "issue_read", return_value={"state": "open", "body": issue}), \
+                mock.patch.object(noodles, "merge_base_changed_files", return_value=["noodles.py"]), \
+                mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": [], "metrics": {}}), \
+                mock.patch.object(noodles, "git", side_effect=fake_git):
+            return noodles.verify_pull_request(CANDIDATE_ROOT, event_path, base, base / "receipt.json")
+
+    def test_positive_control_agreeing_representations_reach_a_landing_receipt(self) -> None:
+        receipt = self.run_verify(
+            pr_subject=AGREEMENT_SUBJECT,
+            issue=agreement_issue_body(),
+            message=f"do the work\n\nRefs {AGREEMENT_SUBJECT}\n",
+        )
+
+        self.assertIn(AGREEMENT_SUBJECT, receipt["issue_subject"])
+
+    def test_positive_control_a_trailer_less_candidate_is_not_refused(self) -> None:
+        # constraint: ed3c/noodles#358 - the Non-claim made physical: no mandatory trailers. A gate
+        # constraint: that quietly required one would refuse every merge commit on the route.
+        receipt = self.run_verify(
+            pr_subject=AGREEMENT_SUBJECT,
+            issue=agreement_issue_body(),
+            message="do the work with no trailer\n",
+        )
+
+        self.assertIn(AGREEMENT_SUBJECT, receipt["issue_subject"])
+
+    def test_positive_control_a_subject_mentioned_inline_is_narrative_not_a_binding(self) -> None:
+        receipt = self.run_verify(
+            pr_subject=AGREEMENT_SUBJECT,
+            issue=agreement_issue_body(),
+            message=f"do the work (Refs {AGREEMENT_TRAILER_SUBJECT}) as discussed\n",
+        )
+
+        self.assertIn(AGREEMENT_SUBJECT, receipt["issue_subject"])
+
+    def test_planted_negative_the_wave_eighteen_shape_is_refused_naming_all_three(self) -> None:
+        """Body names one subject, trailer names another, and the body's issue IS already awaiting land.
+
+        Every check that existed before this atom passes on this input: the body parses, the issue is
+        open, its own marker agrees with the body, its state is `awaiting_land`, and the checkout head
+        matches the event head."""
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify(
+                pr_subject=AGREEMENT_BODY_SUBJECT,
+                issue=agreement_issue_body(subject=AGREEMENT_BODY_SUBJECT),
+                message=f"do issue 304's work\n\nRefs {AGREEMENT_TRAILER_SUBJECT}\n",
+            )
+        diagnostic = str(raised.exception)
+        self.assertIn("subject-agreement gate failed", diagnostic)
+        self.assertIn(AGREEMENT_BODY_SUBJECT, diagnostic)
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, diagnostic)
+
+    def test_planted_negative_an_issue_whose_marker_names_a_foreign_subject_is_refused(self) -> None:
+        # constraint: ed3c/noodles#358 - identity, not label: the flipped issue's leg is that body's
+        # constraint: own noodles-subject marker, so the number the PR addressed cannot launder it.
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify(
+                pr_subject=AGREEMENT_BODY_SUBJECT,
+                issue=agreement_issue_body(subject=AGREEMENT_TRAILER_SUBJECT),
+                message=f"do the work\n\nRefs {AGREEMENT_BODY_SUBJECT}\n",
+            )
+        diagnostic = str(raised.exception)
+        self.assertIn("subject-agreement gate failed", diagnostic)
+        self.assertIn("flipped issue names", diagnostic)
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, diagnostic)
+
+    def test_the_gate_refuses_before_the_repository_gate_spends_a_run(self) -> None:
+        with mock.patch.object(noodles, "verify_repository") as repository:
+            with self.assertRaises(noodles.GateError):
+                self.run_verify(
+                    pr_subject=AGREEMENT_BODY_SUBJECT,
+                    issue=agreement_issue_body(subject=AGREEMENT_BODY_SUBJECT),
+                    message=f"do issue 304's work\n\nRefs {AGREEMENT_TRAILER_SUBJECT}\n",
+                )
+        repository.assert_not_called()
+
+    def run_verify_over_real_git(self, message: str) -> object:
+        """The same seam with `noodles.git` NOT mocked: a real repository, a real commit message."""
+        temp = tempfile.TemporaryDirectory(prefix="noodles-subject-agreement-real-git-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        candidate = base / "candidate"
+        copy_tracked(CANDIDATE_ROOT, candidate)
+        cmd(["git", "commit", "-q", "--allow-empty", "-m", message], candidate)
+        head = cmd(["git", "rev-parse", "HEAD"], candidate)
+        event_path = base / "event.json"
+        event_path.write_text(
+            json.dumps(
+                {
+                    "pull_request": {
+                        "number": 358,
+                        "head": {"sha": head},
+                        "base": {"ref": "main"},
+                        "draft": False,
+                        "body": f"Refs {AGREEMENT_SUBJECT}",
+                    },
+                    "repository": {"full_name": AGREEMENT_REPOSITORY},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(noodles, "issue_read", return_value={"state": "open", "body": agreement_issue_body()}), \
+                mock.patch.object(noodles, "merge_base_changed_files", return_value=["noodles.py"]), \
+                mock.patch.object(noodles, "verify_repository", return_value={"ok": True, "errors": [], "metrics": {}}):
+            return noodles.verify_pull_request(CANDIDATE_ROOT, event_path, candidate, base / "receipt.json")
+
+    def test_the_trailer_git_really_stores_is_the_one_the_gate_reads(self) -> None:
+        receipt = self.run_verify_over_real_git(f"do the work\n\nRefs {AGREEMENT_SUBJECT}\n")
+
+        self.assertIn(AGREEMENT_SUBJECT, receipt["issue_subject"])
+
+    def test_planted_negative_a_real_diverging_commit_is_refused_over_real_git(self) -> None:
+        with self.assertRaises(noodles.GateError) as raised:
+            self.run_verify_over_real_git(f"do issue 304's work\n\nRefs {AGREEMENT_TRAILER_SUBJECT}\n")
+
+        self.assertIn("subject-agreement gate failed", str(raised.exception))
+        self.assertIn(AGREEMENT_TRAILER_SUBJECT, str(raised.exception))
+
+    def test_the_landing_seam_has_exactly_one_subject_agreement_owner(self) -> None:
+        # constraint: ed3c/noodles#358 - a second inlined comparison at this seam would be a place the
+        # constraint: three-way diagnostic is reachable with only two of the three legs named. The
+        # constraint: `expected_subject` argument was exactly that: it refused the body-vs-flipped-issue
+        # constraint: divergence first, leaving that leg of the diagnostic reachable only from a fixture.
+        source = (CANDIDATE_ROOT / "noodles.py").read_text(encoding="utf-8")
+        verify = source.split(f"def {'verify_pull_request'}(", 1)[1].split("\ndef ", 1)[0]
+
+        self.assertIn("subject_agreement_error(", verify)
+        self.assertNotIn("expected_subject=subject_value", verify)
