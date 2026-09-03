@@ -54,7 +54,7 @@ class AdmitCanaryRowTests(unittest.TestCase):
     """Five boundaries, five planted faults, five refusals: subject, digest, adapter, path, range."""
 
     def setUp(self) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-canary-consumer-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-canary-consumer-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         self.directory = Path(temp.name)
         self.claim = sample_claim()

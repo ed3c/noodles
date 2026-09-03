@@ -85,7 +85,7 @@ class ScipLookupCoreTests(unittest.TestCase):
     """The lookup core is the part trusted CI can re-run; the external indexer is not installed here."""
 
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "a.py").write_bytes(SOURCE_A)
@@ -128,7 +128,7 @@ class ScipEvidenceAdmissionTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.evidence = copy.deepcopy(EVIDENCE)
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "a.py").write_bytes(SOURCE_A)

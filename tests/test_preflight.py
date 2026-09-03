@@ -16,7 +16,7 @@ from tests.support import CANDIDATE_ROOT, cmd, copy_tracked
 
 class PreflightTests(unittest.TestCase):
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-preflight-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-preflight-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
@@ -110,7 +110,7 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("preflight missing capability: Python 3.11+ runtime with tomllib", result.stderr)
 
     def _tempdir(self) -> str:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-preflight-bin-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-preflight-bin-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         return temp.name
 

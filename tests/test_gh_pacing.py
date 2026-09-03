@@ -115,7 +115,7 @@ def load_carrier_module():
 
 class GhPacingCarrierTests(unittest.TestCase):
     def scratch(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-gh-pacing-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-gh-pacing-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         return Path(temp.name)
 

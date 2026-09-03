@@ -79,7 +79,7 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertIsNotNone(gh_path)
         return Path(str(gh_path)).resolve()
     def workflow_boundary(self, mutate) -> tuple[list[str], dict]:
-        with tempfile.TemporaryDirectory(prefix="noodles-gh-protect-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-gh-protect-", ignore_cleanup_errors=True) as temp_name:
             root = Path(temp_name)
             workflow_dir = root / ".github/workflows"
             workflow_dir.mkdir(parents=True)
@@ -703,7 +703,7 @@ class ProtectionContractTests(unittest.TestCase):
             [str(real_gh), "api", "--method", "PATCH", "repos/ed3c/noodles/issues/70"],
             pattern=f"unsupported real-gh executable route via child command\\[0\\]: {re.escape(str(real_gh))} -> {re.escape(str(real_gh))}",
         )
-        with tempfile.TemporaryDirectory(prefix="noodles-gh-link-") as temp_name:
+        with tempfile.TemporaryDirectory(prefix="noodles-gh-link-", ignore_cleanup_errors=True) as temp_name:
             symlink = Path(temp_name) / "gh-link"
             symlink.symlink_to(real_gh)
             self.assert_model_eval_rejected_before_spawn(
@@ -823,7 +823,7 @@ class GhAwLockPlantedNegativeTests(unittest.TestCase):
     """Each plant is an inverse-editable mutation of one tracked file in a throwaway copy."""
 
     def mutated(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-ghaw-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-ghaw-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
@@ -930,7 +930,7 @@ class GhAwRecompilationControlTests(unittest.TestCase):
         digest = noodles.sha256_file(Path(binary))
         pinned = {entry["asset_sha256"] for entry in LOCK["compiler"]["platforms"].values()}
         self.assertIn(digest, pinned, f"{binary} sha256 {digest} is not a pinned gh-aw {LOCK['compiler']['release']} asset")
-        with tempfile.TemporaryDirectory(prefix="noodles-ghaw-compile-") as temp:
+        with tempfile.TemporaryDirectory(prefix="noodles-ghaw-compile-", ignore_cleanup_errors=True) as temp:
             root = Path(temp)
             for relative in (SOURCE_PATH, LOCK["workflow"]["action_pin_path"]):
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)

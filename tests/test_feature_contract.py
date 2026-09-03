@@ -41,7 +41,7 @@ class FeatureVerifierTests(unittest.TestCase):
     """The declared operation must physically run and the oracle must read the real artifact."""
 
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-feature-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-feature-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)

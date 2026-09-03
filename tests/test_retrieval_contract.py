@@ -36,7 +36,7 @@ class RetrievalPinGateTests(unittest.TestCase):
     every host including CI where the tool is absent."""
 
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-pin-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-pin-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
@@ -148,7 +148,7 @@ class RetrievalProbeTests(unittest.TestCase):
     """The probe binds both controls, the readback, and the residue check into one receipt."""
 
     def candidate_copy(self) -> Path:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-probe-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-probe-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name) / "repo"
         copy_tracked(CANDIDATE_ROOT, root)
@@ -289,7 +289,7 @@ class RetrievalIndexAdmissionTests(unittest.TestCase):
     candidate tree and an absent index must never be mistaken for a searchable one."""
 
     def test_missing_or_empty_index_fails_closed(self) -> None:
-        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-index-test-")
+        temp = tempfile.TemporaryDirectory(prefix="noodles-retrieval-index-test-", ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
         with self.assertRaises(noodles.GateError) as absent:
