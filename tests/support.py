@@ -886,7 +886,7 @@ def _write_fake_gh_stub(path: Path, *, release: str, commit: str, asset_name: st
         "elif endpoint == f'repos/poteto/noodle/git/ref/tags/{release}':\n"
         "    body = {'object': {'type': 'commit', 'sha': commit}}\n"
         "elif endpoint == 'repos/ed3c/noodles/branches/main/protection':\n"
-        "    body = {'required_status_checks': {'strict': True, 'contexts': ['verify']}, 'enforce_admins': {'enabled': True}, 'required_pull_request_reviews': {'required_approving_review_count': 0}, 'allow_force_pushes': {'enabled': False}, 'allow_deletions': {'enabled': False}}\n"
+        "    body = {'required_status_checks': {'strict': True, 'contexts': ['verify', 'candidate-self-tests']}, 'enforce_admins': {'enabled': True}, 'required_pull_request_reviews': {'required_approving_review_count': 0}, 'allow_force_pushes': {'enabled': False}, 'allow_deletions': {'enabled': False}}\n"
         "else:\n    raise SystemExit(f'unexpected endpoint: {endpoint}')\n"
         "if include:\n    sys.stdout.write('HTTP/1.1 200 OK\\nETag: test\\nX-GitHub-Request-Id: test\\n\\n')\n"
         "sys.stdout.write(json.dumps(body))\n",

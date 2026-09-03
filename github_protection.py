@@ -346,6 +346,27 @@ def protection_token_boundary(error_cls: type[Exception]) -> dict[str, Any]:
         "separate_from_gh_token": False,
         "required": required,
     }
+
+
+CANDIDATE_SELF_TESTS_CHECK = "candidate-self-tests"
+
+
+def target_protection_contexts(required_check: str) -> tuple[str, ...]:
+    """Return every provider check the protection writer installs.
+
+    ed3c/noodles#389 - `verify` and the candidate's own tests are deliberately
+    independent jobs: trusted verification must never execute candidate code.
+    Requiring only `verify`, however, left the provider free to merge while the
+    independent candidate job was still running or already red.  The protection
+    surface is their confluence, so the writer converges it on both contexts.
+
+    The widening half of the trusted transition landed before the provider was
+    updated.  The observer now consumes this same target set after the provider
+    readback proved both contexts live, so writer and observer cannot drift.
+    """
+    return tuple(dict.fromkeys((required_check, CANDIDATE_SELF_TESTS_CHECK)))
+
+
 def protection_observe(
     gh_api_response_fn: Callable[..., tuple[dict[str, str], Any]],
     error_cls: type[Exception],
@@ -367,8 +388,12 @@ def protection_observe(
     contexts.update(str(item.get("context")) for item in checks if item.get("context"))
     if not status.get("strict"):
         raise error_cls("branch protection must require strict up-to-date status checks")
-    if required_check not in contexts:
-        raise error_cls(f"required check {required_check!r} absent from branch protection: {sorted(contexts)}")
+    missing_contexts = set(target_protection_contexts(required_check)) - contexts
+    if missing_contexts:
+        raise error_cls(
+            f"required checks absent from branch protection: {sorted(missing_contexts)}; "
+            f"observed {sorted(contexts)}"
+        )
     reviews = protection.get("required_pull_request_reviews")
     if not isinstance(reviews, dict):
         raise error_cls("branch protection must require pull requests")
@@ -406,6 +431,8 @@ def protection_audit(
         "repository": repo,
         "branch": branch,
         "required_check": required_check,
+        "required_checks": list(target_protection_contexts(required_check)),
+        "target_required_checks": list(target_protection_contexts(required_check)),
         "provider_response": {
             "sha256": sha256_json(protection),
             "etag": headers.get("etag"),
@@ -430,7 +457,10 @@ def protection_apply(
     required_check: str,
 ) -> dict[str, Any]:
     payload = {
-        "required_status_checks": {"strict": True, "contexts": [required_check]},
+        "required_status_checks": {
+            "strict": True,
+            "contexts": list(target_protection_contexts(required_check)),
+        },
         "enforce_admins": True,
         "required_pull_request_reviews": {
             "dismiss_stale_reviews": False,

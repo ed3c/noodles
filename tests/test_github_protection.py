@@ -24,8 +24,11 @@ def protection_fixture() -> dict:
         "url": "https://api.github.com/repos/ed3c/noodles/branches/main/protection",
         "required_status_checks": {
             "strict": True,
-            "contexts": ["verify"],
-            "checks": [{"context": "verify", "app_id": 15368}],
+            "contexts": ["verify", "candidate-self-tests"],
+            "checks": [
+                {"context": "verify", "app_id": 15368},
+                {"context": "candidate-self-tests", "app_id": 15368},
+            ],
         },
         "required_pull_request_reviews": {
             "dismiss_stale_reviews": False,
@@ -168,6 +171,71 @@ class ProtectionContractTests(unittest.TestCase):
         self.assertEqual(audit["token_boundary"]["source"], "NOODLES_GITHUB_PROTECTION_TOKEN")
         self.assertTrue(audit["token_boundary"]["separate_from_gh_token"])
         self.assertEqual(audit["provider_response"]["accepted_github_permissions"], "administration=read")
+        self.assertEqual(audit["required_checks"], ["verify", "candidate-self-tests"])
+        self.assertEqual(audit["target_required_checks"], ["verify", "candidate-self-tests"])
+
+    def test_protection_observer_refuses_missing_candidate_self_tests_context(self) -> None:
+        incomplete = protection_fixture()
+        incomplete["required_status_checks"] = {
+            "strict": True,
+            "contexts": ["verify"],
+            "checks": [{"context": "verify", "app_id": 15368}],
+        }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NOODLES_REQUIRE_PROTECTION_READ_TOKEN": "1",
+                "NOODLES_GITHUB_PROTECTION_TOKEN": "app-token",
+                "GH_TOKEN": "default-token",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(
+                noodles.GateError,
+                "required checks absent from branch protection: .*candidate-self-tests",
+            ):
+                github_protection.protection_readback(
+                    lambda endpoint, **kwargs: ({}, incomplete),
+                    noodles.GateError,
+                    "ed3c/noodles",
+                    "main",
+                    "verify",
+                )
+
+    def test_protection_apply_requires_both_independent_jobs(self) -> None:
+        writes: list[tuple[str, str, dict]] = []
+
+        def fake_write(endpoint: str, *, method: str, payload: dict) -> dict:
+            writes.append((endpoint, method, payload))
+            return {}
+
+        applied = github_protection.protection_apply(
+            fake_write,
+            lambda endpoint, **kwargs: ({}, protection_fixture()),
+            noodles.GateError,
+            "ed3c/noodles",
+            "main",
+            "verify",
+        )
+        self.assertEqual(applied, protection_fixture())
+        self.assertEqual(len(writes), 1)
+        endpoint, method, payload = writes[0]
+        self.assertEqual(endpoint, "repos/ed3c/noodles/branches/main/protection")
+        self.assertEqual(method, "PUT")
+        self.assertEqual(
+            payload["required_status_checks"],
+            {"strict": True, "contexts": ["verify", "candidate-self-tests"]},
+        )
+
+    def test_candidate_self_tests_cover_every_admitted_pr_head_event(self) -> None:
+        errors, evidence = github_protection.workflow_boundary_readback(ENGINE_ROOT, sha256_file)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            evidence["verify_trigger"]["pull_request_target"]["types"],
+            ["opened", "synchronize", "reopened", "ready_for_review"],
+        )
+        self.assertTrue(evidence["candidate_self_tests_secret_free"])
 
     def test_workflow_boundary_rejects_candidate_secret_exposure(self) -> None:
         def mutate(verify_path: Path, _land_path: Path) -> None:

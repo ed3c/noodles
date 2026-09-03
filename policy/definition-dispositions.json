@@ -24,6 +24,7 @@
           "build_evidence_publication",
           "candidate_workflow_limit",
           "ceremony_commit",
+          "ceremony_edit_body",
           "ceremony_plant",
           "ceremony_rebase",
           "ceremony_rerun",
