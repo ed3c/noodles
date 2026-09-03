@@ -699,9 +699,18 @@ class ComponentOwnerGateTests(unittest.TestCase):
         self.assertEqual(self.errors("verify"), [])
 
     def test_unowned_definition_is_not_judged_and_owned_neighbours_stay_silent(self) -> None:
-        self.plant("verify_pull_request")
+        # constraint: ed3c/noodles#326 - the subject is READ from the candidate's own map instead of
+        # constraint: named, because which definitions are unowned is candidate state that the
+        # constraint: ownership drain moves. A named subject is the same trusted-transition deadlock
+        # constraint: as a pinned count: `pull_request_target` plants main's chosen name against the
+        # constraint: candidate's map, so the candidate that owns that name reds in trusted verify and
+        # constraint: cannot edit trusted code to change the choice. The assertion is unchanged and
+        # constraint: the invariant is unchanged; only the fixture input became derived.
+        unowned = sorted(set(noodles.top_level_definitions(self.source, "noodles.py")) - set(self.owners["noodles.py"]))
+        self.assertTrue(unowned, "the candidate owns every definition; this control has no subject")
         for component in ("verify", "carrier", "schedule"):
-            with self.subTest(component=component):
+            self.plant(unowned[0])
+            with self.subTest(component=component, definition=unowned[0]):
                 self.assertEqual(self.errors(component), [])
 
     def test_whole_repository_component_admits_every_definition(self) -> None:
