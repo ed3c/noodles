@@ -7,6 +7,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import issue_contract
@@ -266,6 +267,187 @@ class WriteBoundaryMarkerTests(unittest.TestCase):
         )
         self.assertEqual(noodles.parse_issue_contract(body, SUBJECT)["write_boundary"], ("schedule_domain.py",))
         self.assertIsNone(noodles.parse_issue_contract(issue_body(), SUBJECT)["write_boundary"])
+
+
+# constraint: ed3c/noodles#390 - the two live receipts, recorded as the exact changed-path sets
+# constraint: `git diff origin/main...HEAD --name-only` reported for them. They are transcripts of
+# constraint: commits that happened, not values this tree computes, so they sit here as data rather
+# constraint: than being re-derived from a repository the trusted job has no network to fetch.
+LEDGER_RECEIPT = (
+    # constraint: ee20e5a - a trusted-suite change and the policy/trusted-literals.json row the guard
+    # constraint: demands of it, in one commit. That row is the ONLY sanctioned cure and it lies
+    # constraint: outside a boundary of `tests`.
+    "policy/trusted-literals.json",
+    "tests/test_component_surface.py",
+)
+DISCLOSURE_RECEIPT = (
+    # constraint: salvage-b325-pre-rebase-20260903 (ed3c/noodles#325), the head ed3c/noodles#390
+    # constraint: recorded as its own planted direction: AGENTS.md in the diff and absent from the
+    # constraint: declared write boundary.
+    "AGENTS.md",
+    "contracts/system-v1.md",
+    "docs/agent-friendly/README.md",
+    "docs/findings/register.json",
+    "noodles.py",
+    "policy/fitness.json",
+    "policy/ownership-keys.json",
+    "skill_contract.py",
+    "tests/test_agent_friendly_architecture.py",
+    "tests/test_noodles.py",
+)
+EMPTY_REGISTRY: dict[str, Any] = {"schema_version": 1, "co_mandates": []}
+
+
+def live_co_mandates() -> dict[str, Any]:
+    return json.loads((CANDIDATE_ROOT / issue_contract.CO_MANDATE_REGISTRY_PATH).read_text(encoding="utf-8"))
+
+
+def boundary_omitting(receipt: tuple[str, ...], surface: str) -> tuple[str, ...]:
+    """The write boundary this receipt's atom declared: its own surfaces, minus the co-mandated one.
+
+    Derived from the receipt rather than quoted from the Issue, because eleven boundaries were
+    hand-widened as the interim cure while ed3c/noodles#390 was open, so the marker as it reads today
+    is downstream of the collision instead of evidence about it. A boundary entry is the leading
+    segment of a path, which is exactly how these atoms declare theirs (`noodles.py, tests, policy`).
+    On the disclosure receipt this reproduces ed3c/noodles#325's own declared surfaces."""
+    return tuple(sorted({path.split("/")[0] for path in receipt} - {surface.split("/")[0]}))
+
+
+class CoMandateRegistryTests(unittest.TestCase):
+    """ed3c/noodles#390: a surface another admitted mandate forces into the same commit is
+    co-permitted by construction, decided at the one place a boundary is interpreted.
+
+    Two standing mandates each forced bytes outside every declared boundary. The trusted-literal
+    guard demands a same-commit row in policy/trusted-literals.json from any commit adding a trusted
+    test; the cross-surface disclosure lives in an AGENTS.md sentence no atom's boundary declares.
+    Both rules are correct and, together with the boundary contract, jointly unsatisfiable - so every
+    atom author either remembered to widen for a surface the machine itself mandates, or landed
+    unsatisfiable. The registry binds each exemption to the mandate that forces it, which is what
+    keeps it exactly as narrow as the mandate and lets it die when the mandate is retired.
+
+    Both directions are planted for every row: the forcing condition holds, and the same write
+    without it. The unregistered foreign file is the third control, because an exemption that also
+    admits an unrelated path is a boundary deleted rather than interpreted."""
+
+    def test_the_live_registry_is_schema_clean_and_every_surface_is_a_file_this_tree_carries(self) -> None:
+        registry = live_co_mandates()
+        self.assertEqual(issue_contract.co_mandate_errors(registry), [])
+        self.assertTrue(registry["co_mandates"])
+        for row in registry["co_mandates"]:
+            with self.subTest(surface=row["surface"]):
+                # constraint: a row naming a surface this tree no longer carries is an exemption
+                # constraint: outliving its mandate, the one failure the Claim promises cannot
+                # constraint: happen quietly.
+                self.assertTrue((CANDIDATE_ROOT / row["surface"]).is_file(), row["surface"])
+
+    def test_the_ledger_receipt_passes_exactly_when_its_trusted_test_addition_shares_the_commit(self) -> None:
+        registry = live_co_mandates()
+        boundary = boundary_omitting(LEDGER_RECEIPT, "policy/trusted-literals.json")
+        self.assertEqual(boundary, ("tests",))
+        self.assertEqual(issue_contract.boundary_escapes(LEDGER_RECEIPT, boundary, registry), ())
+        # constraint: planted negative - the same boundary-external write, forcing condition removed.
+        alone = ("policy/trusted-literals.json",)
+        self.assertEqual(issue_contract.boundary_escapes(alone, boundary, registry), alone)
+        # constraint: planted negative for the registry itself - without it the receipt is the
+        # constraint: violation the wave-23 wall measured, byte-for-byte what every caller did
+        # constraint: before this atom.
+        self.assertEqual(
+            issue_contract.boundary_escapes(LEDGER_RECEIPT, boundary, EMPTY_REGISTRY),
+            ("policy/trusted-literals.json",),
+        )
+
+    def test_the_disclosure_receipt_passes_exactly_when_the_commit_moves_the_measured_surface(self) -> None:
+        registry = live_co_mandates()
+        boundary = boundary_omitting(DISCLOSURE_RECEIPT, "AGENTS.md")
+        self.assertNotIn("AGENTS.md", boundary)
+        self.assertEqual(issue_contract.boundary_escapes(DISCLOSURE_RECEIPT, boundary, registry), ())
+        # constraint: planted negative - the disclosure rewritten by a commit touching no Python
+        # constraint: module at all, which provably cannot have moved a disclosed count.
+        prose_only = ("AGENTS.md", "contracts/system-v1.md", "docs/findings/register.json")
+        self.assertEqual(issue_contract.boundary_escapes(prose_only, boundary, registry), ("AGENTS.md",))
+        self.assertEqual(
+            issue_contract.boundary_escapes(DISCLOSURE_RECEIPT, boundary, EMPTY_REGISTRY),
+            ("AGENTS.md",),
+        )
+
+    def test_the_disposition_row_is_forced_by_the_owner_mapped_file_and_by_nothing_else(self) -> None:
+        registry = live_co_mandates()
+        forced = ("noodles.py", "policy/definition-dispositions.json")
+        self.assertEqual(issue_contract.boundary_escapes(forced, ("noodles.py",), registry), ())
+        unforced = ("docs/findings/register.json", "policy/definition-dispositions.json")
+        self.assertEqual(
+            issue_contract.boundary_escapes(unforced, ("docs",), registry),
+            ("policy/definition-dispositions.json",),
+        )
+
+    def test_an_unregistered_foreign_file_still_escapes_beside_a_co_permitted_one(self) -> None:
+        registry = live_co_mandates()
+        boundary = boundary_omitting(LEDGER_RECEIPT, "policy/trusted-literals.json")
+        smuggled = LEDGER_RECEIPT + (".noodle.toml", "README.md")
+        self.assertEqual(
+            issue_contract.boundary_escapes(smuggled, boundary, registry),
+            (".noodle.toml", "README.md"),
+        )
+
+    def test_a_registered_surface_is_never_its_own_forcing_condition(self) -> None:
+        # constraint: ed3c/noodles#390 - AGENTS.md is forced by `*.py`, and fnmatch would match a
+        # constraint: surface named `*.py` against its own row. A row that forced itself would let
+        # constraint: any registered surface be written alone, which is the exemption unbound.
+        registry = live_co_mandates()
+        self.assertEqual(issue_contract.co_permitted_surfaces(("AGENTS.md",), registry), {})
+        self.assertEqual(
+            issue_contract.co_permitted_surfaces(("AGENTS.md", "noodles.py"), registry),
+            {
+                "AGENTS.md": "ed3c/noodles#306",
+                "policy/definition-dispositions.json": "ed3c/noodles#326",
+                "policy/fitness.json": "ed3c/noodles#326",
+            },
+        )
+
+    def test_a_row_the_schema_refuses_co_permits_nothing(self) -> None:
+        """One rule for the gate and the judge, so a registry the gate would red cannot widen a
+        boundary in the meantime. Fail-closed here means falling back to today's behaviour."""
+        for broken in (
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["*"], "reason": "r", "receipt": "x"},
+            # constraint: the same widening spelled differently - refusing only the literal `*` would
+            # constraint: leave the one shape no planted negative can catch behind a spelling.
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["**"], "reason": "r", "receipt": "x"},
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["*.py", "*?*"], "reason": "r", "receipt": "x"},
+            {"surface": "AGENTS.md", "mandate": "not-a-subject", "forced_by": ["*.py"], "reason": "r", "receipt": "x"},
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["*.py"], "reason": " ", "receipt": "x"},
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["*.py"], "reason": "r"},
+            {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": [], "reason": "r", "receipt": "x"},
+            {"surface": "../escape", "mandate": "ed3c/noodles#306", "forced_by": ["*.py"], "reason": "r", "receipt": "x"},
+        ):
+            with self.subTest(row=sorted(broken)):
+                registry = {"schema_version": 1, "co_mandates": [broken]}
+                self.assertTrue(issue_contract.co_mandate_errors(registry))
+                self.assertEqual(issue_contract.co_permitted_surfaces(("AGENTS.md", "noodles.py"), registry), {})
+
+    def test_a_duplicate_surface_and_a_wrong_shaped_registry_are_named_rather_than_merged(self) -> None:
+        row = {"surface": "AGENTS.md", "mandate": "ed3c/noodles#306", "forced_by": ["*.py"], "reason": "r", "receipt": "x"}
+        self.assertTrue([e for e in issue_contract.co_mandate_errors({"schema_version": 1, "co_mandates": [row, row]}) if "twice" in e])
+        self.assertTrue(issue_contract.co_mandate_errors({"schema_version": 2, "co_mandates": []}))
+        self.assertTrue(issue_contract.co_mandate_errors({"schema_version": 1, "co_mandates": {}}))
+        self.assertTrue(issue_contract.co_mandate_errors([]))
+        self.assertEqual(issue_contract.co_permitted_surfaces(("noodles.py",), None), {})
+
+    def test_verify_reds_on_a_registry_that_widens_to_the_whole_tree(self) -> None:
+        """The candidate's own copy is schema-judged by ./noodles verify, so a row that co-permits
+        its surface unconditionally cannot sit in the tree unnoticed even though the judge, which
+        reads the trusted copy, would ignore it. Planted against a real tree, then restored."""
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            root = Path(temp) / "tree"
+            copy_tracked(CANDIDATE_ROOT, root)
+            target = root / issue_contract.CO_MANDATE_REGISTRY_PATH
+            good = target.read_text(encoding="utf-8")
+            self.assertEqual([e for e in noodles.verify_repository(root)["errors"] if "co-mandate" in e], [])
+            widened = json.loads(good)
+            widened["co_mandates"][0]["forced_by"] = ["*"]
+            target.write_text(json.dumps(widened), encoding="utf-8")
+            self.assertTrue([e for e in noodles.verify_repository(root)["errors"] if "whole tree" in e])
+            target.write_text(good, encoding="utf-8")
+            self.assertEqual([e for e in noodles.verify_repository(root)["errors"] if "co-mandate" in e], [])
 
 
 class BlockerMarkerTests(unittest.TestCase):

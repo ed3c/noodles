@@ -34,6 +34,13 @@ RUN_ENV = {"GITHUB_RUN_ID": "189", "GITHUB_RUN_ATTEMPT": "1"}
 # constraint: ed3c/noodles#188 - the custody root literal lives in exactly one executable constant,
 # constraint: so this fixture references it instead of restating it and becoming a second writer.
 EVIDENCE = {"status": "custody_unadmitted", "folder": f"{noodles.EVIDENCE_CUSTODY_ROOT}/canary", "manifest_sha256": "d" * 64}
+# constraint: ed3c/noodles#390 - the apply judge is handed the REAL registry rather than an empty
+# constraint: one, so every boundary control below is a live statement about the rows this atom
+# constraint: lands: `noodles.py` and `policy/github.json` still escape a `src, tests` boundary
+# constraint: because no mandate forces them, while `policy/fitness.json` beside `noodles.py` is
+# constraint: admitted because #326's unowned-count equality does. An empty registry here would
+# constraint: exercise the pre-registry code path and prove nothing about either direction.
+CO_MANDATES = json.loads((CANDIDATE_ROOT / issue_contract.CO_MANDATE_REGISTRY_PATH).read_text(encoding="utf-8"))
 # constraint: ed3c/noodles#189 - the injection is issue prose, exactly where an untrusted author can
 # constraint: write. It asks for every escape the gates below refuse; no gate ever reads it.
 INJECTION = (
@@ -260,7 +267,7 @@ class PromptInjectionTests(unittest.TestCase):
             proposal(pr_body=f"Refs {SUBJECT}\nCloses #900189"),
         ):
             with self.subTest(escape=sorted(escape)):
-                result = noodles.gha_apply_admission(task, escape, default_branch="main", evidence=EVIDENCE)
+                result = noodles.gha_apply_admission(task, escape, default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES)
                 self.assertFalse(result["admitted"], result)
 
     def test_planted_negative_an_issue_edited_after_dispatch_is_stale_not_executable(self) -> None:
@@ -281,7 +288,7 @@ class ApplyAdmissionTests(unittest.TestCase):
         self.task = admitted_task()
 
     def admit(self, **overrides: object) -> dict[str, object]:
-        return noodles.gha_apply_admission(self.task, proposal(**overrides), default_branch="main", evidence=EVIDENCE)
+        return noodles.gha_apply_admission(self.task, proposal(**overrides), default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES)
 
     def test_positive_control_a_bounded_proposal_admits_one_branch_and_one_pr(self) -> None:
         result = self.admit()
@@ -294,7 +301,7 @@ class ApplyAdmissionTests(unittest.TestCase):
 
     def test_planted_negative_an_unadmitted_task_has_no_surface_to_apply_against(self) -> None:
         refused = noodles.gha_execution_task(issue_body(), declaration(target="ed3c/other"), base_head=BASE_SHA)
-        result = noodles.gha_apply_admission(refused, proposal(), default_branch="main", evidence=EVIDENCE)
+        result = noodles.gha_apply_admission(refused, proposal(), default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES)
         self.assertEqual(result["status"], "gha_task_unadmitted")
 
     def test_planted_negative_a_malformed_proposal_is_refused_before_anything_else(self) -> None:
@@ -334,32 +341,67 @@ class ApplyAdmissionTests(unittest.TestCase):
         self.assertEqual(task["status"], "task_admitted")
         inside = noodles.gha_apply_admission(
             task, proposal(changed_paths=[".github/ISSUE_TEMPLATE/atom.md"], pr_body=hosted_pr_body(body)),
-            default_branch="main", evidence=EVIDENCE,
+            default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES,
         )
         self.assertEqual(inside["status"], "apply_admitted")
         result = noodles.gha_apply_admission(
             task, proposal(changed_paths=[".github/workflows/verify.yml"], pr_body=hosted_pr_body(body)),
-            default_branch="main", evidence=EVIDENCE,
+            default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES,
         )
         self.assertEqual(result["status"], "gha_trusted_workflow_edit")
 
     def test_planted_negative_paths_outside_the_boundary_are_named_path_by_path(self) -> None:
-        result = self.admit(changed_paths=["src/index.ts", "noodles.py", "policy/fitness.json"])
+        # constraint: ed3c/noodles#390 - the second path was policy/fitness.json, which this change
+        # constraint: set now CO-PERMITS: noodles.py is in it, and #326's unowned-count equality
+        # constraint: forces fitness from any commit that moves the definition set. Keeping it here
+        # constraint: would assert that an admitted path was refused. policy/github.json is
+        # constraint: unregistered against every mandate, so the path-by-path property is preserved
+        # constraint: rather than quietly retired.
+        result = self.admit(changed_paths=["src/index.ts", "noodles.py", "policy/github.json"])
         self.assertEqual(result["status"], "gha_write_boundary_escape")
         self.assertIn("noodles.py", result["reasons"][0])
-        self.assertIn("policy/fitness.json", result["reasons"][0])
+        self.assertIn("policy/github.json", result["reasons"][0])
         self.assertNotIn("src/index.ts", result["reasons"][0])
+        # constraint: and the co-permitted surface is named on its OWN reason, never spliced into the
+        # constraint: escape sentence, so this assertion cannot pass on a path that was admitted.
+        excused = self.admit(changed_paths=["src/index.ts", "noodles.py", "policy/fitness.json"])
+        self.assertEqual(excused["status"], "gha_write_boundary_escape")
+        self.assertNotIn("policy/fitness.json", excused["reasons"][0])
+        self.assertIn("policy/fitness.json (ed3c/noodles#326)", excused["reasons"][1])
+
+    def test_a_co_mandated_surface_passes_this_judge_exactly_when_its_mandate_forces_it(self) -> None:
+        """ed3c/noodles#390 at the production judge, not only at the interpretation rule.
+
+        The declared boundary is `src, tests` and policy/trusted-literals.json is outside it. The
+        trusted-literal guard forces that exact row from any commit adding a trusted test, so the
+        pair is admitted; the row on its own is the same write with its forcing condition removed and
+        is refused; policy/definition-dispositions.json is registered against a different mandate
+        this change set does not trigger, and is refused beside it."""
+        ledger = "policy/trusted-literals.json"
+        self.assertEqual(self.admit(changed_paths=["tests/index.test.ts", ledger])["status"], "apply_admitted")
+        alone = self.admit(changed_paths=["src/index.ts", ledger])
+        self.assertEqual(alone["status"], "gha_write_boundary_escape")
+        self.assertIn(ledger, alone["reasons"][0])
+        unforced = self.admit(changed_paths=["tests/index.test.ts", "policy/definition-dispositions.json"])
+        self.assertEqual(unforced["status"], "gha_write_boundary_escape")
+        self.assertIn("policy/definition-dispositions.json", unforced["reasons"][0])
 
     def test_planted_negative_a_sibling_prefix_is_outside_the_boundary(self) -> None:
         self.assertEqual(self.admit(changed_paths=["tests2/index.test.ts"])["status"], "gha_write_boundary_escape")
-        self.assertTrue(noodles.gha_within_boundary("tests/deep/file.ts", ["tests"]))
-        self.assertFalse(noodles.gha_within_boundary("tests2/file.ts", ["tests"]))
+        # constraint: ed3c/noodles#390 - asserted through the one interpretation point now that the
+        # constraint: per-path `gha_within_boundary` wrapper is gone. `tests` and `tests2` share a
+        # constraint: string prefix and are disjoint path surfaces; the rule stays segment-wise.
+        self.assertEqual(issue_contract.boundary_escapes(["tests/deep/file.ts"], ["tests"], CO_MANDATES), ())
+        self.assertEqual(
+            issue_contract.boundary_escapes(["tests2/file.ts"], ["tests"], CO_MANDATES),
+            ("tests2/file.ts",),
+        )
 
     def test_planted_negative_an_empty_boundary_admits_no_path_at_all(self) -> None:
         body = issue_body(boundary="none")
         task = noodles.gha_execution_task(body, declaration(body, write_boundary=[]), base_head=BASE_SHA)
         self.assertEqual(task["status"], "task_admitted")
-        result = noodles.gha_apply_admission(task, proposal(), default_branch="main", evidence=EVIDENCE)
+        result = noodles.gha_apply_admission(task, proposal(), default_branch="main", evidence=EVIDENCE, co_mandates=CO_MANDATES)
         self.assertEqual(result["status"], "gha_write_boundary_escape")
         self.assertIn(issue_contract.NO_WRITE_BOUNDARY, result["reasons"][0])
 
@@ -392,7 +434,7 @@ class ApplyAdmissionTests(unittest.TestCase):
         for evidence in (None, {}, {"status": "run_identity_absent", "folder": None, "manifest_sha256": None},
                          {"status": "custody_unadmitted", "folder": "x", "manifest_sha256": ""}):
             with self.subTest(evidence=evidence):
-                result = noodles.gha_apply_admission(self.task, proposal(), default_branch="main", evidence=evidence)
+                result = noodles.gha_apply_admission(self.task, proposal(), default_branch="main", evidence=evidence, co_mandates=CO_MANDATES)
                 self.assertEqual(result["status"], "gha_evidence_absent")
 
 
