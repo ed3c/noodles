@@ -44,7 +44,6 @@
       "issue_contract.py",
       "codex_isolation.py",
       "provider_contract.py",
-      "migrations/*",
       ".agents/*",
       ".noodle.toml",
       ".noodle/*",
