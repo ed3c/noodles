@@ -13,7 +13,6 @@ import json
 import os
 import subprocess
 import sys
-import shutil
 import tempfile
 import time
 import unittest
@@ -741,9 +740,11 @@ class CeremonyEditBodyTests(unittest.TestCase):
         return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
     def refused_path(self) -> Path:
-        directory = Path(tempfile.mkdtemp(prefix="noodles-edit-body-"))
-        self.addCleanup(shutil.rmtree, directory, True)
-        return directory / "nested" / "refused.md"
+        temporary = tempfile.TemporaryDirectory(
+            prefix="noodles-edit-body-", ignore_cleanup_errors=True
+        )
+        self.addCleanup(temporary.cleanup)
+        return Path(temporary.name) / "nested" / "refused.md"
 
     def test_matching_digest_updates_and_reads_back_full_digests(self) -> None:
         provider = FakeIssueProvider(LIVE_BODY)
