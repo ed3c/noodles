@@ -856,6 +856,7 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
         result = run(["bash", "-n", str(root / shell_path)], check=False)
         if result.returncode != 0:
             errors.append(f"shell syntax failed for {shell_path}: {result.stderr.strip()}")
+    errors.extend(skill_contract.validate_test_runner_contract(root))
     errors.extend(validate_comment_tags(root, paths))
     # constraint: ed3c/noodles#326 - reads the CANDIDATE's own tree and its own records, the same way
     # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
@@ -2488,6 +2489,17 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
         # constraint: added here as a literal would be a surface the preview never learns it misses.
         "gates": list(feature_contract.VERIFY_PR_GATES),
     }
+    # constraint: ed3c/noodles#427 - this exact-base/candidate inventory is N-class metadata. It is
+    # constraint: deliberately absent from feature_contract.VERIFY_PR_GATES and never feeds ok/errors;
+    # constraint: even observer failure is recorded rather than promoted into a landing refusal.
+    try:
+        receipt["test_standard_diff"] = skill_contract.test_standard_diff(root, candidate_root, changed_files)
+    except Exception as exc:
+        receipt["test_standard_diff"] = {
+            "authority": "N",
+            "classification": "metadata-only",
+            "observation_errors": [f"test-standard observer failed: {exc}"],
+        }
     receipt["evidence_publication"] = evidence_publication(candidate_root, receipt)
     # constraint: ed3c/noodles#189 - the hosted agentic lane's safe-output boundary is judged here,
     # constraint: in the trusted checkout taken from the default branch, over provider-read changed
