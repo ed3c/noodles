@@ -138,8 +138,17 @@ PROVIDER_READBACK_TOKENS = ("provider readback", "provider-body", "provider body
 NO_WRITE_BOUNDARY = "none"
 WRITE_BOUNDARY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 LOCAL_LANE = "local-noodle"
-HOSTED_LANES = ("gha-agentic", "gha-runtime")
-EXECUTOR_LANES = ("gha-agentic", "gha-runtime", LOCAL_LANE)
+# constraint: ed3c/noodles#450 - the fourth lane: inference runs in the operator's
+# constraint: subscription cloud (OpenAI-hosted sandbox, no provider key anywhere in
+# constraint: Actions) and writes reach the repository through the Codex App identity as
+# constraint: codex/* candidate branches. It is admitted here because the enum IS the
+# constraint: admission layer's vocabulary: a lane the enum cannot name is a lane the
+# constraint: machine cannot route, gate, or measure, and this one was already running
+# constraint: unnamed - thirteen live refs/heads/codex/issue-* branches and one landed
+# constraint: merge (#96) predate the value. Naming it changes no authority: the App
+# constraint: proposes, the lander still disposes.
+CODEX_CLOUD_LANE = "codex-cloud"
+EXECUTOR_LANES = ("gha-agentic", "gha-runtime", CODEX_CLOUD_LANE, LOCAL_LANE)
 EPHEMERAL_CHECKOUT = "ephemeral-branch"
 MANAGED_WORKTREE = "managed-worktree"
 # constraint: ed3c/noodles#187 - one bounded capability table, data and not a policy
@@ -151,6 +160,18 @@ MANAGED_WORKTREE = "managed-worktree"
 # constraint: persistent cross-run state, an unsupported host toolchain, and work
 # constraint: outside the hosted time/resource envelope are local-only. `none` is
 # constraint: contradictory on gha-runtime because that lane exists to execute one.
+# constraint: ed3c/noodles#450 - codex-cloud supplies exactly what the GitHub-hosted
+# constraint: lanes supply: a bounded, non-interactive sandbox with no private device,
+# constraint: no private network, and no host-only credential, so it inherits the
+# constraint: portable runtime rows and github-only-v1 evidence and none of the
+# constraint: local-only ones. It is deliberately NOT in the `none` row yet, and that is
+# constraint: a staged transition rather than a judgement: the trusted verifier runs the
+# constraint: DEFAULT BRANCH's tests/test_executor_admission.py against the candidate, and
+# constraint: that copy pins this row's admitted tuple, so a candidate that moved the row
+# constraint: could not go green under any rerun or rebase - the ed3c/noodles#285 shape.
+# constraint: This atom lands the widen half (the pin becomes a derivation from this table);
+# constraint: the flip is its own follow-up. Until it lands, a codex-cloud atom declares a
+# constraint: concrete runtime, which is narrower and fails closed.
 CAPABILITY_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
     "runtime": {
         "bun-ts": EXECUTOR_LANES,
@@ -223,7 +244,13 @@ def executor_admission(executor: str | None, runtime: str | None, evidence: str 
             "admitted": True,
             "status": "admitted",
             "lane": executor,
-            "checkout": EPHEMERAL_CHECKOUT if executor in HOSTED_LANES else MANAGED_WORKTREE,
+            # constraint: ed3c/noodles#450 - the discriminator is the local lane, not a list of
+            # constraint: hosted ones: a managed worktree is a thing only the operator's own
+            # constraint: machine has, so every other admitted lane - GitHub-hosted or
+            # constraint: subscription-cloud - gets the ephemeral branch for that run. Keyed on the
+            # constraint: absent capability rather than an allowlist, a fifth lane cannot silently
+            # constraint: inherit a worktree it does not physically own by being left off a tuple.
+            "checkout": MANAGED_WORKTREE if executor == LOCAL_LANE else EPHEMERAL_CHECKOUT,
             "admitted_lanes": admitted_lanes,
             "reasons": (),
         }
