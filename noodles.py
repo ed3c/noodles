@@ -862,6 +862,18 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
     # constraint: adds a top-level definition must disposition it in that same commit, and can.
     errors.extend(definition_disposition_errors(root))
+    # constraint: ed3c/noodles#390 - the co-mandate registry's SHAPE is judged against the candidate's
+    # constraint: own copy, so a row that names no mandate or widens to the whole tree reds before it
+    # constraint: can be believed. Its CONTENT is read from the trusted root at the boundary judge
+    # constraint: below, not from here: this file decides what a commit may write, so a candidate that
+    # constraint: supplied it would be self-authorizing. Absence is inert here and NOT a required
+    # constraint: path: a tree with no registry gets the strict pre-registry answer, which fails
+    # constraint: closed, and pinning it in policy/fitness.json required_paths reds every synthetic
+    # constraint: fixture tree that does not carry it. CoMandateRegistryTests reads the candidate's
+    # constraint: own copy directly, so presence is gated where it costs nothing.
+    co_mandates = root / issue_contract.CO_MANDATE_REGISTRY_PATH
+    if co_mandates.exists():
+        errors.extend(issue_contract.co_mandate_errors(load_json(co_mandates)))
     errors.extend(findings_register_errors(root, policy_root))
     schedule_receipt = root / skill_contract.SCHEDULE_CYCLE_RECEIPT_PATH
     if schedule_receipt.exists():
@@ -2085,11 +2097,13 @@ def gha_task_identity(declaration: Mapping[str, Any]) -> str:
         raise GateError(f"gha task identity needs every declared field, missing: {', '.join(missing)}")
     canonical = json.dumps({name: declaration[name] for name in GHA_TASK_FIELDS}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-def gha_within_boundary(path: str, prefixes: Sequence[str]) -> bool:
-    # constraint: ed3c/noodles#98 - delegates to the one segment-wise containment rule
-    # constraint: instead of restating it, so a tightening at its declared home
-    # constraint: (issue_contract.boundary_conflict) is inherited here automatically.
-    return issue_contract.boundary_conflict((path,), tuple(prefixes)) is not None
+# constraint: ed3c/noodles#390 - `gha_within_boundary` stood here as a per-path wrapper over
+# constraint: issue_contract.boundary_conflict. Its one production caller moved to
+# constraint: issue_contract.boundary_escapes, which decides the same containment for the whole
+# constraint: change set because the co-mandate rule needs the set, so the wrapper was left with a
+# constraint: test-only caller. It is removed rather than landed as dead code, the same disposition
+# constraint: ed3c/noodles#189's `gha_failure_disposition` router got for the same reason; the
+# constraint: segment-wise rule it delegated to is unchanged at its declared home.
 def gha_execution_task(
     issue_body: str,
     dispatch: Mapping[str, Any],
@@ -2329,6 +2343,7 @@ def gha_apply_admission(
     *,
     default_branch: str,
     evidence: Mapping[str, Any] | None,
+    co_mandates: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Judge one agent safe output against the typed task before any commit, push, or PR exists.
 
@@ -2336,7 +2351,13 @@ def gha_apply_admission(
     issue was admitted under. Trusted workflow bytes are refused first and unconditionally, so a
     task whose declared boundary happens to contain `.github` still cannot rewrite the gate that
     judges it. One task admits exactly one branch and one PR body, so no proposal shape can fan
-    out into a second branch or a second PR."""
+    out into a second branch or a second PR.
+
+    ed3c/noodles#390 - `co_mandates` is the registry read from the TRUSTED root, and it is required
+    rather than defaulted so no caller can reach this judge having silently forgotten it. It decides
+    which boundary-external surfaces some other admitted mandate forces into this same commit; a
+    candidate-supplied copy would be self-authorization, and an empty one is exactly the pre-registry
+    behaviour, so the failure direction is refusal."""
     if not task.get("admitted") or not task.get("branch"):
         return gha_outcome("gha_task_unadmitted", reasons=[f"apply needs an admitted target-local task, got {task.get('status')!r}"])
     for field in ("branch", "pr_body"):
@@ -2356,11 +2377,23 @@ def gha_apply_admission(
     if trusted:
         return gha_outcome("gha_trusted_workflow_edit", reasons=[f"apply would rewrite the trusted workflow bytes that judge it: {', '.join(trusted)}"])
     boundary = list(task.get("write_boundary") or ())
-    outside = sorted(item for item in paths if not gha_within_boundary(item, boundary))
+    # constraint: ed3c/noodles#390 - one interpretation point, so the co-mandate rule is inherited
+    # constraint: rather than restated by every caller that asserts a boundary. A surface a live
+    # constraint: mandate forces into THIS commit passes; the same surface without its forcing
+    # constraint: condition, and any unregistered path, still escape.
+    outside = issue_contract.boundary_escapes(paths, boundary, co_mandates)
     if outside:
+        # constraint: ed3c/noodles#390 - the co-permitted surfaces are a SECOND reason, never spliced
+        # constraint: into the first. Naming them inside the escape sentence makes any caller asking
+        # constraint: "is this path in reasons[0]" match a path that was ADMITTED, which silently
+        # constraint: turned the sibling boundary control below into an assertion that passes on the
+        # constraint: wrong list. One reason names what escaped; the other names what was excused.
+        co_permitted = issue_contract.co_permitted_surfaces(paths, co_mandates)
         return gha_outcome("gha_write_boundary_escape", reasons=[
             f"changed paths outside the declared write boundary "
-            f"{', '.join(boundary) or issue_contract.NO_WRITE_BOUNDARY}: {', '.join(outside)}"
+            f"{', '.join(boundary) or issue_contract.NO_WRITE_BOUNDARY}: {', '.join(outside)}",
+            *([f"co-mandated surfaces admitted alongside it: "
+               + ", ".join(f"{surface} ({mandate})" for surface, mandate in sorted(co_permitted.items()))] if co_permitted else []),
         ])
     try:
         referenced = parse_pr_reference(proposal["pr_body"])
@@ -2506,7 +2539,16 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     # constraint: files and the exact issue body. The agent job never runs this gate and cannot
     # constraint: reach the bytes that implement it, so the lane cannot approve itself.
     if contract["admission"]["lane"] == GHA_HOSTED_LANE:
-        receipt["gha_execution"] = gha_pull_request_admission(pr, repository, subject_value, issue, base_ref, changed_files, receipt, policy)
+        # constraint: ed3c/noodles#390 - the registry comes from `root`, the trusted checkout this
+        # constraint: gate already reads its protection policy from, never from candidate_root: a
+        # constraint: candidate that supplied the rows deciding what it may write would authorize
+        # constraint: its own escape. A candidate that needs a NEW row lands it as its own atom and
+        # constraint: widens its declared boundary meanwhile, so this is a staged transition rather
+        # constraint: than the trusted-side deadlock ed3c/noodles#285 named.
+        receipt["gha_execution"] = gha_pull_request_admission(
+            pr, repository, subject_value, issue, base_ref, changed_files, receipt, policy,
+            load_json(root / issue_contract.CO_MANDATE_REGISTRY_PATH),
+        )
         receipt["gates"].append("gha-execution")
     # constraint: ed3c/noodles#266 - the two-line origin shape is admitted for the hosted lane only.
     # constraint: parse_pr_reference cannot enforce that itself: it runs before the Issue contract is
@@ -2529,6 +2571,7 @@ def gha_pull_request_admission(
     changed_files: Sequence[str],
     receipt: Mapping[str, Any],
     policy: Mapping[str, Any],
+    co_mandates: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Rebuild this candidate's target-local task from provider truth and judge the landed patch.
 
@@ -2561,6 +2604,7 @@ def gha_pull_request_admission(
         {"branch": str(pr.get("head", {}).get("ref") or ""), "changed_paths": list(changed_files), "pr_body": str(pr.get("body") or "")},
         default_branch=str(policy["default_branch"]),
         evidence=receipt.get("evidence_publication"),
+        co_mandates=co_mandates,
     )
     if not apply_result["admitted"]:
         raise GateError(f"candidate gha-execution apply gate failed: {apply_result['status']}: " + "; ".join(apply_result.get("reasons") or ()))

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "co_mandates": [
+    {
+      "surface": "policy/trusted-literals.json",
+      "mandate": "ed3c/noodles#315",
+      "forced_by": [
+        "tests/*"
+      ],
+      "reason": "The trusted-literal guard reds on a NEW undispositioned strict-equal literal in the trusted suite and reads both halves from the candidate - findings from its tests/, dispositions from this file - so the ONLY sanctioned cure for a commit that adds a trusted test is a row here in that same commit. An atom whose declared boundary omits policy has no satisfiable move: it can neither drop the guard nor write the cure. The forcing condition is the sweep's own input set, tests/**/*.py, so a change set touching no tests/ path provably introduces no trusted literal and is co-permitted nothing.",
+      "receipt": "ed3c/noodles#377 landed 8683de9 as a whole out-of-band atom whose entire declared write boundary is this one file, because the atom that owed the rows could not write them from inside its own boundary."
+    },
+    {
+      "surface": "policy/definition-dispositions.json",
+      "mandate": "ed3c/noodles#326",
+      "forced_by": [
+        "noodles.py"
+      ],
+      "reason": "noodles.definition_disposition_errors reds on every top-level definition of an owner-mapped file that is in neither policy/component-owners.json nor this record, and policy/component-owners.json owns exactly one file, noodles.py. A commit that adds or deletes a noodles.py top-level definition therefore writes this file in the same commit or fails ./noodles verify, whatever its declared boundary says. The forcing condition is the check's own input, the owner-mapped file itself.",
+      "receipt": "a384130 (ed3c/noodles#325) carries a policy/definition-dispositions.json edit beside its noodles.py definition change; ee20e5a is the sibling shape one file over."
+    },
+    {
+      "surface": "policy/fitness.json",
+      "mandate": "ed3c/noodles#326",
+      "forced_by": [
+        "noodles.py"
+      ],
+      "reason": "The forcing check is a trusted EQUALITY, not the report-only ratchet it looks like: tests/test_component_surface.py::DefinitionDispositionTests.test_the_unowned_ratchet_sits_at_the_post_drain_floor asserts max_unowned_top_level_definitions == unowned_top_level_definitions measured from the candidate's own tree, so any commit that adds or deletes a noodles.py top-level definition without an owner entry must restate that key in the same commit. Reading only skill_contract.REPORT_ONLY_FITNESS_LIMITS says the opposite and is the wrong half to read: the classification governs whether the metric warns, the trusted test governs whether the candidate lands. Same forcing condition as the disposition row above, because both are functions of the same owner-mapped file.",
+      "receipt": "This atom. Deleting noodles.gha_within_boundary, left with a test-only caller once boundary_escapes took over, moved the count 120 -> 119 and reds that equality until policy/fitness.json is restated - which is how this row was found, after the sibling reasoning from the report-only classification had already dismissed it."
+    },
+    {
+      "surface": "AGENTS.md",
+      "mandate": "ed3c/noodles#306",
+      "forced_by": [
+        "*.py"
+      ],
+      "reason": "tests/test_component_surface.py::GrandfatheredImportDebtTests fails outright when the standing cross-surface edge counts measured from the candidate's tree differ from the counts the candidate's own AGENTS.md discloses. That sentence IS the ledger rather than a copy of one - ed3c/noodles#306 moved it out of the trusted module precisely so a candidate that legitimately moves an edge can update it - and no atom's declared boundary names AGENTS.md. The forcing condition is the measurement's own input set: standing_cross_surface_edges walks root.rglob('*.py'), so a change set touching no Python module provably cannot move a disclosed count. Stated ceiling, because this is the one row that over-approximates: the condition is the measurement's INPUT, not the measurement. A .py change that leaves every count where it stood is co-permitted here although the disclosure did not in fact demand it. Tightening it needs the counts themselves, which a judge holding only a changed-path list cannot compute.",
+      "receipt": "salvage-b325-pre-rebase-20260903 (ed3c/noodles#325) is the live head issue ed3c/noodles#390 recorded in its own planted direction: AGENTS.md in the diff, absent from the declared boundary, and the only branch failing the wave-20n repair line's boundary assertion."
+    }
+  ]
+}
