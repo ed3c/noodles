@@ -2,6 +2,36 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# constraint: ed3c/noodles#413 - the pinned lint toolchain, provisioned here rather than assumed.
+# constraint: The pin is READ out of policy/ruff.toml and never restated: ruff's own
+# constraint: `required-version` refuses to run under any other version, so a lane that silently
+# constraint: carries a different ruff is a red rather than a differently-configured green.
+# constraint: This is the candidate's own local filter, so provisioning belongs here and not only in
+# constraint: a workflow step: `pull_request_target` runs the DEFAULT BRANCH's workflow, so on the
+# constraint: PR that first introduces this gate no trusted step exists yet that could install it,
+# constraint: and the candidate-self-tests job runs exactly this script. A developer lane is told
+# constraint: the command instead of having its environment mutated underneath it; only CI, whose
+# constraint: runner is disposable, installs unattended.
+LINT_PIN="$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["required-version"])' "$ROOT/policy/ruff.toml")"
+if ! ruff --version 2>/dev/null | grep -qx "ruff ${LINT_PIN#==}"; then
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    python3 -m pip install --quiet --disable-pip-version-check "ruff${LINT_PIN}"
+    ruff --version | grep -qx "ruff ${LINT_PIN#==}"
+  else
+    printf 'lint toolchain missing: policy/ruff.toml pins ruff %s; install it with `python3 -m pip install "ruff%s"`\n' "${LINT_PIN#==}" "$LINT_PIN" >&2
+    exit 1
+  fi
+fi
+# constraint: the syntax gate runs FIRST, against the policy this tree carries: a lint red discovered
+# constraint: after the whole suite is lane-speed feedback nobody got. `./noodles verify` below runs
+# constraint: the same gate again through the CI-shaped call, and the two must agree.
+PYTHONPATH="$ROOT" python3 -c 'import sys
+from pathlib import Path
+import noodles
+root = Path(sys.argv[1])
+errors = noodles.lint_gate_errors(root, root, {relative for _, relative in noodles.tracked_entries(root)})
+print("\n".join(errors))
+raise SystemExit(1 if errors else 0)' "$ROOT"
 # constraint: ed3c/noodles#313 - every atom's acceptance carries "zero residue (no .noodle/ runtime
 # constraint: state written by any test outside its own temporary directory)", and the check lanes
 # constraint: actually run is `git status --untracked-files=all`, which .gitignore's `.noodle/*` makes

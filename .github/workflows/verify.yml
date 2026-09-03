@@ -82,6 +82,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      # ed3c/noodles#413: the trusted job's lint toolchain, installed at the version the TRUSTED
+      # policy pins and read out of that same file rather than restated here. No dependency manifest
+      # exists by design, so the pin lives in policy/ruff.toml and ruff's own `required-version`
+      # refuses to run under any other version. The candidate's copy of this file is never consulted:
+      # this step and the gate both name .trusted.
+      - name: Install the pinned lint toolchain from trusted policy
+        run: >-
+          python3 -m pip install --quiet --disable-pip-version-check
+          "ruff$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["required-version"])' .trusted/policy/ruff.toml)"
+
       - name: Run trusted positive and planted-negative controls
         env:
           NOODLES_CANDIDATE_ROOT: ${{ github.workspace }}/.candidate
