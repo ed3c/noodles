@@ -1,0 +1,116 @@
+# constraint: ed3c/noodles#413 - the syntax-coordinate refusal surface. Contract refusals live in the
+# constraint: admission gates and architecture refusals in the fitness ratchets; this file is the
+# constraint: third coordinate: a low-evidence Python pattern is a lint refusal.
+# constraint: This file is TRUSTED POLICY and lives under policy/ for two reasons that are the same
+# constraint: reason: `verify_repository(candidate, policy_root)` reads it from `policy_root`, which
+# constraint: is the default-branch checkout in CI, so a candidate that edits it is still judged by
+# constraint: main's copy and its policy change becomes authority only from the next PR onward; and
+# constraint: `policy/*` is a surface the `verify` component already admits, so the gate's own config
+# constraint: needs no component-map widening to land. `lint_gate_errors` always passes this path to
+# constraint: `ruff --config`, which disables ruff's own upward config discovery, so a candidate
+# constraint: cannot slip a second config into the scan either.
+# constraint: The tool version is pinned HERE rather than in a dependency manifest, which
+# constraint: policy/fitness.json forbids by design: `required-version` makes ruff itself refuse to
+# constraint: run when the installed version is not the pinned one, so the pin is enforced by the
+# constraint: tool and read by CI out of this same trusted file rather than restated in a workflow.
+required-version = "==0.15.2"
+target-version = "py311"
+# constraint: `noodles` requires 3.11+ (tomllib) and CI runs 3.12; py311 is the floor the gate judges.
+
+[lint]
+# constraint: EXPLICIT groups, never ALL: `ALL` grows on every ruff upgrade, so an upgrade would
+# constraint: silently add refusals nobody adjudicated. Each group below carries its reason.
+select = [
+  "E",       # constraint: pycodestyle errors - carries E722 bare-except, one of the four anti-slop behavioral peers.
+  "F",       # constraint: pyflakes - undefined names, unused imports/variables: evidence that a symbol does not exist.
+  "I",       # constraint: import order - a mechanical property no reviewer should spend attention on.
+  "UP",      # constraint: pyupgrade - dead compatibility shapes for interpreters this repo does not support.
+  "B",       # constraint: bugbear - carries B006 mutable-default-argument, the third behavioral peer.
+  "SIM",     # constraint: simplify - the shapes that read as generated filler rather than as a decision.
+  "RET",     # constraint: return discipline - unreachable/implicit returns hide a branch nobody covered.
+  "ARG",     # constraint: unused arguments - an argument nothing reads is a contract nobody honors.
+  "ASYNC",   # constraint: blocking calls inside async - a defect class no test in this repo can observe.
+  "DTZ",     # constraint: naive datetimes - every receipt in this machine is timestamped and compared.
+  "PERF",    # constraint: the loop shapes that are slower for no reading benefit.
+  "PLC",     # constraint: pylint conventions.
+  "PLE",     # constraint: pylint errors - genuine runtime defects (bad format strings, bad returns).
+  "PLW",     # constraint: pylint warnings.
+  "RUF",     # constraint: ruff-native rules - carries RUF100, which reds a suppression that suppresses nothing.
+  "C90",     # constraint: mccabe complexity, ratcheted below at this tree's measured maximum.
+  "BLE",     # constraint: blind-except, the first behavioral peer and the one live finding this atom disposes.
+  "S110",    # constraint: try-except-pass, the second behavioral peer.
+  "S112",    # constraint: try-except-continue, its sibling.
+  "PGH004",  # constraint: blanket `# noqa` - the justified-suppression discipline's machine half.
+]
+# constraint: S-class selection stops at S110/S112 ON PURPOSE. They run here for lane-speed feedback
+# constraint: on two syntactic shapes; they are NEVER a security proof. Dataflow depth belongs to the
+# constraint: CodeQL atom, and pretending a syntax scanner covers it is exactly the low-evidence
+# constraint: claim this gate exists to refuse.
+ignore = [
+  # constraint: ANN401-class exclusion, adjudicated 2026-09-03. This codebase is typed-lite by
+  # constraint: design and carries deliberate Any-shaped payload dicts crossing every contract seam
+  # constraint: (`dict[str, Any]` receipts, provider JSON, event payloads). Enabling the annotation
+  # constraint: class would emit ~92 lines of noise, not evidence. Listed in `ignore` rather than
+  # constraint: merely left out of `select` so that a later atom which selects "ANN" cannot
+  # constraint: resurrect this decision without deleting the line that records it.
+  "ANN401",
+  # constraint: format-shaped, not evidence-shaped. No formatter is vendored (a dependency manifest
+  # constraint: is forbidden by policy/fitness.json), and line length and statement packing are this
+  # constraint: repository's deliberate house style - one-line bodies with the constraint comment
+  # constraint: carrying the reasoning. The architecture coordinate already measures file size
+  # constraint: (`max_file_lines`) and shape (`min_normalized_entropy`); repeating it here as a
+  # constraint: syntax refusal would buy nothing and refuse everything.
+  "E501",   # 6541 sites
+  "E701",   # 27 sites
+  "E702",   # 4 sites
+  # constraint: EXISTING DEBT, frozen at rule granularity with its measured count as of the commit
+  # constraint: that lands this file. This gate has no per-finding baseline - ruff has none - so a
+  # constraint: rule with live findings is either fixed here or named here. Fixing them is not
+  # constraint: available to this atom: the counts below are spread across runtime_contract.py,
+  # constraint: structural_contract.py, retrieval_contract.py, codex_isolation.py and six other
+  # constraint: modules that this atom's declared component surface does not admit, so a candidate
+  # constraint: that tried would be refused by the component-surface gate before any lint ran.
+  # constraint: What the gate still refuses on day one is every one of these rules' shapes in a NEW
+  # constraint: file, plus the entire remainder of the selected groups, which measures zero today -
+  # constraint: including all four behavioral anti-slop peers. Per-finding freezing arrives with the
+  # constraint: type gate's committed baseline (ed3c/noodles#415); burn-down of the rules below is
+  # constraint: later atoms' work at the pace of the surfaces that own them.
+  "SIM117",   # 75 sites
+  "ARG001",   # 44 sites
+  "UP022",    # 21 sites
+  "PERF401",  # 16 sites
+  "I001",     # 15 sites
+  "PLC0415",  # 12 sites
+  "UP035",    # 12 sites
+  "B023",     # 10 sites
+  "F401",     # 10 sites
+  "ARG005",   # 7 sites
+  "RUF005",   # 7 sites
+  "RUF012",   # 7 sites
+  "UP012",    # 7 sites
+  "ARG002",   # 6 sites
+  "B905",     # 3 sites
+  "UP037",    # 3 sites
+  "F541",     # 2 sites
+  "PLC0207",  # 2 sites
+  "PLW1510",  # 2 sites
+  "SIM114",   # 2 sites
+  "UP017",    # 2 sites
+  "PLC0206",  # 1 site
+  "PLW2901",  # 1 site
+  "RUF001",   # 1 site
+  "RUF010",   # 1 site
+  "RUF059",   # 1 site
+  "SIM105",   # 1 site
+  "SIM222",   # 1 site
+]
+
+[lint.mccabe]
+# constraint: C901 is the one selected rule that carries a THRESHOLD rather than a shape, so it
+# constraint: adopts as a measured ratchet instead of as an ignore: 54 is what this tree's most
+# constraint: complex function (`noodles.py::main`) measures today, so nothing reds now and anything
+# constraint: worse than today's worst reds immediately. Moving this number down is the burn-down.
+# constraint: It is measured on every rebase rather than carried: it read 53 against the base this
+# constraint: branch was cut from and 54 against the one it landed on, and a stale number here is a
+# constraint: red rather than a silently widened ceiling.
+max-complexity = 54

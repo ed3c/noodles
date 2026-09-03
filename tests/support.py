@@ -1097,7 +1097,7 @@ def start_entrypoint_with_delayed_listener(
                         except (urllib.error.URLError, OSError):
                             pass
                         listener_stop.wait(0.02)
-                except Exception as exc:
+                except Exception as exc:  # constraint: ed3c/noodles#413 - the listener runs on its own thread and listener_state is its only channel back to the assertion; a narrower except would let an unanticipated failure die with the thread and reach the test as a bare timeout with no cause, which is the silent-swallow shape BLE001 exists to refuse, inverted # noqa: BLE001
                     listener_state["listener_error"] = f"{type(exc).__name__}: {exc}"
                 finally:
                     listener_stop.set()
