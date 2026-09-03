@@ -115,6 +115,7 @@
           "train_failback_marker",
           "train_rebase",
           "train_select",
+          "type_gate_errors",
           "unowned_top_level_definitions",
           "unsaved_content_commits",
           "validate_comment_tags",

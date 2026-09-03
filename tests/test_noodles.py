@@ -2130,5 +2130,150 @@ class LintGateTests(unittest.TestCase):
         self.assertTrue(policy["required-version"].startswith("=="), policy["required-version"])
 
 
+class TypeGateTests(unittest.TestCase):
+    """ed3c/noodles#415 - the type coordinate, controlled in the three directions it can be wrong.
+
+    The baseline is the whole mechanism, so it gets both legs: a diagnostic the trusted baseline
+    freezes must NOT red, and one more of the same rule in the same file MUST. A fixture that only
+    planted a fresh violation would pass against a gate with no baseline at all and would prove
+    nothing about adoption.
+
+    The trusted-policy leg repeats the syntax gate's control and for the same reason: showing that a
+    violation reds is not enough, because a gate reading the candidate's own config would red on the
+    same input. Only the SAME candidate tree judged from two policy roots and disagreeing separates
+    the two readings, and the escape hatch has to be one that really works or the control controls
+    nothing - the repair the syntax gate's `ignore = ["ALL"]` needed. `ignore: ["**"]` is asserted
+    green from the candidate side in the same call that asserts red from the trusted side, so its
+    working-ness is measured here rather than assumed.
+
+    The leg that no amount of red/green on this fixture can supply is
+    `test_the_trusted_policy_governs_the_run_rather_than_decorating_it`: a gate that read NO config at
+    all would also pass every test in this class, because basedpyright's default mode is the one the
+    policy asks for."""
+
+    UNTYPED = "def widen(payload: object) -> int:\n    return payload.anything\n"
+    CLEAN = "def probe() -> None:\n    print('nothing to refuse here')\n"
+    ESCAPE_HATCH_POLICY = '{"include": ["."], "ignore": ["**"]}'
+    REASON = "the provider payload is a JSON object this seam cannot narrow"
+
+    def planted(self, source: str, *, candidate_policy: str | None = None, baseline: dict[str, dict[str, int]] | None = None) -> tuple[Path, Path, set[str]]:
+        """A trusted root carrying THIS repository's real type policy, and a separate candidate root."""
+        temp = tempfile.TemporaryDirectory(prefix="noodles-type-test-", ignore_cleanup_errors=True)
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        trusted, candidate = base / "trusted", base / "candidate"
+        for root in (trusted, candidate):
+            (root / "policy").mkdir(parents=True)
+        landed = (CANDIDATE_ROOT / noodles.TYPE_POLICY_PATH).read_text(encoding="utf-8")
+        (trusted / noodles.TYPE_POLICY_PATH).write_text(landed, encoding="utf-8")
+        (candidate / noodles.TYPE_POLICY_PATH).write_text(candidate_policy or landed, encoding="utf-8")
+        pin = json.loads((CANDIDATE_ROOT / noodles.TYPE_BASELINE_PATH).read_text(encoding="utf-8"))["tool"]
+        frozen = {"tool": pin, "diagnostics": baseline or {}}
+        (trusted / noodles.TYPE_BASELINE_PATH).write_text(json.dumps(frozen), encoding="utf-8")
+        (candidate / noodles.TYPE_BASELINE_PATH).write_text(json.dumps(frozen), encoding="utf-8")
+        (candidate / "probe.py").write_text(source, encoding="utf-8")
+        return trusted, candidate, {noodles.TYPE_POLICY_PATH, noodles.TYPE_BASELINE_PATH, "probe.py"}
+
+    def test_a_new_diagnostic_reds_and_the_inverse_edit_restores_green(self) -> None:
+        trusted, candidate, paths = self.planted(self.UNTYPED)
+        errors = noodles.type_gate_errors(candidate, trusted, paths)
+        self.assertTrue(any(error.startswith("type probe.py:") for error in errors), errors)
+        (candidate / "probe.py").write_text(self.CLEAN, encoding="utf-8")
+        self.assertEqual(noodles.type_gate_errors(candidate, trusted, paths), [])
+
+    def test_the_baseline_admits_its_own_frozen_count_and_refuses_one_more(self) -> None:
+        """Burn-down safety and the ratchet are the same number read in two directions: the freeze is
+        a ceiling, so measuring under it is green and measuring over it is the refusal."""
+        trusted, candidate, paths = self.planted(self.UNTYPED)
+        measured = noodles.type_gate_errors(candidate, trusted, paths)
+        rules = {error.split(": ", 1)[1].split(" measures ")[0]: int(error.split(" measures ")[1].split(" ")[0]) for error in measured}
+        self.assertTrue(rules, measured)
+        trusted, candidate, paths = self.planted(self.UNTYPED, baseline={"probe.py": rules})
+        self.assertEqual(noodles.type_gate_errors(candidate, trusted, paths), [])
+        (candidate / "probe.py").write_text(self.UNTYPED + "\n\n" + self.UNTYPED.replace("widen", "widen_again"), encoding="utf-8")
+        self.assertTrue(any("where the trusted baseline freezes" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+        (candidate / "probe.py").write_text(self.CLEAN, encoding="utf-8")
+        self.assertEqual(noodles.type_gate_errors(candidate, trusted, paths), [], "a fixed diagnostic must stay green under a baseline that still names it")
+
+    def test_the_candidate_cannot_switch_off_the_policy_that_judges_it(self) -> None:
+        trusted, candidate, paths = self.planted(self.UNTYPED, candidate_policy=self.ESCAPE_HATCH_POLICY)
+        judged_by_trusted = noodles.type_gate_errors(candidate, trusted, paths)
+        judged_by_candidate = noodles.type_gate_errors(candidate, candidate, paths)
+        self.assertTrue(any(error.startswith("type probe.py:") for error in judged_by_trusted), judged_by_trusted)
+        self.assertEqual(judged_by_candidate, [])
+
+    def test_a_bare_or_reasonless_type_suppression_is_refused_and_a_justified_one_passes(self) -> None:
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        for suffix, expected in (
+            ("  # type: ignore", "unscoped"),
+            ("  # pyright: ignore", "unjustified"),
+            ("  # pyright: ignore[reportAny]", "unjustified"),
+            ("  # constraint: x # pyright: ignore[reportAny]", "unjustified"),
+            (f"  # constraint: {self.REASON} # pyright: ignore[reportAny]", None),
+        ):
+            with self.subTest(suffix=suffix.strip()):
+                (candidate / "probe.py").write_text(f"def probe() -> None:\n    print('nothing to refuse here'){suffix}\n", encoding="utf-8")
+                errors = noodles.type_gate_errors(candidate, trusted, paths)
+                if expected is None:
+                    self.assertEqual([error for error in errors if "suppression" in error], [])
+                else:
+                    self.assertTrue(any(expected in error for error in errors), errors)
+
+    def test_prose_that_merely_names_a_directive_is_not_read_as_one(self) -> None:
+        """The scan reads COMMENT tokens, so a docstring quoting a directive is prose, not a
+        suppression - the fail-open shape a raw line scan would have."""
+        trusted, candidate, paths = self.planted('def probe() -> None:\n    """A docstring naming # type: ignore on purpose."""\n')
+        self.assertEqual([error for error in noodles.type_gate_errors(candidate, trusted, paths) if "suppression" in error], [])
+
+    def test_every_absence_around_the_tool_is_its_own_refusal(self) -> None:
+        """Five ways this gate can fail to produce evidence, each named rather than passed: no trusted
+        config or baseline, an unreadable one, a basedpyright that will not execute, one that is not
+        the pinned version, and one that reports without a readable report."""
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        (trusted / noodles.TYPE_BASELINE_PATH).unlink()
+        self.assertTrue(any("trusted type policy missing" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        (trusted / noodles.TYPE_BASELINE_PATH).write_text("{not json", encoding="utf-8")
+        self.assertTrue(any("trusted type policy unreadable" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+
+        trusted, candidate, paths = self.planted(self.CLEAN)
+        with mock.patch.object(noodles, "run", side_effect=FileNotFoundError("basedpyright")):
+            self.assertTrue(any("cannot execute the basedpyright pinned by" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+        pin = json.loads((CANDIDATE_ROOT / noodles.TYPE_BASELINE_PATH).read_text(encoding="utf-8"))["tool"]["version"]
+        # constraint: the second reported version is the prefix-extension control: a substring check
+        # constraint: reads pin 1.39.1 as satisfied by an installed 1.39.10, which this tool's own
+        # constraint: version series really does contain, so the pin has to compare whole lines.
+        for reported in ("basedpyright 0.0.0\n", f"basedpyright {pin}0\n"):
+            with self.subTest(reported=reported.strip()), mock.patch.object(noodles, "run", return_value=subprocess.CompletedProcess([], 0, reported, "")):
+                self.assertTrue(any("an unpinned checker is a green whose meaning moves" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+        pinned = subprocess.CompletedProcess([], 0, f"basedpyright {pin}\n", "")
+        with mock.patch.object(noodles, "run", side_effect=[pinned, subprocess.CompletedProcess([], 1, "", "node crashed")]):
+            self.assertTrue(any("must not read as green" in error for error in noodles.type_gate_errors(candidate, trusted, paths)))
+
+    def test_the_trusted_policy_governs_the_run_rather_than_decorating_it(self) -> None:
+        """The control for the failure every other test here is blind to: basedpyright's DEFAULT mode
+        is also `recommended`, so a gate that never read its config emits nearly the same diagnostics
+        as one that did. Measured on 1.39.10: given a DIRECTORY, `--project` discovers
+        `pyrightconfig.json` and silently ignores `basedpyrightconfig.json`, which is exactly how this
+        gate ran until the argument named the file. One rule turned off in the trusted policy is the
+        discriminator - if the diagnostic survives, the policy is decoration."""
+        trusted, candidate, paths = self.planted(self.UNTYPED)
+        rules = {error.split(": ", 1)[1].split(" measures ")[0] for error in noodles.type_gate_errors(candidate, trusted, paths)}
+        self.assertIn("reportUnknownMemberType", rules)
+        silenced = json.loads((CANDIDATE_ROOT / noodles.TYPE_POLICY_PATH).read_text(encoding="utf-8")) | {"reportUnknownMemberType": "none"}
+        (trusted / noodles.TYPE_POLICY_PATH).write_text(json.dumps(silenced), encoding="utf-8")
+        after = {error.split(": ", 1)[1].split(" measures ")[0] for error in noodles.type_gate_errors(candidate, trusted, paths)}
+        self.assertNotIn("reportUnknownMemberType", after)
+        self.assertTrue(after, "the policy must silence one rule, not the whole run")
+
+    def test_the_landed_baseline_is_what_this_tree_actually_measures(self) -> None:
+        """The one control that keeps the committed baseline honest: it is asserted against the live
+        tree through the gate's own reader, so a hand-edited freeze or a drifted tool reds here rather
+        than silently widening what a green means."""
+        paths = {relative for _, relative in noodles.tracked_entries(CANDIDATE_ROOT)}
+        self.assertEqual(noodles.type_gate_errors(CANDIDATE_ROOT, CANDIDATE_ROOT, paths), [])
+
+
 if __name__ == "__main__":
     unittest.main()

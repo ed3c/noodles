@@ -92,6 +92,16 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check
           "ruff$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["required-version"])' .trusted/policy/ruff.toml)"
 
+      # ed3c/noodles#415: the trusted job's type checker, on the same terms as the lint toolchain
+      # above and read out of the TRUSTED baseline the gate judges against, so the installed version
+      # and the frozen counts can never come from different files. basedpyright has no
+      # `required-version` of its own, so `type_gate_errors` refuses a mismatch itself rather than
+      # trusting this step to have installed what it said.
+      - name: Install the pinned type toolchain from trusted policy
+        run: >-
+          python3 -m pip install --quiet --disable-pip-version-check
+          "basedpyright==$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tool"]["version"])' .trusted/policy/basedpyright-baseline.json)"
+
       - name: Run trusted positive and planted-negative controls
         env:
           NOODLES_CANDIDATE_ROOT: ${{ github.workspace }}/.candidate

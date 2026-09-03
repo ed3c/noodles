@@ -195,6 +195,20 @@ JUSTIFIED_SUPPRESSION_RE = re.compile(r"#\s*(?:constraint|ponytail):\s*(?P<reaso
 # constraint: comment that names it IS one, both to ruff and to the scan below.
 MIN_SUPPRESSION_REASON = 24
 LINT_FINDING_RE = re.compile(r"^\S.*?:\d+:\d+: ")
+# constraint: ed3c/noodles#415 - two trusted files rather than one because they have different owners.
+# constraint: The config's bytes are consumed VERBATIM by basedpyright, so nothing of ours may live in
+# constraint: it; the version pin and the frozen debt are ours, so they live in the baseline beside the
+# constraint: counts they qualify. Both resolve under policy_root for the same reason the lint policy
+# constraint: does: a candidate does not own the policy that approves it.
+TYPE_POLICY_PATH = "policy/basedpyright.json"
+TYPE_BASELINE_PATH = "policy/basedpyright-baseline.json"
+# constraint: the same COMMENT-token boundary the two scans above use, so prose that merely names a
+# constraint: directive is not mistaken for one. The directives are never spelled inside any comment
+# constraint: in this tree - a comment that names one IS one, to basedpyright and to the scan alike -
+# constraint: which is why these two patterns are written as regex source and not as examples.
+TYPE_IGNORE_DIRECTIVE_RE = re.compile(r"#\s*type:\s*ignore")
+PYRIGHT_DIRECTIVE_RE = re.compile(r"#\s*pyright:\s*ignore")
+JUSTIFIED_TYPE_SUPPRESSION_RE = re.compile(r"#\s*(?:constraint|ponytail):\s*(?P<reason>.*?)\s*#\s*pyright:\s*ignore\[[A-Za-z][A-Za-z0-9]*(?:\s*,\s*[A-Za-z][A-Za-z0-9]*)*\]")
 # constraint: this module's own tree carries the one committed task-profile definition it verifies
 # constraint: a target tree against, so a mutated copy's drifted policy still fails closed here.
 ENGINE_ROOT = Path(__file__).resolve().parent
@@ -851,6 +865,112 @@ def lint_gate_errors(root: Path, policy_root: Path, paths: Iterable[str]) -> lis
     if completed.returncode == 1 and not findings:
         return [*errors, f"lint gate read ruff exit 1 with no parsable finding, which must not read as green: {(completed.stderr or completed.stdout).strip()}"]
     return [*errors, *(f"lint {finding}" for finding in findings)]
+# constraint: ed3c/noodles#415 - the type coordinate, stacked on the syntax one and carrying the same
+# constraint: TRUSTED-POLICY INVARIANT for the same reason: config and baseline resolve under
+# constraint: policy_root, sources under root. The mechanism has to be stronger here than passing
+# constraint: --config was for ruff. basedpyright takes its project root from the directory holding
+# constraint: basedpyrightconfig.json and resolves imports from there, so pointing it at the candidate
+# constraint: would hand the candidate the config slot, and pointing it at policy/ would break every
+# constraint: intra-repository import and drown the run in reportMissingImports (measured on this
+# constraint: tree: 156 of them, and 12273 diagnostics against 6619 once resolution works). The gate
+# constraint: therefore materializes the candidate's tracked Python into a scratch tree and writes the
+# constraint: TRUSTED bytes in beside it, so the candidate is scanned as data and never as a project.
+# constraint: --project names the config FILE and never the directory holding it. Measured on 1.39.10:
+# constraint: given a directory, basedpyright discovers `pyrightconfig.json` there and silently
+# constraint: ignores `basedpyrightconfig.json`, so a directory argument runs on tool DEFAULTS while
+# constraint: looking exactly like a run that read the policy - and because the default mode is also
+# constraint: `recommended`, the diagnostic counts barely move and the substitution is invisible in
+# constraint: the output. Naming the file is what makes "the trusted policy governs" a fact.
+def type_gate_errors(root: Path, policy_root: Path, paths: Iterable[str]) -> list[str]:
+    """Trusted-side basedpyright diagnostics over the candidate's tracked Python, against a frozen baseline.
+
+    Adoption is BASELINE, not cleanup: policy/basedpyright-baseline.json freezes today's debt as a
+    count per (file, rule), so a green means "this tree adds no diagnostic beyond what the trusted
+    baseline already records for that file and that rule". New violations red from day one, including
+    every diagnostic in a file the baseline does not mention. Burn-down is safe in both directions:
+    fixing a diagnostic leaves the count under its frozen number and stays green, and the entry can
+    then be deleted at that surface's own pace.
+
+    Non-claim about the freeze's granularity. The key is (file, rule), not (file, rule, message).
+    basedpyright's messages are localized - the same run emits Chinese under a zh locale, measured -
+    so a message-keyed baseline would be a green that depends on the runner's environment. A second
+    finding of an already-frozen rule in an already-frozen file is therefore admitted, which is one
+    notch finer than the syntax gate's rule-wide freeze and one notch coarser than per-finding.
+
+    Suppression discipline, three carriers and none of them the other's proof: the trusted config sets
+    enableTypeIgnoreComments false, so a bare `# type: ignore` suppresses nothing and the diagnostic
+    it was reaching for surfaces anyway; reportIgnoreCommentWithoutRule refuses a rule-less
+    `# pyright: ignore`; and the scan below refuses the bare comment itself and admits a rule-scoped
+    one only inside this repository's own comment tag with a written reason beside it.
+
+    Absences are separate exits rather than a quiet pass: a missing or unreadable config or baseline,
+    a baseline naming no version, a basedpyright that will not execute, one whose version is not the
+    pinned one, and one that reports without emitting a readable JSON report each produce their own
+    message. The version check is ours because basedpyright has no `required-version` of its own the
+    way ruff does, and an unpinned checker is a green whose meaning moves under it."""
+    config_path, baseline_path = policy_root / TYPE_POLICY_PATH, policy_root / TYPE_BASELINE_PATH
+    absent = [str(path) for path in (config_path, baseline_path) if not path.is_file()]
+    if absent:
+        return [f"trusted type policy missing: {', '.join(absent)}"]
+    try:
+        config_text = config_path.read_text(encoding="utf-8")
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [f"trusted type policy unreadable: {exc}"]
+    sources = sorted(path for path in paths if path.endswith(".py"))
+    errors: list[str] = []
+    for relative in sources:
+        try:
+            with (root / relative).open("rb") as handle:
+                comments = [(token.start[0], token.string.strip()) for token in tokenize.tokenize(handle.readline) if token.type == tokenize.COMMENT]
+        except (OSError, SyntaxError, IndentationError, UnicodeDecodeError, tokenize.TokenizeError) as exc:
+            errors.append(f"type suppression scan failed for {relative}: {exc}")
+            continue
+        for lineno, comment in comments:
+            if TYPE_IGNORE_DIRECTIVE_RE.search(comment):
+                errors.append(f"unscoped type suppression {relative}:{lineno}: {comment!r} - a type-ignore comment names no rule and suppresses nothing under this policy; write '# constraint: <why> # pyright: ignore[reportRule]'")
+            elif PYRIGHT_DIRECTIVE_RE.search(comment) and ((match := JUSTIFIED_TYPE_SUPPRESSION_RE.fullmatch(comment)) is None or len(match["reason"]) < MIN_SUPPRESSION_REASON):
+                errors.append(f"unjustified type suppression {relative}:{lineno}: {comment!r} - a suppression is admissible only as '# constraint: <at least {MIN_SUPPRESSION_REASON} characters of why> # pyright: ignore[reportRule]'")
+    if not sources:
+        return errors
+    tool = baseline.get("tool")
+    pin = tool.get("version") if isinstance(tool, dict) else None
+    if not pin:
+        return [*errors, f"trusted type baseline names no pinned basedpyright version under tool.version: {baseline_path}"]
+    try:
+        version = run(["basedpyright", "--version"], check=False)
+    except OSError as exc:
+        return [*errors, f"type gate cannot execute the basedpyright pinned by {TYPE_BASELINE_PATH}: {exc}"]
+    # constraint: whole-LINE equality, never substring: `f"basedpyright {pin}" in stdout` reads true
+    # constraint: for pin 1.39.1 against an installed 1.39.10, and this tool's own version series
+    # constraint: carries exactly that pair. A prefix-extension false green is the one way a pin check
+    # constraint: is worse than no pin check at all, because it looks like it held.
+    if version.returncode != 0 or f"basedpyright {pin}" not in version.stdout.splitlines():
+        return [*errors, f"type gate requires basedpyright {pin} and found {(version.stdout or version.stderr).strip()!r}: an unpinned checker is a green whose meaning moves"]
+    with tempfile.TemporaryDirectory(prefix="noodles-type-gate-", ignore_cleanup_errors=True) as temp:
+        scan = Path(temp).resolve()
+        (scan / "basedpyrightconfig.json").write_text(config_text, encoding="utf-8")
+        for relative in sources:
+            target = scan / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((root / relative).read_bytes())
+        try:
+            completed = run(["basedpyright", "--project", str(scan / "basedpyrightconfig.json"), "--outputjson"], cwd=scan, check=False)
+        except OSError as exc:
+            return [*errors, f"type gate cannot execute the basedpyright pinned by {TYPE_BASELINE_PATH}: {exc}"]
+        try:
+            diagnostics = json.loads(completed.stdout)["generalDiagnostics"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return [*errors, f"type gate read basedpyright exit {completed.returncode} with no readable report, which must not read as green: {(completed.stderr or completed.stdout).strip()}"]
+        observed: collections.Counter[tuple[str, str]] = collections.Counter()
+        for diagnostic in diagnostics:
+            observed[(os.path.relpath(diagnostic["file"], scan), diagnostic.get("rule") or diagnostic.get("severity", "error"))] += 1
+    frozen = baseline.get("diagnostics", {})
+    for (relative, rule), count in sorted(observed.items()):
+        allowed = frozen.get(relative, {}).get(rule, 0)
+        if count > allowed:
+            errors.append(f"type {relative}: {rule} measures {count} where the trusted baseline freezes {allowed}")
+    return errors
 
 
 def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, Any]:
@@ -938,6 +1058,12 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     # constraint: own records so a candidate that legitimately moves a value can land it; a candidate
     # constraint: that widens the lint policy is not moving a value it owns, it is approving itself.
     errors.extend(lint_gate_errors(root, policy_root, paths))
+    # constraint: ed3c/noodles#415 - policy_root for the same reason the line above takes it: the type
+    # constraint: policy and its baseline are the other two inputs here the candidate does not own. A
+    # constraint: candidate that widened either would be approving itself, and a candidate that
+    # constraint: legitimately burns a diagnostic down needs no edit here at all, because the baseline
+    # constraint: is a ceiling and measuring under it is green.
+    errors.extend(type_gate_errors(root, policy_root, paths))
     # constraint: ed3c/noodles#326 - reads the CANDIDATE's own tree and its own records, the same way
     # constraint: validate_policy_key_consumption above does and for the same reason: a candidate that
     # constraint: adds a top-level definition must disposition it in that same commit, and can.

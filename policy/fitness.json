@@ -13,7 +13,7 @@
     "schedule": 41,
     "verify": 33
   },
-  "max_unowned_top_level_definitions": 121,
+  "max_unowned_top_level_definitions": 122,
   "max_workflows": 5,
   "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",
@@ -60,6 +60,8 @@
     "feature_contract.py",
     "noodles",
     "noodles.py",
+    "policy/basedpyright-baseline.json",
+    "policy/basedpyright.json",
     "policy/fitness.json",
     "policy/gh-aw.lock.json",
     "policy/github.json",

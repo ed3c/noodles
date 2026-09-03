@@ -22,14 +22,30 @@ if ! ruff --version 2>/dev/null | grep -qx "ruff ${LINT_PIN#==}"; then
     exit 1
   fi
 fi
-# constraint: the syntax gate runs FIRST, against the policy this tree carries: a lint red discovered
-# constraint: after the whole suite is lane-speed feedback nobody got. `./noodles verify` below runs
-# constraint: the same gate again through the CI-shaped call, and the two must agree.
+# constraint: ed3c/noodles#415 - the pinned type checker, provisioned on exactly the terms above and
+# constraint: for exactly the same reasons. The pin is READ out of the trusted baseline's tool.version
+# constraint: and never restated; unlike ruff, basedpyright has no `required-version` of its own, so
+# constraint: `type_gate_errors` refuses a mismatched version itself and this check only makes the
+# constraint: refusal arrive as a sentence a lane can act on rather than as a gate failure.
+TYPE_PIN="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tool"]["version"])' "$ROOT/policy/basedpyright-baseline.json")"
+if ! basedpyright --version 2>/dev/null | grep -qx "basedpyright ${TYPE_PIN}"; then
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    python3 -m pip install --quiet --disable-pip-version-check "basedpyright==${TYPE_PIN}"
+    basedpyright --version | grep -qx "basedpyright ${TYPE_PIN}"
+  else
+    printf 'type toolchain missing: policy/basedpyright-baseline.json pins basedpyright %s; install it with `python3 -m pip install "basedpyright==%s"`\n' "$TYPE_PIN" "$TYPE_PIN" >&2
+    exit 1
+  fi
+fi
+# constraint: the syntax and type gates run FIRST, against the policy this tree carries: a refusal
+# constraint: discovered after the whole suite is lane-speed feedback nobody got. `./noodles verify`
+# constraint: below runs both again through the CI-shaped call, and the two must agree.
 PYTHONPATH="$ROOT" python3 -c 'import sys
 from pathlib import Path
 import noodles
 root = Path(sys.argv[1])
-errors = noodles.lint_gate_errors(root, root, {relative for _, relative in noodles.tracked_entries(root)})
+paths = {relative for _, relative in noodles.tracked_entries(root)}
+errors = [*noodles.lint_gate_errors(root, root, paths), *noodles.type_gate_errors(root, root, paths)]
 print("\n".join(errors))
 raise SystemExit(1 if errors else 0)' "$ROOT"
 # constraint: ed3c/noodles#313 - every atom's acceptance carries "zero residue (no .noodle/ runtime
