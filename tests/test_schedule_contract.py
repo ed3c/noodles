@@ -894,7 +894,7 @@ class TestStandardContractTests(unittest.TestCase):
             )
 
     def test_oracle_diff_is_explicitly_metadata_only(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="noodles-test-diff-") as directory:
+        with tempfile.TemporaryDirectory(prefix="noodles-test-diff-", ignore_cleanup_errors=True) as directory:
             base = Path(directory) / "base"
             candidate = Path(directory) / "candidate"
             (base / "tests").mkdir(parents=True)
