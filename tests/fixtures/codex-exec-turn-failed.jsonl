@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"synthetic-0000-0000-0000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"The previous step completed successfully and nothing was truncated."}}
+{"type":"turn.failed","error":{"message":"synthetic fixture: the turn failed after the agent message above"}}
