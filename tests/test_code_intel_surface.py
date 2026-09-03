@@ -20,7 +20,11 @@ from unittest import mock
 import noodles
 import scip_validation
 from scip_validation import ScipError
-from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, cmd, copy_tracked
+# constraint: initialize_repo, not a bare `git init`: a hosted runner carries no global git identity,
+# constraint: so a fixture repository that inits its own commits without configuring user.name and
+# constraint: user.email dies there with "Author identity unknown" while staying green on any
+# constraint: developer machine that has one.
+from tests.support import CANDIDATE_ROOT, ENGINE_ROOT, cmd, copy_tracked, initialize_repo
 
 PINS = json.loads((CANDIDATE_ROOT / scip_validation.LOCK_PATH).read_text(encoding="utf-8"))[
     scip_validation.CODE_INTEL_KEY
@@ -202,9 +206,7 @@ class CheckoutStateTests(unittest.TestCase):
         self.target = self.root / "target"
         self.target.mkdir()
         (self.target / "module.py").write_text("def thing() -> int:\n    return 1\n", encoding="utf-8")
-        cmd(["git", "init", "-q", "-b", "main"], self.target)
-        cmd(["git", "add", "-A"], self.target)
-        cmd(["git", "commit", "-q", "-m", "target"], self.target)
+        initialize_repo(self.target)
         self.commit = cmd(["git", "rev-parse", "HEAD"], self.target)
 
     def stub_pins(self, body: str) -> dict:
@@ -276,9 +278,7 @@ class IndexCurrencyTests(unittest.TestCase):
         self.clone = self.root / "clone"
         self.clone.mkdir()
         (self.clone / "module.py").write_text("def thing() -> int:\n    return 1\n", encoding="utf-8")
-        cmd(["git", "init", "-q", "-b", "main"], self.clone)
-        cmd(["git", "add", "-A"], self.clone)
-        cmd(["git", "commit", "-q", "-m", "one"], self.clone)
+        initialize_repo(self.clone)
         self.commit = cmd(["git", "rev-parse", "HEAD"], self.clone)
         self.index = self.root / "index.scip"
         self.index.write_bytes(b"pretend-index-bytes")
