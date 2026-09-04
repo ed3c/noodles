@@ -12,5 +12,9 @@
   "required_check": "verify",
   "merge_method": "merge",
   "require_branch_protection": true,
-  "cross_repository_status": "HOLD_UNTIL_TARGET_INSTALLATION_AND_TOKEN_READBACK"
+  "cross_repository_status": "HOLD_UNTIL_TARGET_INSTALLATION_AND_TOKEN_READBACK",
+  "protection_read": true,
+  "protection_write": false,
+  "protection_write_reason": "privilege separation (ed3c/noodles#435): Administration:write is deliberately withheld from this App's installation token, kept off the same key that already holds Contents:write, so a compromised trusted workflow cannot first weaken protection and then write",
+  "protection_operator_app": "DECLARED (ed3c/noodles#435): a separate dedicated App -- Administration:write only, no Contents:write, read-back-before-and-after, no PAT -- is the only admitted future path to automated protection mutation; its receipt path (provision + install-scoped + write-back-verified) does not exist until that App is provisioned"
 }
