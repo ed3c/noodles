@@ -3078,8 +3078,17 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
 
         ed3c/noodles#437 finishes ed3c/noodles#394's staged transition: `verified_batch` is now
         imported and this path hands it the manifest's own members, so the identity is CONSTRUCTED by
-        the capability (`construct_batch`), read back out of the objects it wrote
-        (`verify_candidate_identity`), and equated to the tree the default branch actually carries.
+        the capability (`construct_batch`), equated to the tree the default branch actually carries,
+        and its `batch_sha` recorded in every member's receipt so the landing identity is
+        recomputable from the authoritative receipt rather than only from the canary's.
+        `verify_candidate_identity` is deliberately NOT called here and the reconcile of
+        ed3c/noodles#437 deleted the call that was: it re-runs `construct_batch` over the same
+        repository, base and members under a fixed identity environment, so against a manifest this
+        path just constructed it is deterministic-equal by construction - unfalsifiable green, paid
+        for with a second full construction. Its direction is real where a manifest crosses a
+        boundary and comes back (`.github/workflows/verified-batch-canary.yml` reads one off disk),
+        and there is no such boundary in here.
+
         Where each of the capability's four refusals lands in production, stated rather than implied,
         because they do not all land in the same place:
         * wrong count and duplicate head are the capability's own - `construct_batch` refuses any
@@ -3093,6 +3102,24 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
           reorder refusal judges a manifest against its own integrations, which a freshly constructed
           one can never contradict. This is the residual ed3c/noodles#394 disclosed and it closes
           here, in production, on the physical fact rather than on a re-read of what was just built.
+          The chain starts AT the declared base, which ed3c/noodles#437's first landing did not: a
+          chain that begins at member 1 leaves position 1 satisfied by anything the base ALREADY
+          carries, so a still-open head that landed in an EARLIER wave - `ahead_by` 0, ancestor of
+          this pre-stack's base, replayed as a no-op so even the tip-tree equality holds - was
+          closed and stamped with a merge that did not land it. The base link refuses it, because an
+          earlier wave's head is on the far side of the base rather than a descendant of it.
+
+        What this chain assumes, disclosed rather than implied, because nothing in this repository
+        PRODUCES a pre-stack - the ship stage outside it does, so "cut in landing order" is a STATIC
+        claim about an external actor that no arrival in here can check. The chain is the assumption
+        made refusable, and three honest shapes fall outside it and degrade to the single-head path:
+        * members MERGED onto a shared base instead of each cut on its predecessor - every other
+          arrival still says yes (heads carried whole, honest parent pair, honest tree);
+        * a stack cut on a commit the default branch has since moved past, so the base the tip merge
+          names is not the base the members were cut on;
+        * a wave the provider lists in any order other than the cut order - member order comes from
+          `carried()`'s `(created_at, number)` sort, so a pre-stack whose landing order that sort
+          does not reproduce is refused rather than reordered.
 
         Refusing costs nothing and strands nobody: every one of those checks returns an empty batch,
         which leaves each member exactly where it was - open, `awaiting_land`, selectable on the very
@@ -3100,7 +3127,16 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
         also what a member which conflicted at pre-stack time gets: it never entered the stack, so the
         default branch does not carry it, so it is not a member. `BatchError` is a refusal here rather
         than a raise for that reason: the capability names an identity it cannot represent, and this
-        path owes that queue the next cycle, not an exception out of a land job."""
+        path owes that queue the next cycle, not an exception out of a land job.
+
+        Ceiling, and the reason every narrowing above is disclosed here rather than left to be
+        noticed: a refusal is byte-indistinguishable IN THE RECEIPT from a cycle that had no wave to
+        batch. Both leave `batch` empty and the `rebased` action behind, so PROD carries no field
+        that separates "this queue was refused" from "this queue was never deep enough", and the
+        SANDBOX controls in `tests/test_landing_train.py` are the only arrival that any of these
+        refusals fire at all. Every shape named above is therefore something an operator learns by
+        reading this docstring, or infers from counting
+        `batch-landed` receipts that never appear, not something the run reports."""
         if landed_pr <= 0:
             return []
         members = carried()
@@ -3140,10 +3176,12 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
             if git(workdir, "rev-parse", f"{tip_sha}^{{tree}}", check=False) != tip_tree:
                 return []
             # constraint: ed3c/noodles#437 - the ORDER refusal, and the only one that can be physical:
-            # constraint: the pre-stack is cut in landing order, so member i's head is an ancestor of
-            # constraint: member i+1's and the last member is a parent of the tip, which makes this
-            # constraint: strictly stronger than the per-head "ancestor of the tip" it replaces.
-            if any(not git_ok(workdir, "merge-base", "--is-ancestor", earlier, later) for earlier, later in zip(ordered, ordered[1:])):
+            # constraint: the pre-stack is cut in landing order, so the declared base is an ancestor of
+            # constraint: member 1's head, member i's head is an ancestor of member i+1's, and the last
+            # constraint: member is a parent of the tip. Strictly stronger than the per-head "ancestor
+            # constraint: of the tip" it replaces, and the base link is what keeps position 1 from being
+            # constraint: satisfied for free by a head the base already carries from an earlier wave.
+            if any(not git_ok(workdir, "merge-base", "--is-ancestor", earlier, later) for earlier, later in zip([manifest["base_sha"], *ordered], ordered)):
                 return []
             try:
                 identity = verified_batch.construct_batch(
@@ -3151,7 +3189,6 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
                     manifest["base_sha"],
                     [verified_batch.BatchMember(int(item["pr_number"]), str(item["head_sha"])) for item in manifest["members"]],
                 )
-                verified_batch.verify_candidate_identity(workdir, identity)
             except verified_batch.BatchError:
                 return []
             # constraint: tip-tree equality: replaying exactly these members onto exactly that base, in
@@ -3208,6 +3245,13 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
                     "issue_closed": True,
                     "receipt_anchor": anchor,
                     "batch": manifest,
+                    # constraint: ed3c/noodles#437 reconcile - the capability's canonical identity for
+                    # constraint: this landing, kept rather than used as a boolean and dropped with the
+                    # constraint: temporary directory. It is a digest, not a fetchable ref: nothing
+                    # constraint: pushed these objects, and anyone holding the base and the ordered
+                    # constraint: members recomputes it. Without it the only receipt carrying a
+                    # constraint: `batch_sha` was the canary's, which is stamped authorizes_landing=false.
+                    "batch_sha": str(identity["batch_sha"]),
                 }
             )
         return landed
