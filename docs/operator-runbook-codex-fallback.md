@@ -1097,6 +1097,17 @@ were written. What follows is from that tail and has no other survivor.
   the 2026-09-03 provider incident), and model-tier degradation practice
   (distinct from and finer than `#407`'s provider-level fail-soft modes).
 
+### 7.9 Product direction and bottleneck map (pointer)
+
+- **`docs/product-direction-and-bottleneck-map.md`** (N-class,
+  `ed3c/noodles#453`) — the six measured physical bottlenecks mapped to six
+  product lines, pstack's true shape as the domain-onboarding kit, the
+  inference straight-line's position as B5's lever, the domain-expansion
+  order, and the backlog-ETA decomposition law. Its own N-class graduation
+  rule governs boundary expansion for both this document and that one: a
+  section enters `contracts/system-v1.md` only when its path has been
+  physically walked.
+
 ---
 
 ## 8. Ceiling of this document
