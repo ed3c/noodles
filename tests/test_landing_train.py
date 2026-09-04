@@ -1052,43 +1052,97 @@ class VerifiedBatchLandingTests(unittest.TestCase):
             self.assertEqual(result["batch"], [])
             self.assertEqual({api.issues[number]["state"] for number in (731, 732)}, {"open"})
 
-    def test_the_landed_capability_still_refuses_wrong_base_count_duplicate_and_reordered_manifests(self) -> None:
-        """ed3c/noodles#394's manifest, handed to the landed capability that represents this shape.
+    def test_planted_negative_a_member_count_the_capability_cannot_represent_refuses_the_batch(self) -> None:
+        """ed3c/noodles#437's wrong-count refusal, in production and one variable from the positive.
 
-        The train's own path binds this manifest to the object graph rather than to the capability -
-        the coupling is a second atom, for the ownership reason `landing_train`'s docstring records -
-        so the capability's four refusals are pinned HERE, over the exact manifest the train recorded,
-        rather than left proved only over fixtures the capability wrote itself."""
+        Same tree, same base, same landed tip: only the queue the provider lists is one member short,
+        so the ordered identity is not `verified_batch.MEMBER_COUNT` heads and `construct_batch`
+        refuses it. The premise is read off the capability rather than memorized as a digit, because
+        a trusted assertion that pins the candidate's current constant is exactly the deadlock
+        ed3c/noodles#315 exists to refuse.
+
+        The narrowing this measures rather than implies: before the coupling this path would have
+        closed that single carried head under a two-member manifest the capability does not
+        represent. It now degrades to the byte-identical single-head path instead, which is what the
+        `rebased` action and the one moved head below are. The paired positive is
+        `test_three_head_green_queue_lands_as_one_verified_batch` over this same fixture."""
         with tempfile.TemporaryDirectory(prefix="noodles-batch-test-", ignore_cleanup_errors=True) as temp_name:
             fixture, api = self.wave(Path(temp_name))
-            result, _moved = self.drain(fixture, api, landed_pr=self.TIP_PR)
-            recorded = result["batch"][0]["batch"]
-            # constraint: an independent repository that never saw the train, built the way the train
-            # constraint: builds its own - init plus fetch, so the readback carries the objects and
-            # constraint: nothing else. Not a clone: fixture clones have exactly one owner in this suite.
-            work = Path(temp_name) / "readback"
-            work.mkdir()
-            noodles.run(["git", "init", "--quiet", "--initial-branch", "readback"], cwd=work)
-            noodles.run(["git", "fetch", "--quiet", fixture["origin"], "+refs/heads/*:refs/remotes/origin/*"], cwd=work)
-            members = [verified_batch.BatchMember(item["pr_number"], item["head_sha"]) for item in recorded["members"]]
+            del api.pulls[32]
+            self.assertNotEqual(len(api.pulls) + 1, verified_batch.MEMBER_COUNT)
 
-            # constraint: positive control - the recorded manifest IS a constructible ordered identity over
-            # constraint: the recorded base, reproducible in a repository that never saw the train.
-            built = verified_batch.construct_batch(work, recorded["base_sha"], members)
-            verified_batch.verify_candidate_identity(work, built)
-            self.assertEqual([member["head_sha"] for member in built["members"]], [item["head_sha"] for item in recorded["members"]])
+            result, moved = self.drain(fixture, api, landed_pr=self.TIP_PR)
 
-            # constraint: wrong base, wrong count, duplicate head, reordered members - each still refused.
-            with self.assertRaises(verified_batch.BatchError):
-                verified_batch.construct_batch(work, fixture["first"] + "0", members)
-            with self.assertRaises(verified_batch.BatchError):
-                verified_batch.construct_batch(work, recorded["base_sha"], members[:2])
-            with self.assertRaises(verified_batch.BatchError):
-                verified_batch.construct_batch(work, recorded["base_sha"], [members[0], members[0], members[2]])
-            reordered = verified_batch.construct_batch(work, recorded["base_sha"], [members[1], members[0], members[2]])
-            self.assertNotEqual(reordered["batch_sha"], built["batch_sha"])
-            with self.assertRaises(verified_batch.BatchError):
-                verified_batch.verify_candidate_identity(work, dict(built, members=reordered["members"]))
+            self.assertEqual(result["batch"], [])
+            self.assertEqual(api.issues[731]["state"], "open")
+            self.assertEqual(noodles.one_marker(api.issues[731]["body"], "state"), "awaiting_land")
+            self.assertEqual((result["action"], list(moved)), ("rebased", ["first"]))
+
+    def test_planted_negative_a_merge_that_carried_no_content_refuses_the_batch(self) -> None:
+        """ed3c/noodles#437's tip-tree equality, planted at the one shape ancestry cannot see.
+
+        `git merge -s ours` is the counter-example the whole batch premise rests on: every member
+        commit really is in the default branch's history - `ahead_by` is 0, the parent pair is the
+        base and the landed head, the members nest in landing order - and NONE of their content
+        landed, because the merge kept the base's tree. Every arrival this path had before the
+        capability says "carried"; only replaying the members onto the base and comparing the tree
+        the branch is actually standing on says otherwise, which is what the constructed identity is
+        for. The plant rebuilds the tip as exactly that merge and moves nothing else.
+
+        The paired positive is `test_three_head_green_queue_lands_as_one_verified_batch`: the same
+        wave under an ordinary merge, whose tree IS the replay, batches."""
+        with tempfile.TemporaryDirectory(prefix="noodles-batch-test-", ignore_cleanup_errors=True) as temp_name:
+            fixture, api = self.wave(Path(temp_name))
+            origin = fixture["origin"]
+            base_tree = noodles.run(["git", "-C", origin, "rev-parse", f"{fixture['base']}^{{tree}}"]).stdout.strip()
+            ours = noodles.run(
+                ["git", *GIT_IDENTITY, "-C", origin, "commit-tree", base_tree, "-p", fixture["base"], "-p", fixture["tip"], "-m", "ours-merge"]
+            ).stdout.strip()
+            noodles.run(["git", "-C", origin, "update-ref", "refs/heads/main", ours])
+            fixture["main"], fixture["main_tree"] = ours, base_tree
+            # constraint: every pre-capability arrival still says "carried" - this is the whole point of
+            # constraint: the plant, so it is measured off the remote rather than asserted.
+            for ref in ("first", "second"):
+                self.assertEqual(measured_ahead(origin, fixture[ref]), 0)
+            self.assertNotEqual(base_tree, noodles.run(["git", "-C", origin, "rev-parse", f"{fixture['tip']}^{{tree}}"]).stdout.strip())
+
+            result, moved = self.drain(fixture, api, landed_pr=self.TIP_PR)
+
+            self.assertEqual(result["batch"], [])
+            self.assertEqual({api.issues[number]["state"] for number in (731, 732)}, {"open"})
+            self.assertEqual({api.pulls[number]["state"] for number in (31, 32)}, {"open"})
+            self.assertEqual((result["action"], list(moved)), ("rebased", ["first"]))
+
+    def test_planted_negative_a_reordered_member_list_refuses_the_batch(self) -> None:
+        """ed3c/noodles#394's disclosed residual, closed in production by ed3c/noodles#437.
+
+        The one variable is the order the provider hands the queue back in: `first` is made to look
+        newer than `second`, so the ordered member list the manifest would carry is
+        `[second, first, tip]` over the identical objects. Under the object-graph binding this path
+        used to have - every member an ancestor of the tip - that manifest passed, and the lane
+        recorded it as the one refusal that did NOT hold in production. It now reds on the physical
+        fact that a pre-stack is cut in landing order, so `second` is not an ancestor of `first`.
+
+        Why it cannot be the capability's own reorder refusal: that one compares a manifest's members
+        against its own integrations, and this path constructs the integrations from the members it
+        was handed, so the two can never disagree. Order is an ancestry fact out here or it is
+        nothing. The paired positive is `test_three_head_green_queue_lands_as_one_verified_batch`:
+        identical fixture, identical call, timestamps untouched."""
+        with tempfile.TemporaryDirectory(prefix="noodles-batch-test-", ignore_cleanup_errors=True) as temp_name:
+            fixture, api = self.wave(Path(temp_name))
+            api.pulls[31]["created_at"] = "2026-09-02T09:00:00Z"
+            # constraint: the plant is the ORDER and nothing else - both heads are still exactly as
+            # constraint: carried, measured off the remote rather than declared.
+            for ref in ("first", "second"):
+                self.assertEqual(measured_ahead(fixture["origin"], fixture[ref]), 0)
+
+            result, moved = self.drain(fixture, api, landed_pr=self.TIP_PR)
+
+            self.assertEqual(result["batch"], [])
+            self.assertEqual({api.issues[number]["state"] for number in (731, 732)}, {"open"})
+            self.assertEqual({api.pulls[number]["state"] for number in (31, 32)}, {"open"})
+            self.assertEqual({noodles.one_marker(api.issues[number]["body"], "state") for number in (731, 732)}, {"awaiting_land"})
+            self.assertEqual((result["action"], list(moved)), ("rebased", ["second"]))
 
 
 if __name__ == "__main__":

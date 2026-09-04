@@ -32,6 +32,7 @@ import tomllib
 import trusted_preview
 import urllib.error
 import urllib.request
+import verified_batch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -3071,26 +3072,35 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
         queue, the merge commit's first parent, the merge commit itself - and then BOUND to Git object
         bytes fetched from the remote before anything is closed: the tip's parent pair must be the
         base and the landed head the provider named, the tip's tree must be the tree the provider
-        named, and every member head must be an ancestor of the tip. A head is closed on two
-        independent arrivals or not at all: `ahead_by` is a provider compare, the ancestry is the
+        named, and the member heads must nest in the order the manifest declares. A head is closed on
+        two independent arrivals or not at all: `ahead_by` is a provider compare, the ancestry is the
         object graph, and neither is derived from the other.
+
+        ed3c/noodles#437 finishes ed3c/noodles#394's staged transition: `verified_batch` is now
+        imported and this path hands it the manifest's own members, so the identity is CONSTRUCTED by
+        the capability (`construct_batch`), read back out of the objects it wrote
+        (`verify_candidate_identity`), and equated to the tree the default branch actually carries.
+        Where each of the capability's four refusals lands in production, stated rather than implied,
+        because they do not all land in the same place:
+        * wrong count and duplicate head are the capability's own - `construct_batch` refuses any
+          member list that is not `verified_batch.MEMBER_COUNT` distinct heads under distinct PR
+          numbers. Narrowing, disclosed: a landing that carried a number of heads this capability
+          does not represent now degrades to the single-head path instead of batching them.
+        * wrong base is the tip's parent pair - a base the merge commit does not actually name is
+          refused before any identity is built, exactly as it was before this atom.
+        * REORDERED is the pairwise containment below, not the manifest comparison. A pre-stack is
+          linear in landing order, so ordering is an ancestry fact out here; the capability's own
+          reorder refusal judges a manifest against its own integrations, which a freshly constructed
+          one can never contradict. This is the residual ed3c/noodles#394 disclosed and it closes
+          here, in production, on the physical fact rather than on a re-read of what was just built.
 
         Refusing costs nothing and strands nobody: every one of those checks returns an empty batch,
         which leaves each member exactly where it was - open, `awaiting_land`, selectable on the very
         next cycle - and the byte-identical single-head path below takes over in the same run. That is
         also what a member which conflicted at pre-stack time gets: it never entered the stack, so the
-        default branch does not carry it, so it is not a member.
-
-        ponytail: `verified_batch` builds the canonical ordered identity for exactly this manifest
-        shape and its refusals (wrong base, wrong count, duplicate head, reordered members) are what
-        should validate it here. It is NOT wired into this path, and cannot be in one atom: it is a
-        `verify`-only module, so the first noodles.py definition to couple to it must be owned by
-        `verify` (test_a_measured_owner_is_owned_in_place_rather_than_left_at_the_engine_root) AND
-        must leave an unowned coupler behind (test_relocating_any_owned_group_would_remove_no_
-        disclosed_edge) - a contradiction no assignment satisfies, so the supported cure is the staged
-        transition those two tests describe, on the default branch, before the coupling lands. Until
-        then the identity is pinned against the capability at the test boundary, and this path binds
-        the same manifest to the same object graph. Upgrade path: ed3c/noodles#394's second atom."""
+        default branch does not carry it, so it is not a member. `BatchError` is a refusal here rather
+        than a raise for that reason: the capability names an identity it cannot represent, and this
+        path owes that queue the next cycle, not an exception out of a land job."""
         if landed_pr <= 0:
             return []
         members = carried()
@@ -3103,11 +3113,6 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
         if len(parents) != 2 or not tip_tree:
             return []
         ordered = [*(str(pr["head"]["sha"]) for pr in members), parents[1]]
-        # constraint: the same duplicate-head refusal the landed capability asserts: an ordered member
-        # constraint: list naming one head twice is not an identity, and two pull requests sharing a head
-        # constraint: is a queue this path must hand back rather than close.
-        if len(set(ordered)) != len(ordered):
-            return []
         manifest = {
             "base_sha": parents[0],
             "members": [
@@ -3134,7 +3139,25 @@ def landing_train(root: Path, remote_url: str | None = None, closed_subject: str
                 return []
             if git(workdir, "rev-parse", f"{tip_sha}^{{tree}}", check=False) != tip_tree:
                 return []
-            if any(not git_ok(workdir, "merge-base", "--is-ancestor", head, tip_sha) for head in ordered):
+            # constraint: ed3c/noodles#437 - the ORDER refusal, and the only one that can be physical:
+            # constraint: the pre-stack is cut in landing order, so member i's head is an ancestor of
+            # constraint: member i+1's and the last member is a parent of the tip, which makes this
+            # constraint: strictly stronger than the per-head "ancestor of the tip" it replaces.
+            if any(not git_ok(workdir, "merge-base", "--is-ancestor", earlier, later) for earlier, later in zip(ordered, ordered[1:])):
+                return []
+            try:
+                identity = verified_batch.construct_batch(
+                    workdir,
+                    manifest["base_sha"],
+                    [verified_batch.BatchMember(int(item["pr_number"]), str(item["head_sha"])) for item in manifest["members"]],
+                )
+                verified_batch.verify_candidate_identity(workdir, identity)
+            except verified_batch.BatchError:
+                return []
+            # constraint: tip-tree equality: replaying exactly these members onto exactly that base, in
+            # constraint: exactly that order, lands the tree the default branch is standing on. The
+            # constraint: identity is constructed without touching a ref, so this costs objects, not state.
+            if identity["integrations"][-1]["tree_sha"] != tip_tree:
                 return []
         landed: list[dict[str, Any]] = []
         for pr, head_sha in zip(members, ordered):

@@ -79,6 +79,8 @@ A capability enters `noodles` only when all are true:
 
 The skills-shared migration station is closed (`ed3c/noodles#293`): its probes, evidence documents, and capability ledger were deleted, and git history is the whole archive. `policy/fitness.json` forbids the `migrations` path name, so resurrecting the station reds `./noodles verify` rather than quietly re-entering the tree.
 
+Automated GitHub branch-protection MUTATION is adjudicated closed the same way (2026-09-03, `ed3c/noodles#435`): the one-shot label-triggered GHA job this repository shipped for `#389` to auto-apply branch protection had no live trigger once that Issue closed, and its own probe already failed closed at App-token mint — the App deliberately never holds Administration:write, kept off the same installation key that already holds Contents:write, so a compromised trusted workflow cannot first weaken protection and then write past it. `policy/github.json` now carries that adjudicated state as data instead of a dead workflow implying otherwise: `protection_write: false` with its privilege-separation reason, and `protection_read: true` (drift detection stays read-only and may still be built out). A cross-repository Protection-Operator App — Administration:write only, no Contents:write, read-back-before-and-after, no PAT — is the only admitted future path to automated protection MUTATION; it fails condition 1 above today (no historical evidence, no fresh physical experiment, no App), so `policy/github.json`'s `protection_operator_app` field and this paragraph both record it as arrival topology **DECLARED**, never EXERCISED, with no receipt path (provision + install-scoped + write-back-verified) until a real future session provisions and exercises it.
+
 ## Issue and PR contract
 
 Every schedulable Issue must contain exactly one of each:
@@ -90,7 +92,7 @@ Every schedulable Issue must contain exactly one of each:
 <!-- noodles-state: ready|in_progress|awaiting_land|landed|blocked -->
 <!-- noodles-component: name -->
 <!-- noodles-depends-on: none|owner/repo#N[, owner/repo#N] -->
-<!-- noodles-executor: gha-agentic|gha-runtime|local-noodle -->
+<!-- noodles-executor: gha-agentic|gha-runtime|codex-cloud|local-noodle -->
 <!-- noodles-runtime: bun-ts|gui-simulator|host-toolchain|none|persistent-daemon|private-network|python|shell|unbounded-duration|usb-device -->
 <!-- noodles-write-boundary: path[, path]|none -->
 <!-- noodles-evidence: drive-full-v1|github-only-v1 -->
@@ -102,7 +104,7 @@ Path globs bound which files a candidate may touch and say nothing about what th
 
 `ed3c/noodles#257` and `ed3c/noodles#268` land on the same trust boundary `ed3c/noodles#276` already names: `.github/workflows/verify.yml`'s `verify` job checks out `.trusted` from `${{ github.event.repository.default_branch }}` — the default branch, as it stood *before* the candidate merges — and it is that tree's `noodles.py`, not the candidate's own, that produces `receipt["gates"]` for `github verify-pr`. A gate therefore never protects the PR that introduces it: `git show 8cdf580:noodles.py | grep '"gates":'` (the base `#257` and `#268` were cut from) has no `component-import-edges`, `git show 0ec3cbf:noodles.py | grep '"gates":'` (`#257`'s own head) has it but no `component-ownership`, and only a PR opened after `#268` merges is verified by a trusted engine carrying both. This is not a defect to fix — trusting the candidate's own verifier to judge itself would let a candidate weaken the very check meant to catch it — but it means neither atom's own introducing PR is protected by the gate it ships; `tests/run.sh`'s planted-negative controls (`ComponentImportEdgeGateTests`, `ComponentOwnerGateTests`) are SANDBOX-tier evidence that the gate's logic works against fixtures, not PROD-tier evidence that it ran against that PR's real diff.
 
-Non-claim, and the reason this gate proves less than it looks like it proves: only edges the diff *introduces* are judged, so the surfaces already on `main` are not certified honest by it. Measured with the gate's own resolver they carry `carrier` 40, `docs` 86, `schedule` 42, `verify` 33 standing cross-surface edges (`GrandfatheredImportDebtTests` recomputes this against the live tree instead of quoting a fixed sentence the tree drifts past — landing-train traffic on `main` moved these counts twice while this exact reconcile was in flight, and the test caught both times before merge). This sentence is the disclosure itself, not a copy of one: `disclosed_standing_edge_counts` parses these four numbers straight out of this line in the candidate's own `AGENTS.md` and compares them against the candidate's own tree, so a stale paragraph is a red, and updating this paragraph is how a candidate that legitimately moves an edge lands. `ed3c/noodles#306` is why it reads rather than restates: the expected counts used to be a literal inside the test module, which `pull_request_target` supplies from the default branch while the measurement comes from the candidate, so no candidate that moved an edge could make its own trusted verify pass, and none could merge to update the literal — the same deadlock `ed3c/noodles#285` cured for the sibling ratchet below. `ed3c/noodles#276` landed the measurement, not a refusal: `repository_metrics` publishes `cross_surface_import_edges` per component, read out of `./noodles verify --json`, and `policy/fitness.json` `max_cross_surface_import_edges` ratchets each one report-only so it can only shrink. Growth is still not itself refused: `component_import_edge_errors` owns refusing *undeclared* new edges on the diff, and a blanket growth ban would forbid every new `tests/test_*.py`, each of which adds one `docs` edge merely by importing the module it tests. Every production-to-production edge is dispositioned in the comment beside `cross_surface_import_edges`: most leave `noodles.py`, whose real boundary is per-definition in `policy/component-owners.json` rather than its file glob; `repair_contract.py -> runtime_contract.py` waits on `ed3c/noodles#272`; and `retrieval_contract.py -> evidence_ledger.py` should be declared away by listing `evidence_ledger.py` under `carrier` (and `trusted_preview.py` under `verify`, unowned the same way), which is a staged transition rather than this atom. "The component-surface gate is green" still means the coupling did not get worse, not that the declaration is true.
+Non-claim, and the reason this gate proves less than it looks like it proves: only edges the diff *introduces* are judged, so the surfaces already on `main` are not certified honest by it. Measured with the gate's own resolver they carry `carrier` 41, `docs` 86, `schedule` 43, `verify` 33 standing cross-surface edges (`GrandfatheredImportDebtTests` recomputes this against the live tree instead of quoting a fixed sentence the tree drifts past — landing-train traffic on `main` moved these counts twice while this exact reconcile was in flight, and the test caught both times before merge; `ed3c/noodles#437` moved `carrier` and `schedule` by one each when `noodles.py` began importing the `verify`-only `verified_batch.py`, which is the whole point of that coupling and not a regression to pay down). This sentence is the disclosure itself, not a copy of one: `disclosed_standing_edge_counts` parses these four numbers straight out of this line in the candidate's own `AGENTS.md` and compares them against the candidate's own tree, so a stale paragraph is a red, and updating this paragraph is how a candidate that legitimately moves an edge lands. `ed3c/noodles#306` is why it reads rather than restates: the expected counts used to be a literal inside the test module, which `pull_request_target` supplies from the default branch while the measurement comes from the candidate, so no candidate that moved an edge could make its own trusted verify pass, and none could merge to update the literal — the same deadlock `ed3c/noodles#285` cured for the sibling ratchet below. `ed3c/noodles#276` landed the measurement, not a refusal: `repository_metrics` publishes `cross_surface_import_edges` per component, read out of `./noodles verify --json`, and `policy/fitness.json` `max_cross_surface_import_edges` ratchets each one report-only so it can only shrink. Growth is still not itself refused: `component_import_edge_errors` owns refusing *undeclared* new edges on the diff, and a blanket growth ban would forbid every new `tests/test_*.py`, each of which adds one `docs` edge merely by importing the module it tests. Every production-to-production edge is dispositioned in the comment beside `cross_surface_import_edges`: most leave `noodles.py`, whose real boundary is per-definition in `policy/component-owners.json` rather than its file glob; `repair_contract.py -> runtime_contract.py` waits on `ed3c/noodles#272`; and `retrieval_contract.py -> evidence_ledger.py` should be declared away by listing `evidence_ledger.py` under `carrier` (and `trusted_preview.py` under `verify`, unowned the same way), which is a staged transition rather than this atom. "The component-surface gate is green" still means the coupling did not get worse, not that the declaration is true.
 
 Both of those checks are file-level, and `noodles.py` is listed under `schedule`, `verify`, and `carrier` at once, so its glob matched every component before any atom existed. `policy/component-owners.json` gives such a file a hand-kept definition-level owner, and `component_owner_errors` refuses a candidate whose changed top-level definition is owned by a component the Issue does not declare, naming the file, the definition, and both components. Ownership is maintained, never derived: it is read from the trusted default-branch checkout, so a candidate cannot widen its own ownership, and a component whose surface is the whole repository (`contract`) is not bounded by it either. Its disposition of `ed3c/noodles#189` is `schedule_publish: ["schedule"]` — the dispatch really is schedule-domain logic, so a future atom wiring into it declares `schedule`.
 
@@ -123,15 +125,58 @@ Trusted code judges HOW a value is derived and disclosed; it never remembers WHA
 Executor admission classifies the exact Issue before any claim, branch, checkout, or worktree exists.
 `issue_contract.CAPABILITY_TABLE` is the single bounded table — data, not a policy DSL: each `runtime`
 and `evidence` token names the exact lanes that can physically supply it, and the admitted lane set is
-the intersection. GitHub-hosted lanes supply only portable, non-interactive, bounded-duration work with
-no private device or network dependency; `usb-device`, `gui-simulator`, `private-network`,
-`persistent-daemon`, `host-toolchain`, `unbounded-duration`, and `drive-full-v1` evidence are
-`local-noodle` only, and `none` is contradictory on `gha-runtime`. A duplicate marker, a malformed
-value, an unknown value, and a missing marker each produce their own diagnostic; nothing defaults to a
-lane. A hosted lane gets only the ephemeral execute branch for that run and never a managed worktree;
-the local lane additionally emits one idempotent provider-backed handoff task keyed by the source Issue
-body digest and bound to target, required local capability, and write boundary, while Noodle remains the
-sole owner of the persistent worktree lifecycle.
+the intersection. The sandboxed lanes — GitHub-hosted and subscription-cloud alike — supply only
+portable, non-interactive, bounded-duration work with no private device or network dependency;
+`usb-device`, `gui-simulator`, `private-network`, `persistent-daemon`, `host-toolchain`,
+`unbounded-duration`, and `drive-full-v1` evidence are `local-noodle` only, and `none` is
+contradictory on `gha-runtime`, the lane whose whole purpose is executing a deterministic runtime.
+A duplicate marker, a malformed value, an unknown value, and a missing marker
+each produce their own diagnostic; nothing defaults to a lane. `local-noodle` is the only lane with a
+managed worktree, so it is the sole lane the checkout rule keys on: every other admitted lane gets only
+the ephemeral execute branch for that run. The local lane additionally emits one idempotent
+provider-backed handoff task keyed by the source Issue body digest and bound to target, required local
+capability, and write boundary, while Noodle remains the sole owner of the persistent worktree
+lifecycle.
+
+`ed3c/noodles#450` adds the fourth row, `codex-cloud`, because the lane was already running unnamed.
+The receipt, `git ls-remote` on 2026-09-04: thirteen `refs/heads/codex/issue-*` branches stood on the
+provider, and `codex/issue-70-task-model-routing`'s tip `4bd436b` is the exact commit `main` carries as
+`Merge pull request #96` — a cloud-authored candidate the machine had already landed — while the enum
+admitted only three values. A lane the enum cannot name is a lane the machine cannot route, gate, or
+measure; it runs as an unlabeled operator habit instead. The row: inference runs in
+the operator's ChatGPT/Codex cloud (an OpenAI-hosted sandbox, so no inference key ever enters Actions —
+this is an alternative to the blocked `ed3c/noodles#267`/`#308` lane, not its supersession, and both may
+coexist); writes reach the repository through the Codex GitHub App identity as `codex/*` candidate
+branches; billing is the operator's subscription rather than a metered provider key or Actions minutes
+spent on inference. What it may not do: it never merges, never schedules, and holds no durable
+execution state — the Issue body remains the only task authority and the cloud agent reads it there.
+It inherits the portable runtime rows and `github-only-v1` evidence by construction and none of the
+local-only ones. It is deliberately absent from the `none` runtime row, and that absence is a staged
+transition rather than a judgement: `pull_request_target` runs the DEFAULT BRANCH's copy of
+`tests/test_executor_admission.py` against the candidate, and that copy pinned the `none` row's
+admitted tuple as a literal, so a candidate that moved the row was compared against a value only
+`main` held and no rerun or rebase could turn it green — the `ed3c/noodles#285` shape again, caught
+here by `./noodles verify --trusted-preview` before the branch existed rather than by CI after it.
+This atom lands the widen half: the pin is converted to a derivation from `CAPABILITY_TABLE` itself,
+asserting the property (`gha-runtime` is the excluded lane, the local superset remains) instead of
+the membership. The flip is its own follow-up. Until it lands, a `codex-cloud` atom declares a
+concrete runtime, which is narrower and fails closed.
+Its candidates buy no bypass. The `codex/*` naming is invisible to every gate: `verify_pull_request`
+keys on the exact head SHA, the declared markers, and the changed files, so a `codex-cloud` candidate
+meets the same component-surface, ownership, import-edge, feature-journey and repository gates as any
+other, and wherever a boundary judgement runs at all it is `issue_contract.boundary_escapes` over
+changed paths and the co-mandate registry — a function that is never handed a branch name, so no
+lane's branch shape can buy an exemption from it. Stated ceiling, because "the same write-boundary
+validation as every candidate" is weaker than it sounds: `verify_pull_request` runs that
+path-containment gate on the `gha-agentic` lane alone, so `codex-cloud` inherits exactly the treatment
+`local-noodle` already has — the declared boundary feeds claim-time disjointness and the handoff, not
+a land-time path gate. #450 admits a lane and refuses it any special case; extending containment to
+every non-hosted candidate would change refusal behaviour for every `local-noodle` atom on the tree
+and is its own future atom, not this row. The two-line
+`noodles-origin` PR body stays admitted on `gha-agentic` only, so a `codex-cloud` PR body is still
+exactly one `Refs owner/repo#N` line. Merge authority is unmoved: the App proposes, the machine
+disposes, and a `codex-cloud` atom whose PR is merged by any other identity falls under the existing
+merged-via plus bundle-completion duty.
 
 Every trusted verify run packages its own evidence before it emits a landing receipt.
 `noodles.evidence_publication` reads the candidate as untrusted bytes — verification receipt,

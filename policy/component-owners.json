@@ -25,6 +25,7 @@
       "execute_provenance_admission": ["carrier"],
       "gh_api": ["verify"],
       "land_pull_request": ["verify"],
+      "landing_train": ["verify"],
       "local_handoff_body": ["schedule"],
       "matching_branch_refs": ["schedule"],
       "matching_open_pull_requests": ["schedule"],
