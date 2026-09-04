@@ -1,0 +1,3 @@
+{"type":"action","payload":{"message":"[order:ed3c/noodles#170] fixture"},"timestamp":"2026-09-03T00:00:00Z","session_id":"ed3c-noodles-170-0-execute-fixture"}
+{"type":"handoff_verify_rerun_intent","payload":{"message":"rerun verify for exact head","workflow_run_id":91},"timestamp":"2026-09-03T00:00:01Z","session_id":"ed3c-noodles-170-0-execute-fixture"}
+{"type":"stage_message","payload":{"message":"Provider handoff ready: ed3c/noodles#170; park until trusted provider landing readback.","blocking":true},"timestamp":"2026-09-03T00:00:02Z","session_id":"ed3c-noodles-170-0-execute-fixture"}
