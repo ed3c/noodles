@@ -418,12 +418,16 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "        state_lock = threading.Lock()\n"
             "        post_admission_request_started = threading.Event()\n"
             "        post_admission_response_completed = threading.Event()\n"
+            "        post_admission_response_suppressed = threading.Event()\n"
+            "        stop_release_response_completed = threading.Event()\n"
             "        stop_request_released = threading.Event()\n"
             "        snapshot_state = {\n"
             "            'requests': 0,\n"
             "            'responses': 0,\n"
             "            'post_admission_request_started': False,\n"
             "            'post_admission_response_completed': False,\n"
+            "            'post_admission_response_suppressed': False,\n"
+            "            'stop_release_response_completed': False,\n"
             "            'stop_requested_before_post_admission_response': False,\n"
             "        }\n"
             "        def write_snapshot_state():\n"
@@ -435,6 +439,9 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "        write_snapshot_state()\n"
             "        class Handler(http.server.BaseHTTPRequestHandler):\n"
             "            def do_GET(self):\n"
+            "                self.completed_post_admission_response = False\n"
+            "                self.completed_stop_release_response = False\n"
+            "                self.suppressed_post_admission_response = False\n"
             "                if self.path == '/fixture/post-admission-request-started':\n"
             "                    if not post_admission_request_started.wait(timeout=30.0):\n"
             "                        self.send_response(504)\n"
@@ -458,6 +465,7 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                        return\n"
             "                    self.send_response(204)\n"
             "                    self.end_headers()\n"
+            "                    self.completed_stop_release_response = True\n"
             "                    return\n"
             "                if self.path != '/api/snapshot':\n"
             "                    self.send_response(404)\n"
@@ -466,7 +474,6 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                body = json.dumps({'pending_reviews': [], 'unclaimed_orders': []}).encode('utf-8')\n"
             "                fixture_probe = self.headers.get('X-Noodles-Fixture-Probe') == 'served'\n"
             "                request_number = 0\n"
-            "                self.completed_post_admission_response = False\n"
             "                if not fixture_probe:\n"
             "                    with state_lock:\n"
             "                        snapshot_state['requests'] += 1\n"
@@ -490,7 +497,9 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                        )\n"
             "                        write_snapshot_state()\n"
             "                    if os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') != '1':\n"
-            "                        stop_path.write_text('stop\\n')\n"
+            "                        if not stop_release_response_completed.wait(timeout=30.0):\n"
+            "                            return\n"
+            "                        self.suppressed_post_admission_response = True\n"
             "                        return\n"
             "                self.send_response(200)\n"
             "                self.send_header('Content-Type', 'application/json')\n"
@@ -510,6 +519,16 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                        snapshot_state['post_admission_response_completed'] = True\n"
             "                        write_snapshot_state()\n"
             "                    post_admission_response_completed.set()\n"
+            "                if getattr(self, 'suppressed_post_admission_response', False):\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['post_admission_response_suppressed'] = True\n"
+            "                        write_snapshot_state()\n"
+            "                    post_admission_response_suppressed.set()\n"
+            "                if getattr(self, 'completed_stop_release_response', False):\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['stop_release_response_completed'] = True\n"
+            "                        write_snapshot_state()\n"
+            "                    stop_release_response_completed.set()\n"
             "            def log_message(self, *ignored):\n"
             "                return\n"
             "        server = http.server.ThreadingHTTPServer(\n"
@@ -527,12 +546,17 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "        server.timeout = 0.05\n"
             "        while not stop_path.exists():\n"
             "            server.handle_request()\n"
-            "            if (\n"
-            "                stop_request_path.exists()\n"
-            "                and os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
-            "                and post_admission_response_completed.wait(timeout=30.0)\n"
-            "            ):\n"
-            "                stop_path.write_text('stop\\n')\n"
+            "            if stop_request_path.exists():\n"
+            "                response_event = (\n"
+            "                    post_admission_response_completed\n"
+            "                    if os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
+            "                    else post_admission_response_suppressed\n"
+            "                )\n"
+            "                if (\n"
+            "                    response_event.wait(timeout=30.0)\n"
+            "                    and stop_release_response_completed.wait(timeout=30.0)\n"
+            "                ):\n"
+            "                    stop_path.write_text('stop\\n')\n"
             "        server.server_close()\n"
         )
     path.write_text(
@@ -1174,6 +1198,8 @@ def start_entrypoint_expectations() -> dict[str, object]:
                 "snapshot_responses": 0,
                 "post_admission_request_started": False,
                 "post_admission_response_completed": False,
+                "post_admission_response_suppressed": False,
+                "stop_release_response_completed": False,
                 "stop_requested_before_post_admission_response": False,
             },
             "complete": {
@@ -1184,6 +1210,8 @@ def start_entrypoint_expectations() -> dict[str, object]:
                 "snapshot_responses": 2,
                 "post_admission_request_started": True,
                 "post_admission_response_completed": True,
+                "post_admission_response_suppressed": False,
+                "stop_release_response_completed": True,
                 "stop_requested_before_post_admission_response": True,
             },
             "premature_shutdown": {
@@ -1194,6 +1222,8 @@ def start_entrypoint_expectations() -> dict[str, object]:
                 "snapshot_responses": 1,
                 "post_admission_request_started": True,
                 "post_admission_response_completed": False,
+                "post_admission_response_suppressed": True,
+                "stop_release_response_completed": True,
                 "stop_requested_before_post_admission_response": True,
             },
         },
@@ -1254,21 +1284,27 @@ def start_entrypoint_expectation_errors(expectations: dict[str, object]) -> list
         "snapshot_responses",
         "post_admission_request_started",
         "post_admission_response_completed",
+        "post_admission_response_suppressed",
+        "stop_release_response_completed",
         "stop_requested_before_post_admission_response",
     }
     if not isinstance(complete_barrier, dict) or set(complete_barrier) != barrier_fields:
         errors.append("start-entrypoint complete barrier has the wrong fields")
     else:
-        event_flags = (
+        prerequisite_flags = (
             "listener_served",
             "request_seen",
             "release_written",
             "post_admission_request_started",
-            "post_admission_response_completed",
+            "stop_release_response_completed",
             "stop_requested_before_post_admission_response",
         )
-        if any(complete_barrier[field] is not True for field in event_flags):
-            errors.append("start-entrypoint complete barrier event flags must all be true")
+        if any(complete_barrier[field] is not True for field in prerequisite_flags):
+            errors.append("start-entrypoint complete barrier prerequisite flags must all be true")
+        if complete_barrier["post_admission_response_completed"] is not True:
+            errors.append("start-entrypoint complete barrier must finish the post-admission response")
+        if complete_barrier["post_admission_response_suppressed"] is not False:
+            errors.append("start-entrypoint complete barrier must not suppress the post-admission response")
         if complete_barrier["snapshot_requests"] != complete_barrier["snapshot_responses"]:
             errors.append("start-entrypoint complete barrier must respond to every snapshot request")
     premature_barrier = barrier.get("premature_shutdown")
@@ -1279,13 +1315,12 @@ def start_entrypoint_expectation_errors(expectations: dict[str, object]) -> list
             errors.append("start-entrypoint premature shutdown must occur on the first post-admission snapshot")
         if premature_barrier["snapshot_responses"] != complete_barrier["snapshot_responses"] - 1:
             errors.append("start-entrypoint premature shutdown must withhold the post-admission response")
-        common_event_flags = tuple(
-            field for field in event_flags if field != "post_admission_response_completed"
-        )
-        if any(premature_barrier[field] is not True for field in common_event_flags):
+        if any(premature_barrier[field] is not True for field in prerequisite_flags):
             errors.append("start-entrypoint premature-shutdown barrier prerequisite flags must all be true")
         if premature_barrier["post_admission_response_completed"] is not False:
             errors.append("start-entrypoint premature shutdown must precede response completion")
+        if premature_barrier["post_admission_response_suppressed"] is not True:
+            errors.append("start-entrypoint premature shutdown must suppress the post-admission response")
     unreachable_barrier = barrier.get("unreachable")
     if not isinstance(unreachable_barrier, dict) or set(unreachable_barrier) != barrier_fields:
         errors.append("start-entrypoint unreachable barrier has the wrong fields")
@@ -1439,6 +1474,12 @@ def replay_start_entrypoint_observation(
             "post_admission_response_completed": (snapshot_state or {}).get(
                 "post_admission_response_completed"
             ) is True,
+            "post_admission_response_suppressed": (snapshot_state or {}).get(
+                "post_admission_response_suppressed"
+            ) is True,
+            "stop_release_response_completed": (snapshot_state or {}).get(
+                "stop_release_response_completed"
+            ) is True,
             "stop_requested_before_post_admission_response": (snapshot_state or {}).get(
                 "stop_requested_before_post_admission_response"
             ) is True,
@@ -1509,6 +1550,8 @@ def start_entrypoint_with_delayed_listener(
                     "snapshot_responses": 0,
                     "post_admission_request_started": False,
                     "post_admission_response_completed": False,
+                    "post_admission_response_suppressed": False,
+                    "stop_release_response_completed": False,
                     "stop_requested_before_post_admission_response": False,
                 },
                 "termination": {"trigger": None},
