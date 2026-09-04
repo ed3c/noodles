@@ -392,30 +392,25 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def write_noodle_stub(
-    path: Path, version: str, *, start_delay: float | None = None, emit_admission_receipt: bool = False
-) -> None:
+def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = None) -> None:
     start_clause = ""
     if start_delay is not None:
-        admission_clause = (
-            "    print('{\"admitted\": true}', file=sys.stderr, flush=True)\n" if emit_admission_receipt else ""
-        )
         start_clause = (
             "elif args == ['start']:\n"
             "    import http.server\n"
             "    import json\n"
             "    import pathlib\n"
-            "    import select\n"
-            "    import signal\n"
-            "    import threading\n"
             "    project = pathlib.Path(os.environ['NOODLES_TEST_START_PROJECT'])\n"
+            "    ready_path = pathlib.Path(os.environ['NOODLES_TEST_START_READY_PATH'])\n"
+            "    request_path = pathlib.Path(os.environ['NOODLES_TEST_START_REQUEST_PATH'])\n"
+            "    release_path = pathlib.Path(os.environ['NOODLES_TEST_START_RELEASE_PATH'])\n"
+            "    stop_path = pathlib.Path(os.environ['NOODLES_TEST_START_STOP_PATH'])\n"
             "    (project / '.noodle').mkdir(parents=True, exist_ok=True)\n"
             "    (project / '.noodle' / 'noodle.lock').write_text(str(os.getpid()))\n"
             f"    time.sleep({start_delay!r})\n"
             "    (project / '.noodle' / 'status.json').write_text(\n"
             "        json.dumps({'loop_state': 'running', 'mode': 'supervised', 'max_concurrency': 4})\n"
             "    )\n"
-            f"{admission_clause}"
             "    if os.environ.get('NOODLES_TEST_START_SERVE') == '1':\n"
             "        class Handler(http.server.BaseHTTPRequestHandler):\n"
             "            def do_GET(self):\n"
@@ -424,25 +419,35 @@ def write_noodle_stub(
             "                    self.end_headers()\n"
             "                    return\n"
             "                body = json.dumps({'pending_reviews': [], 'unclaimed_orders': []}).encode('utf-8')\n"
+            "                if self.headers.get('X-Noodles-Fixture-Probe') != 'served':\n"
+            "                    request_path.write_text('snapshot_requested\\n')\n"
+            "                    while not release_path.exists() and not stop_path.exists():\n"
+            "                        time.sleep(0.01)\n"
+            "                    if not release_path.exists():\n"
+            "                        return\n"
             "                self.send_response(200)\n"
             "                self.send_header('Content-Type', 'application/json')\n"
             "                self.send_header('Content-Length', str(len(body)))\n"
             "                self.end_headers()\n"
             "                self.wfile.write(body)\n"
+            "                self.wfile.flush()\n"
             "            def log_message(self, *ignored):\n"
             "                return\n"
-            "        server = http.server.HTTPServer(\n"
+            "        server = http.server.ThreadingHTTPServer(\n"
             "            ('127.0.0.1', int(os.environ['NOODLES_TEST_START_PORT'])), Handler\n"
             "        )\n"
+            "        readiness = {\n"
+            "            'event': 'listener_bound',\n"
+            "            'pid': os.getpid(),\n"
+            "            'host': str(server.server_address[0]),\n"
+            "            'port': int(server.server_address[1]),\n"
+            "        }\n"
+            "        ready_temp = ready_path.with_name(ready_path.name + f'.{os.getpid()}.tmp')\n"
+            "        ready_temp.write_text(json.dumps(readiness, separators=(',', ':'), sort_keys=True))\n"
+            "        os.replace(ready_temp, ready_path)\n"
             "        server.timeout = 0.05\n"
-            "        stop_requested = threading.Event()\n"
-            "        signal.signal(signal.SIGTERM, lambda *_ignored: stop_requested.set())\n"
-            "        while not stop_requested.is_set():\n"
+            "        while not stop_path.exists():\n"
             "            server.handle_request()\n"
-            "        drain_budget = 8\n"
-            "        while drain_budget > 0 and select.select([server.fileno()], [], [], 0.02)[0]:\n"
-            "            server.handle_request()\n"
-            "            drain_budget -= 1\n"
             "        server.server_close()\n"
         )
     path.write_text(
@@ -1018,18 +1023,275 @@ def _free_tcp_port() -> int:
         sock.close()
 
 
-# constraint: 3s grace bounds the wait for the entrypoint's own admission receipt line after the harness poller already saw a served readback - long enough for a genuinely admitting entrypoint's line to land, short enough to keep the suite fast when it never does
-ADMISSION_RECEIPT_GRACE_SECONDS = 3.0
+def read_start_entrypoint_readiness(ready_path: Path) -> dict[str, object] | None:
+    try:
+        text = ready_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise AssertionError(
+            f"start-entrypoint readiness {ready_path} could not be read: {type(exc).__name__}: {exc}"
+        ) from exc
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"start-entrypoint readiness {ready_path} contains malformed JSON: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AssertionError(
+            f"start-entrypoint readiness {ready_path} must be a JSON object, got {type(payload).__name__}"
+        )
+    return payload
+
+
+START_ENTRYPOINT_ADMISSION_FIELDS = {
+    "admitted",
+    "child_pid",
+    "control_host",
+    "control_port",
+    "lease_path",
+    "lease_pid",
+    "listener_pids",
+    "loop_state",
+    "snapshot_keys",
+}
+
+
+def start_entrypoint_expectations() -> dict[str, object]:
+    """Candidate-owned expected event contract, separate from the fixture's observations."""
+    complete_events = [
+        "listener_bound",
+        "listener_served",
+        "former_grace_edge_without_admission",
+        "daemon_lease",
+    ]
+    diagnostics = {
+        "withheld_admission": "start-entrypoint observer withheld a complete truthful Noodle daemon lease receipt",
+        "event_sequence": "start-entrypoint event sequence is {observed!r}, expected {expected!r}",
+        "termination": "runtime termination was not triggered by the entrypoint admission receipt",
+        "readiness": "stub listener never reported exact bound readiness",
+    }
+    withheld_events = complete_events[:-1]
+    return {
+        "events": {
+            "unreachable": [],
+            "withheld": withheld_events,
+            "complete": complete_events,
+            "final_read": list(complete_events),
+        },
+        "barrier": {
+            "complete": {
+                "listener_served": True,
+                "request_seen": True,
+                "release_written": True,
+            },
+        },
+        "termination": {
+            "unreachable": {"trigger": "entrypoint_exited_before_admission"},
+            "withheld": {"trigger": "missing_admission_timeout"},
+            "complete": {"trigger": "entrypoint_admission"},
+            "final_read": {"trigger": "fixture_final_read_boundary"},
+        },
+        "diagnostics": diagnostics,
+        "validation_errors": {
+            "withheld": [
+                diagnostics["withheld_admission"],
+                diagnostics["event_sequence"].format(
+                    observed=withheld_events,
+                    expected=complete_events,
+                ),
+                diagnostics["termination"],
+            ],
+            "final_read": [diagnostics["termination"]],
+        },
+    }
+
+
+def start_entrypoint_expectation_errors(expectations: dict[str, object]) -> list[str]:
+    """Judge the expectation disclosure by shape, derivation, and internal consistency."""
+    errors: list[str] = []
+    if set(expectations) != {"events", "barrier", "termination", "diagnostics", "validation_errors"}:
+        errors.append("start-entrypoint expectations have the wrong top-level fields")
+        return errors
+    events = expectations["events"]
+    barrier = expectations["barrier"]
+    termination = expectations["termination"]
+    diagnostics = expectations["diagnostics"]
+    validation_errors = expectations["validation_errors"]
+    if not all(isinstance(item, dict) for item in (events, barrier, termination, diagnostics, validation_errors)):
+        return ["start-entrypoint expectation sections must all be objects"]
+    if set(events) != {"unreachable", "withheld", "complete", "final_read"}:
+        errors.append("start-entrypoint event expectations have the wrong cases")
+    else:
+        complete = events["complete"]
+        if not isinstance(complete, list) or not complete or len(complete) != len(set(complete)):
+            errors.append("start-entrypoint complete events must be a non-empty unique sequence")
+        elif events["withheld"] != complete[:-1]:
+            errors.append("start-entrypoint withheld events must omit only daemon admission")
+        if events["final_read"] != complete:
+            errors.append("start-entrypoint final-read events must replay the complete durable sequence")
+        if events["unreachable"]:
+            errors.append("start-entrypoint unreachable listener must publish no events")
+    complete_barrier = barrier.get("complete")
+    if not isinstance(complete_barrier, dict) or set(complete_barrier) != {
+        "listener_served",
+        "request_seen",
+        "release_written",
+    } or any(value is not True for value in complete_barrier.values()):
+        errors.append("start-entrypoint complete barrier must carry three true event flags")
+    if set(termination) != {"unreachable", "withheld", "complete", "final_read"}:
+        errors.append("start-entrypoint termination expectations have the wrong cases")
+    else:
+        triggers = [item.get("trigger") for item in termination.values() if isinstance(item, dict)]
+        if len(triggers) != len(termination) or any(not isinstance(item, str) or not item for item in triggers):
+            errors.append("start-entrypoint termination cases must each name one trigger")
+        elif len(set(triggers)) != len(triggers):
+            errors.append("start-entrypoint termination triggers must be distinct")
+    if set(diagnostics) != {"withheld_admission", "event_sequence", "termination", "readiness"}:
+        errors.append("start-entrypoint diagnostic expectations have the wrong fields")
+    elif not all(isinstance(item, str) and item for item in diagnostics.values()):
+        errors.append("start-entrypoint diagnostics must be non-empty strings")
+    if set(validation_errors) != {"withheld", "final_read"}:
+        errors.append("start-entrypoint validation-error expectations have the wrong cases")
+    elif set(events) == {"unreachable", "withheld", "complete", "final_read"} and set(diagnostics) == {
+        "withheld_admission",
+        "event_sequence",
+        "termination",
+        "readiness",
+    }:
+        derived_withheld = [
+            diagnostics["withheld_admission"],
+            diagnostics["event_sequence"].format(
+                observed=events["withheld"],
+                expected=events["complete"],
+            ),
+            diagnostics["termination"],
+        ]
+        if validation_errors["withheld"] != derived_withheld:
+            errors.append("start-entrypoint withheld diagnostics are not derived from the event contract")
+        if validation_errors["final_read"] != [diagnostics["termination"]]:
+            errors.append("start-entrypoint final-read diagnostics are not derived from its termination mismatch")
+    return errors
+
+
+def start_entrypoint_daemon_lease_records(stderr: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for line in stderr.splitlines(keepends=True):
+        if not line.endswith(("\n", "\r")):
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(record, dict)
+            and set(record) == {"daemon_lease"}
+            and isinstance(record["daemon_lease"], dict)
+        ):
+            records.append(record["daemon_lease"])
+    return records
+
+
+def select_exact_start_entrypoint_admission(
+    stderr: str,
+    *,
+    readiness: object,
+    runtime_lock_pid: object,
+    expected_lease_path: Path,
+    expected_host: object,
+    expected_port: object,
+) -> tuple[dict[str, object] | None, list[str]]:
+    rejected: list[str] = []
+    for admission in start_entrypoint_daemon_lease_records(stderr):
+        missing = sorted(START_ENTRYPOINT_ADMISSION_FIELDS - set(admission))
+        errors = [f"missing fields {missing!r}"] if missing else []
+        readiness_exact = (
+            isinstance(readiness, dict)
+            and set(readiness) == {"event", "pid", "host", "port"}
+            and readiness.get("event") == "listener_bound"
+            and type(readiness.get("pid")) is int
+            and readiness.get("host") == expected_host
+            and readiness.get("port") == expected_port
+        )
+        if not readiness_exact:
+            errors.append("readiness does not identify the expected listener")
+        child_pid = admission.get("child_pid")
+        if admission.get("admitted") is not True:
+            errors.append("admitted is not true")
+        if type(child_pid) is not int or child_pid <= 0:
+            errors.append(f"child_pid is not a positive integer: {child_pid!r}")
+        if isinstance(readiness, dict) and readiness.get("pid") != child_pid:
+            errors.append(f"child_pid {child_pid!r} does not match readiness pid {readiness.get('pid')!r}")
+        if admission.get("lease_pid") != child_pid:
+            errors.append(f"lease_pid {admission.get('lease_pid')!r} does not match child_pid {child_pid!r}")
+        if admission.get("listener_pids") != [child_pid]:
+            errors.append(f"listener_pids {admission.get('listener_pids')!r} do not identify child_pid {child_pid!r}")
+        if admission.get("control_host") != expected_host:
+            errors.append(f"control_host {admission.get('control_host')!r} does not match {expected_host!r}")
+        if admission.get("control_port") != expected_port:
+            errors.append(f"control_port {admission.get('control_port')!r} does not match {expected_port!r}")
+        lease_path = admission.get("lease_path")
+        lease_path_matches = (
+            isinstance(lease_path, str)
+            and Path(lease_path).resolve() == expected_lease_path.resolve()
+        )
+        if not lease_path_matches:
+            errors.append(f"lease_path {lease_path!r} does not match {str(expected_lease_path)!r}")
+        if str(runtime_lock_pid or "") != str(child_pid or ""):
+            errors.append(f"runtime lock pid {runtime_lock_pid!r} does not match child_pid {child_pid!r}")
+        if admission.get("loop_state") != "running":
+            errors.append(f"loop_state is not running: {admission.get('loop_state')!r}")
+        if admission.get("snapshot_keys") != ["pending_reviews", "unclaimed_orders"]:
+            errors.append(f"snapshot_keys are not exact: {admission.get('snapshot_keys')!r}")
+        if not errors:
+            return admission, rejected
+        diagnostic = "; ".join(errors)
+        if diagnostic not in rejected:
+            rejected.append(diagnostic)
+    return None, rejected
+
+
+def replay_start_entrypoint_observation(
+    *,
+    readiness: object,
+    listener_served: bool,
+    request_seen: bool,
+    release_written: bool,
+    admission: dict[str, object] | None,
+    rejected_admissions: list[str],
+) -> dict[str, object]:
+    events: list[str] = []
+    if readiness is not None:
+        events.append("listener_bound")
+    if listener_served:
+        events.append("listener_served")
+    if request_seen:
+        events.append("former_grace_edge_without_admission")
+    if admission is not None:
+        events.append("daemon_lease")
+    return {
+        "readiness": readiness,
+        "admission": admission,
+        "rejected_admissions": rejected_admissions,
+        "events": events,
+        "barrier": {
+            "listener_served": listener_served,
+            "request_seen": request_seen,
+            "release_written": release_written,
+        },
+    }
 
 
 def start_entrypoint_with_delayed_listener(
-    delay: float = 0.25,
     interval: float = 0.05,
     *,
     start_listener: bool = True,
     runtime_start_delay: float = 0.7,
-    emit_admission_receipt: bool = False,
+    admission_observation: str = "visible",
 ) -> dict[str, object]:
+    if admission_observation not in {"visible", "withheld", "final_read"}:
+        raise AssertionError(f"unknown start-entrypoint admission observation {admission_observation!r}")
     temp, candidate = cursor_pstack_fixture()
     with temp:
         base = Path(temp.name)
@@ -1039,13 +1301,11 @@ def start_entrypoint_with_delayed_listener(
         bin_dir = base / "bin"
         bin_dir.mkdir()
         runtime = bin_dir / "noodle"
-        write_noodle_stub(
-            runtime, release, start_delay=runtime_start_delay, emit_admission_receipt=emit_admission_receipt
-        )
+        write_noodle_stub(runtime, release, start_delay=runtime_start_delay)
         _lock_start_runtime(candidate, runtime, release=release, commit=commit, asset_sha256=asset_sha256)
         cmd(["git", "add", "policy/runtime.lock.json"], candidate)
         cmd(["git", "commit", "-q", "-m", "runtime fixture"], candidate)
-        temp_control, control, provider = control_checkout_fixture(candidate)
+        temp_control, control, _provider = control_checkout_fixture(candidate)
         try:
             fake_gh = bin_dir / "gh"
             platform_key = runtime_contract.resolve_platform_key(error_cls=AssertionError)
@@ -1058,98 +1318,119 @@ def start_entrypoint_with_delayed_listener(
             )
             output = write_skill_discovery_fixture(control)
             port = _free_tcp_port()
-            control_url = f"http://127.0.0.1:{port}"
-            listener_ready = threading.Event()
-            listener_served = threading.Event()
-            listener_stop = threading.Event()
-            listener_state: dict[str, object] = {
-                "listener_ready": False,
-                "listener_served": False,
-                "listener_request_count": 0,
-                "listener_thread_alive": False,
-                "listener_error": None,
-                "listener_bound_port": port,
-                "listener_response": None,
-                "entrypoint_path": str(control / "noodles"),
-                "entrypoint_exists": (control / "noodles").exists(),
+            host = "127.0.0.1"
+            control_url = f"http://{host}:{port}"
+            admission_timeout = 5.0
+            receipt_timeout = 2.0
+            ready_path = base / "start-entrypoint.ready.json"
+            served_path = base / "start-entrypoint.listener-served"
+            request_path = base / "start-entrypoint.snapshot-requested"
+            release_path = base / "start-entrypoint.snapshot-release"
+            stop_path = base / "start-entrypoint.stop"
+            stdout_path = base / "start-entrypoint.stdout"
+            stderr_path = base / "start-entrypoint.stderr"
+            lock_path = control / daemon_lease.LOCK_RELATIVE
+            observation: dict[str, object] = {
+                "readiness": None,
+                "admission": None,
+                "rejected_admissions": [],
+                "events": [],
+                "barrier": {"listener_served": False, "request_seen": False, "release_written": False},
+                "termination": {"trigger": None},
+                "cleanup": {
+                    "stop_path_exists": False,
+                    "stop_path_content": None,
+                    "group_term_sent": False,
+                    "group_kill_sent": False,
+                    "process_reaped": False,
+                    "child_pid": None,
+                    "child_alive_after_exit": None,
+                },
             }
 
-            def poll_listener() -> None:
-                import urllib.error
+            def read_readiness() -> dict[str, object] | None:
+                return read_start_entrypoint_readiness(ready_path)
+
+            def read_runtime_lock_pid() -> str | None:
+                try:
+                    return lock_path.read_text(encoding="utf-8").strip()
+                except FileNotFoundError:
+                    return None
+
+            def read_admission(
+                readiness: object, *, phase: str
+            ) -> tuple[dict[str, object] | None, list[str]]:
+                try:
+                    stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+                except FileNotFoundError:
+                    stderr = ""
+                admission, rejected = select_exact_start_entrypoint_admission(
+                    stderr,
+                    readiness=readiness,
+                    runtime_lock_pid=read_runtime_lock_pid(),
+                    expected_lease_path=lock_path,
+                    expected_host=host,
+                    expected_port=port,
+                )
+                if admission_observation == "withheld":
+                    return None, rejected
+                if admission_observation == "final_read" and phase == "loop" and admission is not None:
+                    request_stub_stop()
+                    record_termination("fixture_final_read_boundary")
+                    if entrypoint is None or not wait_for_entrypoint(entrypoint, 30.0):
+                        raise AssertionError("start-entrypoint final-read boundary did not exit after fixture stop")
+                    return None, rejected
+                return admission, rejected
+
+            def replay_observation(
+                readiness: object,
+                admission: dict[str, object] | None,
+                rejected: list[str],
+            ) -> None:
+                observation.update(
+                    replay_start_entrypoint_observation(
+                        readiness=readiness,
+                        listener_served=served_path.exists(),
+                        request_seen=request_path.exists(),
+                        release_written=release_path.exists(),
+                        admission=admission,
+                        rejected_admissions=rejected,
+                    )
+                )
+
+            def record_termination(trigger: str) -> None:
+                termination = observation["termination"]
+                assert isinstance(termination, dict)
+                termination["trigger"] = trigger
+
+            def request_stub_stop() -> None:
+                stop_path.write_text("stop\n", encoding="utf-8")
+
+            def serve_legacy_probe() -> dict[str, object]:
                 import urllib.request
 
-                if not start_listener:
-                    return
-                try:
-                    while not listener_stop.is_set():
-                        try:
-                            with urllib.request.urlopen(f"{control_url}/api/snapshot", timeout=0.05) as response:
-                                listener_state["listener_ready"] = True
-                                listener_ready.set()
-                                body = json.loads(response.read().decode("utf-8"))
-                                listener_state["listener_request_count"] = (
-                                    int(listener_state["listener_request_count"]) + 1
-                                )
-                                listener_state["listener_response"] = body
-                                listener_state["listener_served"] = True
-                                listener_served.set()
-                                return
-                        except (urllib.error.URLError, OSError):
-                            pass
-                        listener_stop.wait(0.02)
-                except Exception as exc:
-                    listener_state["listener_error"] = f"{type(exc).__name__}: {exc}"
-                finally:
-                    listener_stop.set()
+                request = urllib.request.Request(
+                    f"{control_url}/api/snapshot",
+                    headers={"X-Noodles-Fixture-Probe": "served"},
+                )
+                with urllib.request.urlopen(request, timeout=1.0) as response:
+                    snapshot = json.loads(response.read().decode("utf-8"))
+                served_path.write_text("served\n", encoding="utf-8")
+                return snapshot
 
-            terminator_stop = threading.Event()
-            admission_timeout = max(5.0, delay * 8)
-            stderr_path = base / "start-entrypoint.stderr"
-            stderr_path.write_text("", encoding="utf-8")
-            listener_state["admission_receipt_seen"] = False
-            listener_state["admission_wait_seconds"] = None
+            def wait_for_entrypoint(entrypoint: subprocess.Popen[object], timeout: float) -> bool:
+                try:
+                    entrypoint.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    return False
+                return True
 
-            def terminate_runtime_when_ready() -> None:
-                # constraint: 15s ceiling only guards a genuinely broken (never-serving) listener from hanging the suite; happy path returns in well under a second
-                deadline = time.monotonic() + 15
-                while (
-                    not listener_served.is_set()
-                    and not terminator_stop.is_set()
-                    and time.monotonic() < deadline
-                ):
-                    time.sleep(0.02)
-                if terminator_stop.is_set():
-                    return
-                # constraint: see ADMISSION_RECEIPT_GRACE_SECONDS above for the grace ceiling rationale
-                grace_start = time.monotonic()
-                grace_deadline = grace_start + ADMISSION_RECEIPT_GRACE_SECONDS
-                while not terminator_stop.is_set() and time.monotonic() < grace_deadline:
-                    stderr_so_far = stderr_path.read_text(encoding="utf-8", errors="replace").replace(" ", "")
-                    if '"admitted":true' in stderr_so_far:
-                        listener_state["admission_receipt_seen"] = True
-                        break
-                    time.sleep(0.02)
-                listener_state["admission_wait_seconds"] = time.monotonic() - grace_start
-                if terminator_stop.is_set():
-                    return
-                lock_path = control / ".noodle" / "noodle.lock"
-                if not lock_path.exists():
-                    return
+            def signal_entrypoint_group(entrypoint: subprocess.Popen[object], sig: int) -> None:
                 try:
-                    pid = int(lock_path.read_text().strip())
-                except (OSError, ValueError):
-                    return
-                try:
-                    os.kill(pid, signal.SIGTERM)
+                    os.killpg(entrypoint.pid, sig)
                 except ProcessLookupError:
                     pass
 
-            listener_thread = threading.Thread(target=poll_listener, name="start-entrypoint-listener")
-            listener_thread.start()
-            terminator_thread = threading.Thread(
-                target=terminate_runtime_when_ready, name="start-entrypoint-terminator", daemon=True
-            )
-            terminator_thread.start()
             env = os.environ.copy()
             env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
             env["PYTHONPATH"] = str(CANDIDATE_ROOT)
@@ -1158,47 +1439,134 @@ def start_entrypoint_with_delayed_listener(
             env["NOODLES_TEST_START_PROJECT"] = str(control)
             env["NOODLES_TEST_START_PORT"] = str(port)
             env["NOODLES_TEST_START_SERVE"] = "1" if start_listener else "0"
+            env["NOODLES_TEST_START_READY_PATH"] = str(ready_path)
+            env["NOODLES_TEST_START_REQUEST_PATH"] = str(request_path)
+            env["NOODLES_TEST_START_RELEASE_PATH"] = str(release_path)
+            env["NOODLES_TEST_START_STOP_PATH"] = str(stop_path)
+            env["PYTHONUNBUFFERED"] = "1"
             codex_real_bin = codex_real_bin_export(base)
             if codex_real_bin is not None:
                 env["NOODLES_CODEX_REAL_BIN"] = codex_real_bin
-            with stderr_path.open("w", encoding="utf-8") as stderr_sink:
-                result = subprocess.run(
-                    [
-                        str(control / "noodles"),
-                        "start",
-                        "--control-url",
-                        control_url,
-                        "--interval",
-                        str(interval),
-                        "--admission-timeout",
-                        str(admission_timeout),
-                    ],
-                    cwd=control,
-                    env=env,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=stderr_sink,
-                    check=False,
-                )
-            listener_stop.set()
-            terminator_stop.set()
-            listener_thread.join(timeout=2)
-            terminator_thread.join(timeout=2)
-            listener_state["listener_thread_alive"] = listener_thread.is_alive()
-            lock_path = control / ".noodle" / "noodle.lock"
+            entrypoint: subprocess.Popen[object] | None = None
+            with stdout_path.open("w", encoding="utf-8") as stdout_sink, stderr_path.open(
+                "w", encoding="utf-8"
+            ) as stderr_sink:
+                try:
+                    entrypoint = subprocess.Popen(
+                        [
+                            str(control / "noodles"),
+                            "start",
+                            "--control-url",
+                            control_url,
+                            "--interval",
+                            str(interval),
+                            "--admission-timeout",
+                            str(admission_timeout),
+                        ],
+                        cwd=control,
+                        env=env,
+                        text=True,
+                        stdout=stdout_sink,
+                        stderr=stderr_sink,
+                        start_new_session=True,
+                    )
+                    runtime_spawn_deadline = time.monotonic() + 30.0
+                    readiness_deadline: float | None = None
+                    admission_deadline: float | None = None
+                    while True:
+                        readiness = read_readiness()
+                        admission, rejected = read_admission(readiness, phase="loop")
+                        now = time.monotonic()
+                        if read_runtime_lock_pid() is not None and readiness_deadline is None:
+                            readiness_deadline = now + admission_timeout + 2.0
+                        if isinstance(readiness, dict) and not served_path.exists():
+                            probe_response = serve_legacy_probe()
+                            if probe_response != {"pending_reviews": [], "unclaimed_orders": []}:
+                                raise AssertionError(
+                                    f"start-entrypoint legacy probe returned unexpected snapshot {probe_response!r}"
+                                )
+                        if (
+                            served_path.exists()
+                            and request_path.exists()
+                            and not release_path.exists()
+                        ):
+                            if admission is not None:
+                                raise AssertionError(
+                                    "entrypoint admission receipt arrived before the former grace edge barrier"
+                                )
+                            release_path.write_text("release\n", encoding="utf-8")
+                            admission_deadline = time.monotonic() + receipt_timeout
+                        replay_observation(readiness, admission, rejected)
+                        if isinstance(admission, dict):
+                            record_termination("entrypoint_admission")
+                            request_stub_stop()
+                            break
+                        if entrypoint.poll() is not None:
+                            termination = observation["termination"]
+                            assert isinstance(termination, dict)
+                            if termination.get("trigger") is None:
+                                record_termination("entrypoint_exited_before_admission")
+                            break
+                        if admission_deadline is not None and time.monotonic() >= admission_deadline:
+                            record_termination("missing_admission_timeout")
+                            request_stub_stop()
+                            break
+                        if readiness_deadline is not None and time.monotonic() >= readiness_deadline:
+                            record_termination("missing_listener_readiness_timeout")
+                            request_stub_stop()
+                            break
+                        if readiness_deadline is None and time.monotonic() >= runtime_spawn_deadline:
+                            record_termination("missing_runtime_spawn_timeout")
+                            request_stub_stop()
+                            break
+                        time.sleep(0.01)
+                    readiness = read_readiness()
+                    admission, rejected = read_admission(readiness, phase="final")
+                    replay_observation(readiness, admission, rejected)
+                finally:
+                    cleanup = observation["cleanup"]
+                    assert isinstance(cleanup, dict)
+                    if entrypoint is not None:
+                        if not stop_path.exists():
+                            request_stub_stop()
+                        if not wait_for_entrypoint(entrypoint, 30.0):
+                            signal_entrypoint_group(entrypoint, signal.SIGTERM)
+                            cleanup["group_term_sent"] = True
+                        if entrypoint.poll() is None and not wait_for_entrypoint(entrypoint, 2.0):
+                            signal_entrypoint_group(entrypoint, signal.SIGKILL)
+                            cleanup["group_kill_sent"] = True
+                        if entrypoint.poll() is None:
+                            wait_for_entrypoint(entrypoint, 2.0)
+                        cleanup["stop_path_exists"] = stop_path.exists()
+                        cleanup["stop_path_content"] = (
+                            stop_path.read_text(encoding="utf-8") if stop_path.exists() else None
+                        )
+                        cleanup["process_reaped"] = entrypoint.poll() is not None
+                        runtime_pid_text = read_runtime_lock_pid()
+                        runtime_pid = int(runtime_pid_text) if str(runtime_pid_text or "").isdigit() else None
+                        cleanup["child_pid"] = runtime_pid
+                        cleanup["child_alive_after_exit"] = (
+                            daemon_lease.process_alive(runtime_pid) if runtime_pid is not None else None
+                        )
+            assert entrypoint is not None
+            returncode = entrypoint.returncode
             status_path = control / ".noodle" / "status.json"
             runtime_lock_pid = lock_path.read_text().strip() if lock_path.exists() else None
             runtime_status = json.loads(status_path.read_text()) if status_path.exists() else None
             return {
-                "returncode": result.returncode,
-                "stdout": result.stdout,
+                "returncode": returncode,
+                "stdout": stdout_path.read_text(encoding="utf-8", errors="replace"),
                 "stderr": stderr_path.read_text(encoding="utf-8", errors="replace"),
                 "runtime_lock_pid": runtime_lock_pid,
+                "runtime_lease_path": str(lock_path),
                 "runtime_status": runtime_status,
+                "control_host": host,
                 "control_port": port,
-                "listener_after_exit": daemon_lease.listener_pids("127.0.0.1", port),
+                "listener_after_exit": daemon_lease.listener_pids(host, port),
                 "lease_after_exit": daemon_lease.read_lease(control)[1],
-                **listener_state,
+                "entrypoint_path": str(control / "noodles"),
+                "entrypoint_exists": (control / "noodles").exists(),
+                "observation": observation,
             }
         finally:
             temp_control.cleanup()
@@ -1209,21 +1577,106 @@ def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
     if receipt.get("returncode") != 0:
         errors.append(f"entrypoint returned {receipt.get('returncode')!r}: {receipt.get('stderr', '')}")
     stderr = str(receipt.get("stderr") or "")
+    observation = receipt.get("observation")
+    observed = observation if isinstance(observation, dict) else {}
+    readiness = observed.get("readiness")
+    expected_host = receipt.get("control_host")
+    expected_port = receipt.get("control_port")
+    admitted, rejected = select_exact_start_entrypoint_admission(
+        stderr,
+        readiness=readiness,
+        runtime_lock_pid=receipt.get("runtime_lock_pid"),
+        expected_lease_path=Path(str(receipt.get("runtime_lease_path") or "")),
+        expected_host=expected_host,
+        expected_port=expected_port,
+    )
+    if observed.get("admission") != admitted:
+        if admitted is not None and observed.get("admission") is None:
+            errors.append("start-entrypoint observer withheld a complete truthful Noodle daemon lease receipt")
+        else:
+            errors.append("observed admission does not match the exact emitted daemon lease receipt")
     connection_refusal_diagnosed = (
         "repair: Noodle control request failed" in stderr
-        or '"admitted":' in stderr
+        or admitted is not None
         or "noodles-start" in stderr
     )
     if not connection_refusal_diagnosed:
         errors.append("wrapper never diagnosed startup connection refusal on repair path")
-    if '"admitted":true' not in stderr.replace(" ", ""):
+    if admitted is None:
         errors.append("wrapper never admitted a truthful Noodle daemon lease")
-    if f'"listener_pids":[' not in stderr.replace(" ", ""):
+    if rejected:
+        errors.append("entrypoint rejected daemon lease admission records: " + " | ".join(rejected))
+    expected_events = [
+        "listener_bound",
+        "listener_served",
+        "former_grace_edge_without_admission",
+        "daemon_lease",
+    ]
+    if observed.get("events") != expected_events:
+        errors.append(
+            f"start-entrypoint event sequence is {observed.get('events')!r}, expected {expected_events!r}"
+        )
+    if observed.get("barrier") != {
+        "listener_served": True,
+        "request_seen": True,
+        "release_written": True,
+    }:
+        errors.append(f"start-entrypoint admission barrier did not complete: {observed.get('barrier')!r}")
+    readiness_exact = (
+        isinstance(readiness, dict)
+        and set(readiness) == {"event", "pid", "host", "port"}
+        and readiness.get("event") == "listener_bound"
+        and type(readiness.get("pid")) is int
+        and readiness.get("host") == expected_host
+        and readiness.get("port") == expected_port
+    )
+    if not readiness_exact:
+        errors.append("stub listener never reported exact bound readiness")
+    listener_pids = admitted.get("listener_pids") if admitted is not None else None
+    child_pid = admitted.get("child_pid") if admitted is not None else None
+    identities_match = (
+        admitted is not None
+        and type(child_pid) is int
+        and child_pid > 0
+        and isinstance(readiness, dict)
+        and readiness.get("pid") == child_pid
+        and admitted.get("lease_pid") == child_pid
+        and listener_pids == [child_pid]
+        and admitted.get("control_host") == expected_host
+        and admitted.get("control_port") == expected_port
+        and str(receipt.get("runtime_lock_pid") or "") == str(child_pid)
+        and str(receipt.get("lease_after_exit") or "") == str(child_pid)
+    )
+    if not identities_match:
         errors.append("listener ownership readback missing from the admission receipt")
     if "listener-absent" in stderr or "admission-timeout" in stderr:
         errors.append("listener never became reachable within bounded admission")
-    if '"loop_state":"running"' not in stderr.replace(" ", ""):
+    snapshot_keys = admitted.get("snapshot_keys") if admitted is not None else None
+    if (
+        admitted is None
+        or admitted.get("loop_state") != "running"
+        or snapshot_keys != ["pending_reviews", "unclaimed_orders"]
+    ):
         errors.append("listener never served snapshot readback with a live runtime status")
+    termination = observed.get("termination")
+    if not isinstance(termination, dict) or termination != {"trigger": "entrypoint_admission"}:
+        errors.append("runtime termination was not triggered by the entrypoint admission receipt")
+    cleanup = observed.get("cleanup")
+    cleanup_complete = (
+        isinstance(cleanup, dict)
+        and cleanup.get("stop_path_exists") is True
+        and cleanup.get("stop_path_content") == "stop\n"
+        and cleanup.get("group_term_sent") is False
+        and cleanup.get("group_kill_sent") is False
+        and cleanup.get("process_reaped") is True
+        and type(cleanup.get("child_pid")) is int
+        and cleanup.get("child_pid") > 0
+        and cleanup.get("child_alive_after_exit") is False
+    )
+    if not cleanup_complete:
+        errors.append(f"entrypoint cleanup was not graceful and complete: {cleanup!r}")
+    elif admitted is not None and cleanup.get("child_pid") != child_pid:
+        errors.append("cleanup child pid does not match the admitted daemon child")
     if "Traceback" in stderr:
         errors.append("wrapper terminated with traceback instead of failing closed")
     if receipt.get("entrypoint_exists") is not True:
