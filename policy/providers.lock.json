@@ -1,5 +1,27 @@
 {
   "schema_version": 1,
+  "code_intel": {
+    "authority": "P",
+    "purpose": "Exact-commit navigation over a foreign clone. Candidate-only; never source truth, absence proof, or edit authority.",
+    "indexer": {
+      "tool": "scip-python",
+      "version": "0.6.6",
+      "commit": "8b60bbce1f2a4c7a517776cb395bbafb2e731e4f",
+      "source": "https://github.com/sourcegraph/scip-python.git",
+      "distribution": "npm:@sourcegraph/scip-python@0.6.6",
+      "binary_sha256": "ce60dd39157c8f52d8f9de8f060743e1135b697c52253de65521a19b84e19d2a",
+      "version_argv": ["scip-python", "--version"]
+    },
+    "reader": {
+      "tool": "scip",
+      "version": "v0.9.0",
+      "commit": "e8ee0ae6038f8298e2195812eea9d7b1196748ae",
+      "source": "https://github.com/sourcegraph/scip.git",
+      "distribution": "go:github.com/sourcegraph/scip/cmd/scip@v0.9.0",
+      "binary_sha256": "6811e28df24dbc567d7b40c43a035568811b9f4377248a4a6d8a78488acf2dd1",
+      "version_argv": ["scip", "--version"]
+    }
+  },
   "providers": [
     {
       "name": "cursor-pstack",

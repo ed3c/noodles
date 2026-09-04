@@ -33,6 +33,7 @@
           "commit_identity",
           "compare_changed_files",
           "contract_component_bypass_errors",
+          "cross_repository_receipt_errors",
           "cross_surface_import_edges",
           "cycle_status",
           "declared_markers",

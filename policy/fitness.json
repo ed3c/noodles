@@ -9,11 +9,11 @@
   "max_enabled_providers": 2,
   "max_cross_surface_import_edges": {
     "carrier": 40,
-    "docs": 86,
-    "schedule": 42,
-    "verify": 33
+    "docs": 88,
+    "schedule": 44,
+    "verify": 35
   },
-  "max_unowned_top_level_definitions": 119,
+  "max_unowned_top_level_definitions": 120,
   "max_workflows": 5,
   "struggle_same_signature_attempts": 3,
   "required_noodle_mode": "supervised",

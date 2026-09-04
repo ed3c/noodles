@@ -613,6 +613,13 @@
       "literal": "[True, False]",
       "disposition": "invariant",
       "reason": "The two booleans describe the test's own fixed elder/duplicate fixture after two synchronizations: the elder remains schedulable and the duplicate remains structurally held. They are behavioral outcomes of synthetic inputs authored in this test, not a candidate-current repository inventory."
+    },
+    {
+      "path": "tests/test_code_intel_surface.py",
+      "test": "LiveCodeIntelCeremonyTests.test_checkout_indexes_at_the_exact_commit_and_lookup_resolves_a_known_symbol",
+      "literal": "'feature_contract.py'",
+      "disposition": "invariant",
+      "reason": "The round trip's own input echoed back: the same test calls code_intel_lookup with module 'feature_contract', and this asserts the resolved definition landed in that module's file rather than in another one. It is the module-to-path identity the lookup is being tested for, not a candidate-current inventory - renaming the module moves the call and the assertion together in one atom, and the definition's own line is read back from the clone rather than pinned."
     }
   ]
 }
