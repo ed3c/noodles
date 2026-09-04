@@ -19,7 +19,6 @@ import noodles
 import runtime_contract
 import skill_contract
 from tests.support import (
-    ADMISSION_RECEIPT_GRACE_SECONDS,
     CANDIDATE_ROOT,
     ENGINE_ROOT,
     backlog_project,
@@ -31,10 +30,14 @@ from tests.support import (
     graphql_backlog_payload,
     handoff_fixture,
     provider_fixture,
+    read_start_entrypoint_readiness,
+    select_exact_start_entrypoint_admission,
     runtime_lock_shape_errors,
     runtime_release_reader,
     assert_valid_start_entrypoint_receipt,
     script_mode_gateerror_identity,
+    start_entrypoint_expectation_errors,
+    start_entrypoint_expectations,
     start_entrypoint_with_delayed_listener,
     tree_digest,
     validate_script_mode_gateerror_identity,
@@ -1295,6 +1298,35 @@ class FixtureTeardownTests(unittest.TestCase):
 
 
 class StartUnattendedTests(unittest.TestCase):
+    def test_missing_start_readiness_is_the_only_wait_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-start-readiness-", ignore_cleanup_errors=True) as name:
+            path = Path(name) / "readiness.json"
+            self.assertIsNone(read_start_entrypoint_readiness(path))
+
+    def test_malformed_start_readiness_fails_fast_with_its_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-start-readiness-", ignore_cleanup_errors=True) as name:
+            path = Path(name) / "readiness.json"
+            path.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "contains malformed JSON") as raised:
+                read_start_entrypoint_readiness(path)
+            self.assertIn(str(path), str(raised.exception))
+
+    def test_non_object_start_readiness_fails_fast_with_its_path_and_shape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-start-readiness-", ignore_cleanup_errors=True) as name:
+            path = Path(name) / "readiness.json"
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "must be a JSON object, got list") as raised:
+                read_start_entrypoint_readiness(path)
+            self.assertIn(str(path), str(raised.exception))
+
+    def test_non_enoent_start_readiness_io_failure_fails_fast_with_its_path(self) -> None:
+        path = Path("/fixture/exact/start-entrypoint.ready.json")
+        failure = PermissionError(13, "permission denied")
+        with mock.patch.object(Path, "read_text", side_effect=failure):
+            with self.assertRaisesRegex(AssertionError, "PermissionError:.*permission denied") as raised:
+                read_start_entrypoint_readiness(path)
+        self.assertIn(str(path), str(raised.exception))
+
     def test_control_checkout_admission_fails_before_runtime_provider_sync_or_spawn(self) -> None:
         with mock.patch.object(noodles, "control_checkout_admission", side_effect=noodles.GateError("dirty")) as admit, \
              mock.patch.object(noodles, "verify_repository") as verify, \
@@ -1431,83 +1463,260 @@ class StartUnattendedTests(unittest.TestCase):
         assert_valid_start_entrypoint_receipt(result)
 
     def test_documented_start_entrypoint_negative_control_detects_unreachable_listener(self) -> None:
+        expected = start_entrypoint_expectations()
+        self.assertEqual(start_entrypoint_expectation_errors(expected), [])
         result = start_entrypoint_with_delayed_listener(start_listener=False)
-        with self.assertRaisesRegex(AssertionError, "listener never became reachable|listener never served snapshot readback"):
-            assert_valid_start_entrypoint_receipt(result)
+        observation = result.get("observation")
+        self.assertIsInstance(observation, dict)
+        assert isinstance(observation, dict)
+        self.assertIsNone(observation.get("readiness"))
+        self.assertIsNone(observation.get("admission"))
+        self.assertEqual(observation.get("events"), [])
+        cleanup = observation.get("cleanup")
+        self.assertIsInstance(cleanup, dict)
+        assert isinstance(cleanup, dict)
+        self.assertIs(cleanup.get("process_reaped"), True)
+        self.assertIs(cleanup.get("child_alive_after_exit"), False)
+        self.assertEqual(result.get("listener_after_exit"), [])
+        self.assertEqual(observation.get("termination"), expected["termination"]["unreachable"])
+        self.assertIn("noodles-start lease-child-exited:", str(result.get("stderr")))
+        errors = validate_start_entrypoint_receipt(result)
+        self.assertIn(expected["diagnostics"]["readiness"], errors)
+        self.assertNotIn(
+            expected["diagnostics"]["withheld_admission"],
+            errors,
+        )
 
     def test_offline_start_entrypoint_retries_delayed_listener_with_codex_real_bin_exported(self) -> None:
         with mock.patch.dict(os.environ, {"NOODLES_OFFLINE_TESTS": "1"}, clear=False):
             result = start_entrypoint_with_delayed_listener()
         assert_valid_start_entrypoint_receipt(result)
 
-    def test_start_entrypoint_terminates_promptly_on_admission_receipt_line(self) -> None:
-        # constraint: planted control - stub prints the admission receipt line, so termination must land well before the grace ceiling, proving the line-triggered path fires
-        result = start_entrypoint_with_delayed_listener(emit_admission_receipt=True)
-        assert_valid_start_entrypoint_receipt(result)
-        self.assertIs(result.get("admission_receipt_seen"), True)
-        wait_seconds = result.get("admission_wait_seconds")
-        assert isinstance(wait_seconds, float)
-        self.assertLess(
-            wait_seconds,
-            ADMISSION_RECEIPT_GRACE_SECONDS / 2,
-            "admission receipt line took as long to notice as a silent entrypoint would",
-        )
-
-    def _assert_admission_termination_shape(self, result) -> None:
-        # constraint: two-state oracle - an entrypoint with real admission (ed3c/noodles#45 candidate) admits against the serving stub and emits its receipt, so termination must be receipt-triggered; one without (current main) never prints the line, so termination must fall back to the grace deadline
-        wait_seconds = result.get("admission_wait_seconds")
-        assert isinstance(wait_seconds, float)
-        if result.get("admission_receipt_seen") is True:
-            self.assertLess(
-                wait_seconds,
-                ADMISSION_RECEIPT_GRACE_SECONDS / 2,
-                "entrypoint emitted an admission receipt yet termination waited for the grace ceiling",
-            )
-        else:
-            self.assertIs(result.get("admission_receipt_seen"), False)
-            self.assertGreaterEqual(
-                wait_seconds,
-                ADMISSION_RECEIPT_GRACE_SECONDS - 0.5,
-                "silent entrypoint was terminated before the grace ceiling elapsed",
-            )
-            self.assertLess(
-                wait_seconds,
-                ADMISSION_RECEIPT_GRACE_SECONDS + 2,
-                "terminator overran the grace ceiling by more than scheduling slack accounts for",
-            )
-
-    def test_start_entrypoint_terminates_at_grace_deadline_when_admission_receipt_never_arrives(self) -> None:
+    def test_start_entrypoint_terminates_on_its_admission_receipt(self) -> None:
+        expected = start_entrypoint_expectations()
         result = start_entrypoint_with_delayed_listener()
         assert_valid_start_entrypoint_receipt(result)
-        self._assert_admission_termination_shape(result)
+        observation = result.get("observation")
+        self.assertIsInstance(observation, dict)
+        assert isinstance(observation, dict)
+        events = observation.get("events")
+        self.assertIsInstance(events, list)
+        assert isinstance(events, list)
+        self.assertEqual(
+            events,
+            expected["events"]["complete"],
+        )
+        self.assertEqual(observation.get("barrier"), expected["barrier"]["complete"])
+        self.assertEqual(observation.get("termination"), expected["termination"]["complete"])
 
-    def test_admission_termination_shape_rejects_mismatched_states(self) -> None:
-        # constraint: planted control - proves both branches of the two-state oracle are falsifiable rather than vacuous
-        with self.assertRaises(AssertionError):
-            self._assert_admission_termination_shape(
-                {"admission_receipt_seen": True, "admission_wait_seconds": ADMISSION_RECEIPT_GRACE_SECONDS + 0.1}
-            )
-        with self.assertRaises(AssertionError):
-            self._assert_admission_termination_shape(
-                {"admission_receipt_seen": False, "admission_wait_seconds": 0.1}
-            )
+    def test_start_entrypoint_selector_rejects_partial_admission(self) -> None:
+        selected, rejected = select_exact_start_entrypoint_admission(
+            json.dumps({"daemon_lease": {"admitted": True}}, separators=(",", ":"), sort_keys=True) + "\n",
+            readiness={"event": "listener_bound", "pid": 4242, "host": "127.0.0.1", "port": 3210},
+            runtime_lock_pid="4242",
+            expected_lease_path=Path("/tmp/project/.noodle/noodle.lock"),
+            expected_host="127.0.0.1",
+            expected_port=3210,
+        )
+        self.assertIsNone(selected)
+        self.assertTrue(any("missing fields" in item for item in rejected), rejected)
+
+    def test_start_entrypoint_negative_control_withholds_complete_admission_after_request(self) -> None:
+        expected = start_entrypoint_expectations()
+        result = start_entrypoint_with_delayed_listener(admission_observation="withheld")
+        observation = result.get("observation")
+        self.assertIsInstance(observation, dict)
+        assert isinstance(observation, dict)
+        readiness = observation.get("readiness")
+        self.assertIsInstance(readiness, dict)
+        self.assertIsNone(observation.get("admission"))
+        raw_admission, rejected = select_exact_start_entrypoint_admission(
+            str(result.get("stderr") or ""),
+            readiness=readiness,
+            runtime_lock_pid=result.get("runtime_lock_pid"),
+            expected_lease_path=Path(str(result.get("runtime_lease_path") or "")),
+            expected_host=result.get("control_host"),
+            expected_port=result.get("control_port"),
+        )
+        self.assertIsInstance(raw_admission, dict)
+        self.assertEqual(rejected, [])
+        events = observation.get("events")
+        self.assertEqual(
+            events,
+            expected["events"]["withheld"],
+        )
+        self.assertEqual(
+            observation.get("barrier"),
+            expected["barrier"]["complete"],
+        )
+        self.assertEqual(observation.get("termination"), expected["termination"]["withheld"])
+        cleanup = observation.get("cleanup")
+        self.assertIsInstance(cleanup, dict)
+        assert isinstance(cleanup, dict)
+        self.assertIs(cleanup.get("process_reaped"), True)
+        self.assertIs(cleanup.get("child_alive_after_exit"), False)
+        self.assertEqual(result.get("listener_after_exit"), [])
+        errors = validate_start_entrypoint_receipt(result)
+        self.assertEqual(
+            errors,
+            expected["validation_errors"]["withheld"],
+        )
+        self.assertNotIn(expected["diagnostics"]["readiness"], errors)
+
+        premature = start_entrypoint_with_delayed_listener(complete_shutdown_handshake=False)
+        premature_observation = premature.get("observation")
+        self.assertIsInstance(premature_observation, dict)
+        assert isinstance(premature_observation, dict)
+        self.assertEqual(
+            premature_observation.get("barrier"),
+            expected["barrier"]["premature_shutdown"],
+        )
+        self.assertEqual(
+            premature_observation.get("termination"),
+            expected["termination"]["complete"],
+        )
+        premature_cleanup = premature_observation.get("cleanup")
+        self.assertIsInstance(premature_cleanup, dict)
+        assert isinstance(premature_cleanup, dict)
+        self.assertIs(premature_cleanup.get("stop_request_path_exists"), True)
+        self.assertEqual(premature_cleanup.get("stop_request_path_content"), "stop_requested\n")
+        self.assertIs(premature_cleanup.get("stop_path_exists"), True)
+        self.assertEqual(premature_cleanup.get("stop_path_content"), "stop\n")
+        self.assertIs(premature_cleanup.get("group_term_sent"), False)
+        self.assertIs(premature_cleanup.get("group_kill_sent"), False)
+        self.assertIs(premature_cleanup.get("process_reaped"), True)
+        self.assertIs(premature_cleanup.get("child_alive_after_exit"), False)
+        self.assertEqual(premature.get("listener_after_exit"), [])
+        self.assertEqual(premature.get("returncode"), 1)
+        self.assertIn("RemoteDisconnected", str(premature.get("stderr")))
+        self.assertIn("Traceback", str(premature.get("stderr")))
+
+    def test_start_entrypoint_final_read_replays_durable_events_without_rewriting_termination(self) -> None:
+        expected = start_entrypoint_expectations()
+        result = start_entrypoint_with_delayed_listener(admission_observation="final_read")
+        observation = result.get("observation")
+        self.assertIsInstance(observation, dict)
+        assert isinstance(observation, dict)
+        self.assertIsInstance(observation.get("admission"), dict)
+        self.assertEqual(
+            observation.get("events"),
+            expected["events"]["final_read"],
+        )
+        self.assertEqual(observation.get("barrier"), expected["barrier"]["complete"])
+        self.assertEqual(observation.get("termination"), expected["termination"]["final_read"])
+        cleanup = observation.get("cleanup")
+        self.assertIsInstance(cleanup, dict)
+        assert isinstance(cleanup, dict)
+        self.assertIs(cleanup.get("process_reaped"), True)
+        self.assertIs(cleanup.get("child_alive_after_exit"), False)
+        self.assertEqual(result.get("listener_after_exit"), [])
+        self.assertEqual(
+            validate_start_entrypoint_receipt(result),
+            expected["validation_errors"]["final_read"],
+        )
+
+    def test_start_entrypoint_selector_rejects_wrong_identity(self) -> None:
+        admission = {
+            "admitted": True,
+            "child_pid": 9999,
+            "control_host": "127.0.0.1",
+            "control_port": 3210,
+            "lease_path": "/tmp/project/.noodle/noodle.lock",
+            "lease_pid": 9999,
+            "listener_pids": [9999],
+            "loop_state": "running",
+            "snapshot_keys": ["pending_reviews", "unclaimed_orders"],
+        }
+        selected, rejected = select_exact_start_entrypoint_admission(
+            json.dumps({"daemon_lease": admission}, separators=(",", ":"), sort_keys=True) + "\n",
+            readiness={"event": "listener_bound", "pid": 4242, "host": "127.0.0.1", "port": 3210},
+            runtime_lock_pid="4242",
+            expected_lease_path=Path("/tmp/project/.noodle/noodle.lock"),
+            expected_host="127.0.0.1",
+            expected_port=3210,
+        )
+        self.assertIsNone(selected)
+        self.assertTrue(any("does not match readiness pid 4242" in item for item in rejected), rejected)
 
     def test_start_entrypoint_receipt_accepts_admission_evidence_without_legacy_repair_diagnostic(self) -> None:
-        # constraint: planted control - the ed3c/noodles#45 lease-admission candidate replaces the repair-retry path entirely, so this stderr never carries the legacy diagnostic; shape matches noodles.py's real compact `{"daemon_lease": receipt}` emission
+        expected = start_entrypoint_expectations()
+        admission = {
+            "admitted": True,
+            "child_pid": 4242,
+            "control_host": "127.0.0.1",
+            "control_port": 3210,
+            "lease_path": "/tmp/project/.noodle/noodle.lock",
+            "lease_pid": 4242,
+            "listener_pids": [4242],
+            "loop_state": "running",
+            "snapshot_keys": ["pending_reviews", "unclaimed_orders"],
+        }
         receipt = {
             "returncode": 0,
-            "stderr": '{"daemon_lease":{"admitted":true,"listener_pids":[4242],"loop_state":"running"}}\n',
+            "stderr": json.dumps({"daemon_lease": admission}, separators=(",", ":"), sort_keys=True) + "\n",
+            "runtime_lock_pid": "4242",
+            "runtime_lease_path": "/tmp/project/.noodle/noodle.lock",
+            "control_host": "127.0.0.1",
+            "control_port": 3210,
+            "observation": {
+                "readiness": {"event": "listener_bound", "pid": 4242, "host": "127.0.0.1", "port": 3210},
+                "admission": admission,
+                "rejected_admissions": [],
+                "events": expected["events"]["complete"],
+                "barrier": expected["barrier"]["complete"],
+                "termination": {"trigger": "entrypoint_admission"},
+                "cleanup": {
+                    "stop_request_path_exists": True,
+                    "stop_request_path_content": "stop_requested\n",
+                    "stop_path_exists": True,
+                    "stop_path_content": "stop\n",
+                    "group_term_sent": False,
+                    "group_kill_sent": False,
+                    "process_reaped": True,
+                    "child_pid": 4242,
+                    "child_alive_after_exit": False,
+                },
+            },
             "entrypoint_exists": True,
             "listener_after_exit": [],
             "lease_after_exit": "4242",
         }
         self.assertEqual(validate_start_entrypoint_receipt(receipt), [])
+        cleanup = receipt["observation"]["cleanup"]
+        assert isinstance(cleanup, dict)
+        cleanup["child_alive_after_exit"] = True
+        self.assertTrue(
+            any("entrypoint cleanup was not graceful and complete" in error for error in validate_start_entrypoint_receipt(receipt))
+        )
 
     def test_start_entrypoint_receipt_rejects_stderr_with_neither_diagnostic(self) -> None:
-        # constraint: planted control - stderr carries neither the legacy repair diagnostic nor admission-path evidence, so both the widened connection check and the lane's admission assertions must fail
+        expected = start_entrypoint_expectations()
         receipt = {
             "returncode": 0,
             "stderr": "nothing relevant here\n",
+            "control_host": "127.0.0.1",
+            "control_port": 3210,
+            "runtime_lease_path": "/tmp/project/.noodle/noodle.lock",
+            "runtime_lock_pid": "4242",
+            "observation": {
+                "readiness": None,
+                "admission": None,
+                "events": [],
+                "rejected_admissions": [],
+                "barrier": expected["barrier"]["unreachable"],
+                "termination": {"trigger": "entrypoint_admission"},
+                "cleanup": {
+                    "stop_request_path_exists": True,
+                    "stop_request_path_content": "stop_requested\n",
+                    "stop_path_exists": True,
+                    "stop_path_content": "stop\n",
+                    "group_term_sent": False,
+                    "group_kill_sent": False,
+                    "process_reaped": True,
+                    "child_pid": 4242,
+                    "child_alive_after_exit": False,
+                },
+            },
             "entrypoint_exists": True,
             "listener_after_exit": [],
             "lease_after_exit": "4242",
@@ -1517,6 +1726,9 @@ class StartUnattendedTests(unittest.TestCase):
             [
                 "wrapper never diagnosed startup connection refusal on repair path",
                 "wrapper never admitted a truthful Noodle daemon lease",
+                f"start-entrypoint event sequence is [], expected {expected['events']['complete']!r}",
+                f"start-entrypoint admission barrier did not complete: {expected['barrier']['unreachable']!r}",
+                "stub listener never reported exact bound readiness",
                 "listener ownership readback missing from the admission receipt",
                 "listener never served snapshot readback with a live runtime status",
             ],
@@ -1524,6 +1736,7 @@ class StartUnattendedTests(unittest.TestCase):
 
     def test_start_entrypoint_stub_materializes_live_looking_runtime_surface(self) -> None:
         def assert_materialized(receipt: dict[str, object]) -> None:
+            assert_valid_start_entrypoint_receipt(receipt)
             lock_pid = receipt.get("runtime_lock_pid")
             self.assertIsNotNone(lock_pid, "stub never claimed a runtime lock")
             self.assertTrue(str(lock_pid).isdigit(), f"lock did not name a pid: {lock_pid!r}")
@@ -1531,11 +1744,6 @@ class StartUnattendedTests(unittest.TestCase):
             self.assertIsInstance(status, dict, f"stub never published status.json: {status!r}")
             assert isinstance(status, dict)
             self.assertEqual(status.get("loop_state"), "running")
-            self.assertEqual(
-                receipt.get("listener_response"),
-                {"pending_reviews": [], "unclaimed_orders": []},
-                "stub never served a valid /api/snapshot response",
-            )
 
         assert_materialized(start_entrypoint_with_delayed_listener())
 
