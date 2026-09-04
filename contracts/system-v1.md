@@ -147,6 +147,8 @@ Every authoritative completion path MUST preserve exact Issue subject, repositor
 
 A discovered implicit dependency MUST become an explicit probe, gate, or typed marker within one atom. `./noodles preflight` is the execute-environment admission boundary. It probes the Python runtime, provider network reach, GitHub authentication readback, Git metadata writes, and feature-verifier availability. The command rejects a missing capability before source edits and does not repair the environment.
 
+The authentication readback MUST be bound to the access, never to one transport that carries it. It is answered by the first registered credential adapter whose transport is PRESENT, and no present transport at all is a refusal naming every transport tried. Each adapter MUST read the ambient identity's own access and MUST NOT mint or swap a credential; an adapter that would is a `./noodles verify` error, so recognizing a non-`gh` arrival never becomes a bypass.
+
 ## 6. Verification architecture
 
 Tests pass != full product verification when the Issue claims CLI, UI, runtime, performance, provider, or other observable behavior beyond repository acceptance.

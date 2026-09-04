@@ -7,6 +7,8 @@
         "definitions": [
           "GateError",
           "Subject",
+          "_credential_adapter_connector",
+          "_credential_adapter_gh",
           "_preflight_command",
           "_preflight_feature_verify",
           "_preflight_git_metadata",
@@ -33,6 +35,7 @@
           "commit_identity",
           "compare_changed_files",
           "contract_component_bypass_errors",
+          "credential_adapter_errors",
           "cross_surface_import_edges",
           "cycle_status",
           "declared_markers",
