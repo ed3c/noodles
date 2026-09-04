@@ -1563,6 +1563,34 @@ class StartUnattendedTests(unittest.TestCase):
         )
         self.assertNotIn(expected["diagnostics"]["readiness"], errors)
 
+        premature = start_entrypoint_with_delayed_listener(complete_shutdown_handshake=False)
+        premature_observation = premature.get("observation")
+        self.assertIsInstance(premature_observation, dict)
+        assert isinstance(premature_observation, dict)
+        self.assertEqual(
+            premature_observation.get("barrier"),
+            expected["barrier"]["premature_shutdown"],
+        )
+        self.assertEqual(
+            premature_observation.get("termination"),
+            expected["termination"]["complete"],
+        )
+        premature_cleanup = premature_observation.get("cleanup")
+        self.assertIsInstance(premature_cleanup, dict)
+        assert isinstance(premature_cleanup, dict)
+        self.assertIs(premature_cleanup.get("stop_request_path_exists"), True)
+        self.assertEqual(premature_cleanup.get("stop_request_path_content"), "stop_requested\n")
+        self.assertIs(premature_cleanup.get("stop_path_exists"), True)
+        self.assertEqual(premature_cleanup.get("stop_path_content"), "stop\n")
+        self.assertIs(premature_cleanup.get("group_term_sent"), False)
+        self.assertIs(premature_cleanup.get("group_kill_sent"), False)
+        self.assertIs(premature_cleanup.get("process_reaped"), True)
+        self.assertIs(premature_cleanup.get("child_alive_after_exit"), False)
+        self.assertEqual(premature.get("listener_after_exit"), [])
+        self.assertEqual(premature.get("returncode"), 1)
+        self.assertIn("RemoteDisconnected", str(premature.get("stderr")))
+        self.assertIn("Traceback", str(premature.get("stderr")))
+
     def test_start_entrypoint_final_read_replays_durable_events_without_rewriting_termination(self) -> None:
         expected = start_entrypoint_expectations()
         result = start_entrypoint_with_delayed_listener(admission_observation="final_read")
@@ -1611,6 +1639,7 @@ class StartUnattendedTests(unittest.TestCase):
         self.assertTrue(any("does not match readiness pid 4242" in item for item in rejected), rejected)
 
     def test_start_entrypoint_receipt_accepts_admission_evidence_without_legacy_repair_diagnostic(self) -> None:
+        expected = start_entrypoint_expectations()
         admission = {
             "admitted": True,
             "child_pid": 4242,
@@ -1633,10 +1662,12 @@ class StartUnattendedTests(unittest.TestCase):
                 "readiness": {"event": "listener_bound", "pid": 4242, "host": "127.0.0.1", "port": 3210},
                 "admission": admission,
                 "rejected_admissions": [],
-                "events": ["listener_bound", "listener_served", "former_grace_edge_without_admission", "daemon_lease"],
-                "barrier": {"listener_served": True, "request_seen": True, "release_written": True},
+                "events": expected["events"]["complete"],
+                "barrier": expected["barrier"]["complete"],
                 "termination": {"trigger": "entrypoint_admission"},
                 "cleanup": {
+                    "stop_request_path_exists": True,
+                    "stop_request_path_content": "stop_requested\n",
                     "stop_path_exists": True,
                     "stop_path_content": "stop\n",
                     "group_term_sent": False,
@@ -1659,6 +1690,7 @@ class StartUnattendedTests(unittest.TestCase):
         )
 
     def test_start_entrypoint_receipt_rejects_stderr_with_neither_diagnostic(self) -> None:
+        expected = start_entrypoint_expectations()
         receipt = {
             "returncode": 0,
             "stderr": "nothing relevant here\n",
@@ -1671,9 +1703,11 @@ class StartUnattendedTests(unittest.TestCase):
                 "admission": None,
                 "events": [],
                 "rejected_admissions": [],
-                "barrier": {"listener_served": False, "request_seen": False, "release_written": False},
+                "barrier": expected["barrier"]["unreachable"],
                 "termination": {"trigger": "entrypoint_admission"},
                 "cleanup": {
+                    "stop_request_path_exists": True,
+                    "stop_request_path_content": "stop_requested\n",
                     "stop_path_exists": True,
                     "stop_path_content": "stop\n",
                     "group_term_sent": False,
@@ -1692,8 +1726,8 @@ class StartUnattendedTests(unittest.TestCase):
             [
                 "wrapper never diagnosed startup connection refusal on repair path",
                 "wrapper never admitted a truthful Noodle daemon lease",
-                "start-entrypoint event sequence is [], expected ['listener_bound', 'listener_served', 'former_grace_edge_without_admission', 'daemon_lease']",
-                "start-entrypoint admission barrier did not complete: {'listener_served': False, 'request_seen': False, 'release_written': False}",
+                f"start-entrypoint event sequence is [], expected {expected['events']['complete']!r}",
+                f"start-entrypoint admission barrier did not complete: {expected['barrier']['unreachable']!r}",
                 "stub listener never reported exact bound readiness",
                 "listener ownership readback missing from the admission receipt",
                 "listener never served snapshot readback with a live runtime status",

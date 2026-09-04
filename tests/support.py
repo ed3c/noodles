@@ -407,23 +407,90 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "    stop_path = pathlib.Path(os.environ['NOODLES_TEST_START_STOP_PATH'])\n"
             "    (project / '.noodle').mkdir(parents=True, exist_ok=True)\n"
             "    (project / '.noodle' / 'noodle.lock').write_text(str(os.getpid()))\n"
+            "    import threading\n"
+            "    snapshot_state_path = pathlib.Path(os.environ['NOODLES_TEST_START_SNAPSHOT_STATE_PATH'])\n"
+            "    stop_request_path = pathlib.Path(os.environ['NOODLES_TEST_START_STOP_REQUEST_PATH'])\n"
             f"    time.sleep({start_delay!r})\n"
             "    (project / '.noodle' / 'status.json').write_text(\n"
             "        json.dumps({'loop_state': 'running', 'mode': 'supervised', 'max_concurrency': 4})\n"
             "    )\n"
             "    if os.environ.get('NOODLES_TEST_START_SERVE') == '1':\n"
+            "        state_lock = threading.Lock()\n"
+            "        post_admission_request_started = threading.Event()\n"
+            "        post_admission_response_completed = threading.Event()\n"
+            "        stop_request_released = threading.Event()\n"
+            "        snapshot_state = {\n"
+            "            'requests': 0,\n"
+            "            'responses': 0,\n"
+            "            'post_admission_request_started': False,\n"
+            "            'post_admission_response_completed': False,\n"
+            "            'stop_requested_before_post_admission_response': False,\n"
+            "        }\n"
+            "        def write_snapshot_state():\n"
+            "            state_temp = snapshot_state_path.with_name(\n"
+            "                snapshot_state_path.name + f'.{os.getpid()}.tmp'\n"
+            "            )\n"
+            "            state_temp.write_text(json.dumps(snapshot_state, separators=(',', ':'), sort_keys=True))\n"
+            "            os.replace(state_temp, snapshot_state_path)\n"
+            "        write_snapshot_state()\n"
             "        class Handler(http.server.BaseHTTPRequestHandler):\n"
             "            def do_GET(self):\n"
+            "                if self.path == '/fixture/post-admission-request-started':\n"
+            "                    if not post_admission_request_started.wait(timeout=30.0):\n"
+            "                        self.send_response(504)\n"
+            "                        self.end_headers()\n"
+            "                        return\n"
+            "                    self.send_response(204)\n"
+            "                    self.end_headers()\n"
+            "                    return\n"
+            "                if self.path == '/fixture/release-stop-request':\n"
+            "                    if not stop_request_path.exists():\n"
+            "                        self.send_response(409)\n"
+            "                        self.end_headers()\n"
+            "                        return\n"
+            "                    stop_request_released.set()\n"
+            "                    if (\n"
+            "                        os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
+            "                        and not post_admission_response_completed.wait(timeout=30.0)\n"
+            "                    ):\n"
+            "                        self.send_response(504)\n"
+            "                        self.end_headers()\n"
+            "                        return\n"
+            "                    self.send_response(204)\n"
+            "                    self.end_headers()\n"
+            "                    return\n"
             "                if self.path != '/api/snapshot':\n"
             "                    self.send_response(404)\n"
             "                    self.end_headers()\n"
             "                    return\n"
             "                body = json.dumps({'pending_reviews': [], 'unclaimed_orders': []}).encode('utf-8')\n"
-            "                if self.headers.get('X-Noodles-Fixture-Probe') != 'served':\n"
+            "                fixture_probe = self.headers.get('X-Noodles-Fixture-Probe') == 'served'\n"
+            "                request_number = 0\n"
+            "                self.completed_post_admission_response = False\n"
+            "                if not fixture_probe:\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['requests'] += 1\n"
+            "                        request_number = snapshot_state['requests']\n"
+            "                        if request_number == 2:\n"
+            "                            snapshot_state['post_admission_request_started'] = True\n"
+            "                        write_snapshot_state()\n"
+            "                if request_number == 1:\n"
             "                    request_path.write_text('snapshot_requested\\n')\n"
             "                    while not release_path.exists() and not stop_path.exists():\n"
             "                        time.sleep(0.01)\n"
             "                    if not release_path.exists():\n"
+            "                        return\n"
+            "                elif request_number == 2:\n"
+            "                    post_admission_request_started.set()\n"
+            "                    if not stop_request_released.wait(timeout=30.0):\n"
+            "                        return\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['stop_requested_before_post_admission_response'] = (\n"
+            "                            stop_request_path.exists()\n"
+            "                        )\n"
+            "                        write_snapshot_state()\n"
+            "                    if os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') != '1':\n"
+            "                        stop_path.write_text('stop\\n')\n"
             "                        return\n"
             "                self.send_response(200)\n"
             "                self.send_header('Content-Type', 'application/json')\n"
@@ -431,6 +498,18 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                self.end_headers()\n"
             "                self.wfile.write(body)\n"
             "                self.wfile.flush()\n"
+            "                self.completed_post_admission_response = request_number == 2\n"
+            "                if not fixture_probe:\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['responses'] += 1\n"
+            "                        write_snapshot_state()\n"
+            "            def finish(self):\n"
+            "                super().finish()\n"
+            "                if getattr(self, 'completed_post_admission_response', False):\n"
+            "                    with state_lock:\n"
+            "                        snapshot_state['post_admission_response_completed'] = True\n"
+            "                        write_snapshot_state()\n"
+            "                    post_admission_response_completed.set()\n"
             "            def log_message(self, *ignored):\n"
             "                return\n"
             "        server = http.server.ThreadingHTTPServer(\n"
@@ -448,6 +527,12 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "        server.timeout = 0.05\n"
             "        while not stop_path.exists():\n"
             "            server.handle_request()\n"
+            "            if (\n"
+            "                stop_request_path.exists()\n"
+            "                and os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
+            "                and post_admission_response_completed.wait(timeout=30.0)\n"
+            "            ):\n"
+            "                stop_path.write_text('stop\\n')\n"
             "        server.server_close()\n"
         )
     path.write_text(
@@ -1081,10 +1166,35 @@ def start_entrypoint_expectations() -> dict[str, object]:
             "final_read": list(complete_events),
         },
         "barrier": {
+            "unreachable": {
+                "listener_served": False,
+                "request_seen": False,
+                "release_written": False,
+                "snapshot_requests": 0,
+                "snapshot_responses": 0,
+                "post_admission_request_started": False,
+                "post_admission_response_completed": False,
+                "stop_requested_before_post_admission_response": False,
+            },
             "complete": {
                 "listener_served": True,
                 "request_seen": True,
                 "release_written": True,
+                "snapshot_requests": 2,
+                "snapshot_responses": 2,
+                "post_admission_request_started": True,
+                "post_admission_response_completed": True,
+                "stop_requested_before_post_admission_response": True,
+            },
+            "premature_shutdown": {
+                "listener_served": True,
+                "request_seen": True,
+                "release_written": True,
+                "snapshot_requests": 2,
+                "snapshot_responses": 1,
+                "post_admission_request_started": True,
+                "post_admission_response_completed": False,
+                "stop_requested_before_post_admission_response": True,
             },
         },
         "termination": {
@@ -1133,13 +1243,54 @@ def start_entrypoint_expectation_errors(expectations: dict[str, object]) -> list
             errors.append("start-entrypoint final-read events must replay the complete durable sequence")
         if events["unreachable"]:
             errors.append("start-entrypoint unreachable listener must publish no events")
+    if set(barrier) != {"unreachable", "complete", "premature_shutdown"}:
+        errors.append("start-entrypoint barrier expectations have the wrong cases")
     complete_barrier = barrier.get("complete")
-    if not isinstance(complete_barrier, dict) or set(complete_barrier) != {
+    barrier_fields = {
         "listener_served",
         "request_seen",
         "release_written",
-    } or any(value is not True for value in complete_barrier.values()):
-        errors.append("start-entrypoint complete barrier must carry three true event flags")
+        "snapshot_requests",
+        "snapshot_responses",
+        "post_admission_request_started",
+        "post_admission_response_completed",
+        "stop_requested_before_post_admission_response",
+    }
+    if not isinstance(complete_barrier, dict) or set(complete_barrier) != barrier_fields:
+        errors.append("start-entrypoint complete barrier has the wrong fields")
+    else:
+        event_flags = (
+            "listener_served",
+            "request_seen",
+            "release_written",
+            "post_admission_request_started",
+            "post_admission_response_completed",
+            "stop_requested_before_post_admission_response",
+        )
+        if any(complete_barrier[field] is not True for field in event_flags):
+            errors.append("start-entrypoint complete barrier event flags must all be true")
+        if complete_barrier["snapshot_requests"] != complete_barrier["snapshot_responses"]:
+            errors.append("start-entrypoint complete barrier must respond to every snapshot request")
+    premature_barrier = barrier.get("premature_shutdown")
+    if not isinstance(premature_barrier, dict) or set(premature_barrier) != barrier_fields:
+        errors.append("start-entrypoint premature-shutdown barrier has the wrong fields")
+    elif isinstance(complete_barrier, dict) and set(complete_barrier) == barrier_fields:
+        if premature_barrier["snapshot_requests"] != complete_barrier["snapshot_requests"]:
+            errors.append("start-entrypoint premature shutdown must occur on the first post-admission snapshot")
+        if premature_barrier["snapshot_responses"] != complete_barrier["snapshot_responses"] - 1:
+            errors.append("start-entrypoint premature shutdown must withhold the post-admission response")
+        common_event_flags = tuple(
+            field for field in event_flags if field != "post_admission_response_completed"
+        )
+        if any(premature_barrier[field] is not True for field in common_event_flags):
+            errors.append("start-entrypoint premature-shutdown barrier prerequisite flags must all be true")
+        if premature_barrier["post_admission_response_completed"] is not False:
+            errors.append("start-entrypoint premature shutdown must precede response completion")
+    unreachable_barrier = barrier.get("unreachable")
+    if not isinstance(unreachable_barrier, dict) or set(unreachable_barrier) != barrier_fields:
+        errors.append("start-entrypoint unreachable barrier has the wrong fields")
+    elif any(value not in (False, 0) for value in unreachable_barrier.values()):
+        errors.append("start-entrypoint unreachable barrier must carry only zero observations")
     if set(termination) != {"unreachable", "withheld", "complete", "final_read"}:
         errors.append("start-entrypoint termination expectations have the wrong cases")
     else:
@@ -1258,6 +1409,7 @@ def replay_start_entrypoint_observation(
     listener_served: bool,
     request_seen: bool,
     release_written: bool,
+    snapshot_state: dict[str, object] | None,
     admission: dict[str, object] | None,
     rejected_admissions: list[str],
 ) -> dict[str, object]:
@@ -1279,6 +1431,17 @@ def replay_start_entrypoint_observation(
             "listener_served": listener_served,
             "request_seen": request_seen,
             "release_written": release_written,
+            "snapshot_requests": int((snapshot_state or {}).get("requests") or 0),
+            "snapshot_responses": int((snapshot_state or {}).get("responses") or 0),
+            "post_admission_request_started": (snapshot_state or {}).get(
+                "post_admission_request_started"
+            ) is True,
+            "post_admission_response_completed": (snapshot_state or {}).get(
+                "post_admission_response_completed"
+            ) is True,
+            "stop_requested_before_post_admission_response": (snapshot_state or {}).get(
+                "stop_requested_before_post_admission_response"
+            ) is True,
         },
     }
 
@@ -1289,6 +1452,7 @@ def start_entrypoint_with_delayed_listener(
     start_listener: bool = True,
     runtime_start_delay: float = 0.7,
     admission_observation: str = "visible",
+    complete_shutdown_handshake: bool = True,
 ) -> dict[str, object]:
     if admission_observation not in {"visible", "withheld", "final_read"}:
         raise AssertionError(f"unknown start-entrypoint admission observation {admission_observation!r}")
@@ -1326,6 +1490,8 @@ def start_entrypoint_with_delayed_listener(
             served_path = base / "start-entrypoint.listener-served"
             request_path = base / "start-entrypoint.snapshot-requested"
             release_path = base / "start-entrypoint.snapshot-release"
+            snapshot_state_path = base / "start-entrypoint.snapshot-state.json"
+            stop_request_path = base / "start-entrypoint.stop-requested"
             stop_path = base / "start-entrypoint.stop"
             stdout_path = base / "start-entrypoint.stdout"
             stderr_path = base / "start-entrypoint.stderr"
@@ -1335,9 +1501,20 @@ def start_entrypoint_with_delayed_listener(
                 "admission": None,
                 "rejected_admissions": [],
                 "events": [],
-                "barrier": {"listener_served": False, "request_seen": False, "release_written": False},
+                "barrier": {
+                    "listener_served": False,
+                    "request_seen": False,
+                    "release_written": False,
+                    "snapshot_requests": 0,
+                    "snapshot_responses": 0,
+                    "post_admission_request_started": False,
+                    "post_admission_response_completed": False,
+                    "stop_requested_before_post_admission_response": False,
+                },
                 "termination": {"trigger": None},
                 "cleanup": {
+                    "stop_request_path_exists": False,
+                    "stop_request_path_content": None,
                     "stop_path_exists": False,
                     "stop_path_content": None,
                     "group_term_sent": False,
@@ -1357,6 +1534,15 @@ def start_entrypoint_with_delayed_listener(
                 except FileNotFoundError:
                     return None
 
+            def read_snapshot_state() -> dict[str, object] | None:
+                try:
+                    state = json.loads(snapshot_state_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    return None
+                if not isinstance(state, dict):
+                    raise AssertionError("start-entrypoint snapshot state must be a JSON object")
+                return state
+
             def read_admission(
                 readiness: object, *, phase: str
             ) -> tuple[dict[str, object] | None, list[str]]:
@@ -1375,7 +1561,7 @@ def start_entrypoint_with_delayed_listener(
                 if admission_observation == "withheld":
                     return None, rejected
                 if admission_observation == "final_read" and phase == "loop" and admission is not None:
-                    request_stub_stop()
+                    request_stub_stop(after_admission=True)
                     record_termination("fixture_final_read_boundary")
                     if entrypoint is None or not wait_for_entrypoint(entrypoint, 30.0):
                         raise AssertionError("start-entrypoint final-read boundary did not exit after fixture stop")
@@ -1393,6 +1579,7 @@ def start_entrypoint_with_delayed_listener(
                         listener_served=served_path.exists(),
                         request_seen=request_path.exists(),
                         release_written=release_path.exists(),
+                        snapshot_state=read_snapshot_state(),
                         admission=admission,
                         rejected_admissions=rejected,
                     )
@@ -1403,8 +1590,22 @@ def start_entrypoint_with_delayed_listener(
                 assert isinstance(termination, dict)
                 termination["trigger"] = trigger
 
-            def request_stub_stop() -> None:
-                stop_path.write_text("stop\n", encoding="utf-8")
+            def request_stub_stop(*, after_admission: bool = False) -> None:
+                if not after_admission:
+                    stop_request_path.write_text("stop_requested\n", encoding="utf-8")
+                    stop_path.write_text("stop\n", encoding="utf-8")
+                    return
+                import urllib.request
+
+                with urllib.request.urlopen(
+                    f"{control_url}/fixture/post-admission-request-started", timeout=30.0
+                ):
+                    pass
+                stop_request_path.write_text("stop_requested\n", encoding="utf-8")
+                with urllib.request.urlopen(
+                    f"{control_url}/fixture/release-stop-request", timeout=30.0
+                ):
+                    pass
 
             def serve_legacy_probe() -> dict[str, object]:
                 import urllib.request
@@ -1442,7 +1643,12 @@ def start_entrypoint_with_delayed_listener(
             env["NOODLES_TEST_START_READY_PATH"] = str(ready_path)
             env["NOODLES_TEST_START_REQUEST_PATH"] = str(request_path)
             env["NOODLES_TEST_START_RELEASE_PATH"] = str(release_path)
+            env["NOODLES_TEST_START_SNAPSHOT_STATE_PATH"] = str(snapshot_state_path)
+            env["NOODLES_TEST_START_STOP_REQUEST_PATH"] = str(stop_request_path)
             env["NOODLES_TEST_START_STOP_PATH"] = str(stop_path)
+            env["NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE"] = (
+                "1" if complete_shutdown_handshake else "0"
+            )
             env["PYTHONUNBUFFERED"] = "1"
             codex_real_bin = codex_real_bin_export(base)
             if codex_real_bin is not None:
@@ -1499,7 +1705,7 @@ def start_entrypoint_with_delayed_listener(
                         replay_observation(readiness, admission, rejected)
                         if isinstance(admission, dict):
                             record_termination("entrypoint_admission")
-                            request_stub_stop()
+                            request_stub_stop(after_admission=True)
                             break
                         if entrypoint.poll() is not None:
                             termination = observation["termination"]
@@ -1509,7 +1715,7 @@ def start_entrypoint_with_delayed_listener(
                             break
                         if admission_deadline is not None and time.monotonic() >= admission_deadline:
                             record_termination("missing_admission_timeout")
-                            request_stub_stop()
+                            request_stub_stop(after_admission=True)
                             break
                         if readiness_deadline is not None and time.monotonic() >= readiness_deadline:
                             record_termination("missing_listener_readiness_timeout")
@@ -1527,11 +1733,14 @@ def start_entrypoint_with_delayed_listener(
                     cleanup = observation["cleanup"]
                     assert isinstance(cleanup, dict)
                     if entrypoint is not None:
-                        if not stop_path.exists():
+                        if not stop_request_path.exists():
                             request_stub_stop()
                         if not wait_for_entrypoint(entrypoint, 30.0):
-                            signal_entrypoint_group(entrypoint, signal.SIGTERM)
-                            cleanup["group_term_sent"] = True
+                            if not stop_path.exists():
+                                request_stub_stop()
+                            if not wait_for_entrypoint(entrypoint, 2.0):
+                                signal_entrypoint_group(entrypoint, signal.SIGTERM)
+                                cleanup["group_term_sent"] = True
                         if entrypoint.poll() is None and not wait_for_entrypoint(entrypoint, 2.0):
                             signal_entrypoint_group(entrypoint, signal.SIGKILL)
                             cleanup["group_kill_sent"] = True
@@ -1541,6 +1750,12 @@ def start_entrypoint_with_delayed_listener(
                         cleanup["stop_path_content"] = (
                             stop_path.read_text(encoding="utf-8") if stop_path.exists() else None
                         )
+                        cleanup["stop_request_path_exists"] = stop_request_path.exists()
+                        cleanup["stop_request_path_content"] = (
+                            stop_request_path.read_text(encoding="utf-8")
+                            if stop_request_path.exists()
+                            else None
+                        )
                         cleanup["process_reaped"] = entrypoint.poll() is not None
                         runtime_pid_text = read_runtime_lock_pid()
                         runtime_pid = int(runtime_pid_text) if str(runtime_pid_text or "").isdigit() else None
@@ -1548,6 +1763,9 @@ def start_entrypoint_with_delayed_listener(
                         cleanup["child_alive_after_exit"] = (
                             daemon_lease.process_alive(runtime_pid) if runtime_pid is not None else None
                         )
+                    readiness = read_readiness()
+                    admission, rejected = read_admission(readiness, phase="cleanup")
+                    replay_observation(readiness, admission, rejected)
             assert entrypoint is not None
             returncode = entrypoint.returncode
             status_path = control / ".noodle" / "status.json"
@@ -1606,21 +1824,13 @@ def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
         errors.append("wrapper never admitted a truthful Noodle daemon lease")
     if rejected:
         errors.append("entrypoint rejected daemon lease admission records: " + " | ".join(rejected))
-    expected_events = [
-        "listener_bound",
-        "listener_served",
-        "former_grace_edge_without_admission",
-        "daemon_lease",
-    ]
+    expectations = start_entrypoint_expectations()
+    expected_events = expectations["events"]["complete"]
     if observed.get("events") != expected_events:
         errors.append(
             f"start-entrypoint event sequence is {observed.get('events')!r}, expected {expected_events!r}"
         )
-    if observed.get("barrier") != {
-        "listener_served": True,
-        "request_seen": True,
-        "release_written": True,
-    }:
+    if observed.get("barrier") != expectations["barrier"]["complete"]:
         errors.append(f"start-entrypoint admission barrier did not complete: {observed.get('barrier')!r}")
     readiness_exact = (
         isinstance(readiness, dict)
@@ -1664,6 +1874,8 @@ def validate_start_entrypoint_receipt(receipt: dict[str, object]) -> list[str]:
     cleanup = observed.get("cleanup")
     cleanup_complete = (
         isinstance(cleanup, dict)
+        and cleanup.get("stop_request_path_exists") is True
+        and cleanup.get("stop_request_path_content") == "stop_requested\n"
         and cleanup.get("stop_path_exists") is True
         and cleanup.get("stop_path_content") == "stop\n"
         and cleanup.get("group_term_sent") is False
