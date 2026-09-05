@@ -4440,6 +4440,27 @@ def ceremony_edit_body(
         raise GateError(
             f"ceremony edit-body requires the full 64-hex expected-before sha256, got {expected_before!r}"
         )
+    contract = parse_issue_contract(body, expected_subject=subject.value)
+    body_sections = issue_contract.sections(body)
+    reasons = issue_contract.required_section_reasons(body_sections)
+    reasons.extend(
+        issue_contract.completeness_reasons(
+            contract, body_sections, system_requirement_ids()
+        )
+    )
+    reasons.extend(contract["admission"]["reasons"])
+    reasons.extend(component_surface_errors(contract["component"], component_map(ENGINE_ROOT), ()))
+    if contract["dependencies"] is None:
+        reasons.append(
+            f"issue declares no noodles-depends-on marker; use {issue_contract.NO_DEPENDENCIES!r} for no dependencies"
+        )
+    if contract["write_boundary"] is None:
+        reasons.append("issue declares no noodles-write-boundary marker")
+    if reasons:
+        raise GateError(
+            f"ceremony edit-body refused invalid intended body for {subject.value}: "
+            + "; ".join(reasons)
+        )
     endpoint = f"repos/{subject.repo}/issues/{subject.number}"
     live = gh_api_fn(endpoint)
     if not isinstance(live, dict) or "pull_request" in live:
