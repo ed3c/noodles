@@ -754,6 +754,35 @@ class CeremonyEditBodyTests(unittest.TestCase):
         self.assertEqual(provider.body, NEXT_BODY)
         self.assertRegex(receipt["before_sha256"], r"\A[0-9a-f]{64}\Z")
         self.assertEqual(receipt["after_sha256"], self.digest(NEXT_BODY))
+        self.assertEqual(receipt["before_observation"], "pre-write-get")
+        self.assertIsNone(receipt["overwritten_sha256"])
+
+    def test_third_writer_in_window_leaves_overwritten_digest_unknown(self) -> None:
+        third_body = LIVE_BODY + "\nThird writer's change.\n"
+
+        class InterleavedProvider(FakeIssueProvider):
+            overwritten_body: str | None = None
+
+            def __call__(
+                self, endpoint: str, *, method: str = "GET",
+                payload: object | None = None, **kwargs: object,
+            ) -> object:
+                if method == "PATCH":
+                    self.body = third_body
+                    self.overwritten_body = self.body
+                return super().__call__(endpoint, method=method, payload=payload, **kwargs)
+
+        provider = InterleavedProvider(LIVE_BODY)
+        receipt = noodles.ceremony_edit_body(
+            provider, EDIT_SUBJECT, self.digest(LIVE_BODY), NEXT_BODY, self.refused_path()
+        )
+        self.assertEqual(provider.overwritten_body, third_body)
+        self.assertEqual(provider.body, NEXT_BODY)
+        self.assertEqual(receipt["after_sha256"], self.digest(NEXT_BODY))
+        self.assertEqual(receipt["before_sha256"], self.digest(LIVE_BODY))
+        self.assertNotEqual(receipt["before_sha256"], self.digest(third_body))
+        self.assertIsNone(receipt["overwritten_sha256"])
+        self.assertEqual(receipt["before_observation"], "pre-write-get")
 
     def test_drift_refuses_persists_live_bytes_and_does_not_patch(self) -> None:
         drifted = LIVE_BODY.replace("ready", "blocked")

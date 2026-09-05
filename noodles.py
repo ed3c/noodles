@@ -4429,7 +4429,11 @@ def ceremony_edit_body(
     body: str,
     refused_path: Path,
 ) -> dict[str, Any]:
-    """Compare-and-swap one Issue body and prove the provider readback."""
+    """Guard the pre-write GET digest, then PATCH and verify a later GET.
+
+    The GET and PATCH are not atomic. A third writer inside that window can be
+    overwritten without detection, so the overwritten body's digest is unknown.
+    """
     subject = parse_subject(subject_value)
     expected = expected_before.strip().lower()
     if not BODY_DIGEST_RE.fullmatch(expected):
@@ -4464,6 +4468,8 @@ def ceremony_edit_body(
         "verb": "edit-body",
         "subject": subject_value,
         "before_sha256": before,
+        "before_observation": "pre-write-get",
+        "overwritten_sha256": None,
         "after_sha256": after,
         "before_bytes": len(live_body.encode("utf-8")),
         "after_bytes": len(body.encode("utf-8")),
