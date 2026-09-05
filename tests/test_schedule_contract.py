@@ -106,6 +106,7 @@ class ScheduleContractTests(unittest.TestCase):
             fake_codex.chmod(0o755)
             env = dict(os.environ)
             env["PATH"] = temp_name + os.pathsep + env.get("PATH", "")
+            env["NOODLES_CODEX_REAL_BIN"] = str(fake_codex)
             return subprocess.run(
                 [str(root / ".agents/bin/codex"), *argv],
                 cwd=root,
@@ -243,9 +244,10 @@ class ScheduleContractTests(unittest.TestCase):
                     argv[:3],
                     ["exec", "-c", f'model_reasoning_effort="{profile["reasoning_effort"]}"'],
                 )
-                self.assertEqual(
+                expected = ["--model", profile["model"], "-c", 'approval_policy="never"']
+                self.assertIn(
                     argv[3:],
-                    ["--model", profile["model"], "-c", 'approval_policy="never"'],
+                    (expected, [*expected, "--disable", "apps", "--disable", "plugins"]),
                 )
 
     def test_codex_carrier_stops_option_parsing_at_delimiter(self) -> None:
@@ -253,7 +255,11 @@ class ScheduleContractTests(unittest.TestCase):
         result = self.run_carrier(argv)
         self.assertEqual(result.returncode, 0, result.stderr)
         effort = TASK_PROFILES["execute"]["reasoning_effort"]
-        self.assertEqual(json.loads(result.stdout), ["exec", "-c", f'model_reasoning_effort="{effort}"', *argv[1:]])
+        expected = ["exec", "-c", f'model_reasoning_effort="{effort}"', *argv[1:3]]
+        self.assertIn(json.loads(result.stdout), (
+            [*expected, *argv[3:]],
+            [*expected, "--disable", "apps", "--disable", "plugins", *argv[3:]],
+        ))
 
     def test_codex_carrier_rejects_unadmitted_or_ambiguous_model_before_spawn(self) -> None:
         cases = (

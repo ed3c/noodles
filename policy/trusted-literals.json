@@ -10,6 +10,13 @@
   ],
   "dispositions": [
     {
+      "path": "tests/test_codex_isolation.py",
+      "test": "CodexIsolationTests.test_fake_plugin_list_accepts_only_exact_staging_shapes",
+      "literal": "{'installed': [], 'available': []}",
+      "disposition": "invariant",
+      "reason": "The synthetic Codex stub must return an empty inventory with both required fields for either admitted argv shape. This asserts absence, not the installed CLI's mutable inventory; accepting plugins here would invalidate the fixture's isolation contract."
+    },
+    {
       "path": "tests/test_agent_friendly_architecture.py",
       "test": "AgentFriendlyArchitectureTests.test_document_route_and_agent_friendly_spec_readback",
       "literal": "1",
