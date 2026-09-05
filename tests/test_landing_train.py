@@ -759,7 +759,7 @@ class LandingTrainNudgeTests(unittest.TestCase):
             self.assertEqual([call for call in with_closure if call not in listings], without)
 
 
-def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] = []) -> dict[str, str]:
+def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] = [], earlier: list[str] = []) -> dict[str, str]:
     """One ship-stage pre-stack, then the provider's own merge of its tip.
 
     `stacked` branches are cut in landing order, each on the previous, which is what running ONE
@@ -768,7 +768,9 @@ def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] 
     head inside the default branch, and that containment is measured from this remote in every
     control below rather than declared. `detached` branches are cut from the shared base, edit the
     same file the first stacked member edits, and never enter the stack: the conflicting-member shape
-    the degrade exists for."""
+    the degrade exists for. `earlier` branches land in a wave BEFORE this one - each is merged into
+    `main` first, so the shared base this pre-stack is cut on already carries them, which is the one
+    shape where "carried whole" is true of a head that is not a member of this batch."""
     origin = base / "origin.git"
     noodles.run(["git", "init", "--bare", "--quiet", "--initial-branch", "main", str(origin)])
     seed = base / "seed"
@@ -781,7 +783,16 @@ def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] 
     (seed / "a.txt").write_text("base\n", encoding="utf-8")
     g("add", ".")
     g("commit", "--quiet", "-m", "shared base")
-    heads = {"base": g("rev-parse", "HEAD")}
+    heads = {"root": g("rev-parse", "HEAD")}
+    for ref in earlier:
+        g("checkout", "--quiet", "-B", ref, heads["root"])
+        (seed / f"{ref}.txt").write_text(f"{ref}\n", encoding="utf-8")
+        g("add", ".")
+        g("commit", "--quiet", "-m", f"{ref} work")
+        heads[ref] = g("rev-parse", "HEAD")
+        g("checkout", "--quiet", "main")
+        g("merge", "--quiet", "--no-ff", "-m", f"land {ref} in an earlier wave", heads[ref])
+    heads["base"] = g("rev-parse", "main")
     for index, ref in enumerate(stacked):
         g("checkout", "--quiet", "-B", ref, heads[stacked[index - 1]] if index else heads["base"])
         (seed / f"{ref}.txt").write_text(f"{ref}\n", encoding="utf-8")
@@ -800,7 +811,7 @@ def seed_prestacked_wave(base: Path, *, stacked: list[str], detached: list[str] 
     g("merge", "--quiet", "--no-ff", "-m", "land the pre-stacked tip", heads[stacked[-1]])
     heads["main"] = g("rev-parse", "HEAD")
     heads["main_tree"] = g("rev-parse", "HEAD^{tree}")
-    g("push", "--quiet", str(origin), "main", *stacked, *detached)
+    g("push", "--quiet", str(origin), "main", *stacked, *detached, *earlier)
     return {"origin": str(origin), **heads}
 
 
@@ -947,6 +958,16 @@ class VerifiedBatchLandingTests(unittest.TestCase):
             # constraint: ordered members in landing order with the tip last, the base it was stacked on,
             # constraint: and the stacked tip. Every head landed under that single identity.
             self.assertEqual([item["batch"] for item in result["batch"]], [self.manifest(fixture)] * 2)
+            # constraint: ed3c/noodles#437 reconcile - the capability's canonical identity for this
+            # constraint: landing is IN the authoritative receipt, and it is recomputed here from the
+            # constraint: base and the ordered members rather than read back off the receipt carrying
+            # constraint: it, so a receipt naming a different base or a different order could not match.
+            identity = verified_batch.construct_batch(
+                Path(fixture["origin"]),
+                fixture["base"],
+                [verified_batch.BatchMember(number, fixture[ref]) for number, ref in ((31, "first"), (32, "second"), (self.TIP_PR, "tip"))],
+            )
+            self.assertEqual({item["batch_sha"] for item in result["batch"]}, {identity["batch_sha"]})
             # constraint: the five-action bundle completed per head, read back off the provider object.
             self.assert_bundle(api, 31, 731, fixture["first"], fixture["main"])
             self.assert_bundle(api, 32, 732, fixture["second"], fixture["main"])
@@ -1143,6 +1164,54 @@ class VerifiedBatchLandingTests(unittest.TestCase):
             self.assertEqual({api.pulls[number]["state"] for number in (31, 32)}, {"open"})
             self.assertEqual({noodles.one_marker(api.issues[number]["body"], "state") for number in (731, 732)}, {"awaiting_land"})
             self.assertEqual((result["action"], list(moved)), ("rebased", ["second"]))
+
+    def test_planted_negative_a_member_the_declared_base_already_carries_refuses_the_batch(self) -> None:
+        """The base link of ed3c/noodles#437's containment chain, planted at the shape it exists for.
+
+        `stale` landed in an EARLIER wave, so the base THIS pre-stack was cut on already contains it,
+        and its Issue is still open at `awaiting_land`. Every arrival the batch path has says yes:
+        the provider compare reports `ahead_by` 0 because the default branch really does carry it
+        whole, the tip's parent pair is honest, and replaying a head the base already has is a no-op,
+        so even the tip-tree equality reproduces the tree the branch is standing on. Nothing here is
+        forged - this is an honest queue, and the wrong answer is closing a head this batch did not
+        land.
+
+        A chain that starts at member 1 - which is what ed3c/noodles#437 first landed - leaves
+        position 1 satisfiable by anything on the base's side of the graph, so this queue batched:
+        PR 41 closed and Issue 741 stamped `landed` under this wave's merge, a merge that did not
+        land it. Starting the chain at the declared base refuses it, because an earlier wave's head
+        is an ancestor of that base rather than a descendant of it.
+
+        Paired positive: `test_three_head_green_queue_lands_as_one_verified_batch` - the same call
+        over members cut ON the base instead of under it, which still batches. The member count is
+        pinned off the capability below so this refusal cannot be the wrong-count one in disguise."""
+        with tempfile.TemporaryDirectory(prefix="noodles-batch-test-", ignore_cleanup_errors=True) as temp_name:
+            fixture = seed_prestacked_wave(Path(temp_name), stacked=["stacked", "tip"], earlier=["stale"])
+            fixture["tip_ref"] = "tip"
+            pulls = {
+                41: dict(pr_fixture(41, 741, fixture["stale"], "stale", "2026-09-02T00:00:00Z"), merged=False),
+                31: dict(pr_fixture(31, 731, fixture["stacked"], "stacked", "2026-09-02T01:00:00Z"), merged=False),
+            }
+            api = BatchApi(fixture, pulls, {number: {"state": "open", "body": issue_body(number)} for number in (741, 731)})
+            # constraint: the premise, measured off the remote rather than declared: the default branch
+            # constraint: carries the stale head whole, AND the base of this pre-stack already contained
+            # constraint: it, which is exactly what lets it chain for free at position 1.
+            self.assertEqual(measured_ahead(fixture["origin"], fixture["stale"]), 0)
+            self.assertTrue(noodles.git_ok(Path(fixture["origin"]), "merge-base", "--is-ancestor", fixture["stale"], fixture["base"]))
+            # constraint: two carried members plus the landed tip IS a representable identity, so the
+            # constraint: capability's wrong-count refusal is not what reds here.
+            self.assertEqual(len(pulls) + 1, verified_batch.MEMBER_COUNT)
+
+            result, moved = self.drain(fixture, api, landed_pr=self.TIP_PR)
+
+            self.assertEqual(result["batch"], [])
+            # constraint: refusing strands nobody - both stay open at awaiting_land and the
+            # constraint: byte-identical single-head path takes over in this same cycle.
+            self.assertEqual({api.issues[number]["state"] for number in (741, 731)}, {"open"})
+            self.assertEqual({api.pulls[number]["state"] for number in (41, 31)}, {"open"})
+            self.assertEqual({noodles.one_marker(api.issues[number]["body"], "state") for number in (741, 731)}, {"awaiting_land"})
+            self.assertEqual(result["action"], "rebased")
+            self.assertEqual(len(moved), 1)
 
 
 if __name__ == "__main__":
