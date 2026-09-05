@@ -1197,12 +1197,14 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
     """The trusted verify path consumes the marker, the trusted-root map, and merge-base readback."""
 
     def run_verify(
-        self, body: str, changed_files: list[str], candidate_files: dict[str, str] | None = None
+        self, body: str, changed_files: list[str], candidate_files: dict[str, str] | None = None,
+        trusted_root: Path | None = None,
     ) -> tuple[Path, object]:
         temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp.cleanup)
         base = Path(temp.name)
         for relative, text in (candidate_files or {}).items():
+            (base / relative).parent.mkdir(parents=True, exist_ok=True)
             (base / relative).write_text(text, encoding="utf-8")
         event_path = base / "event.json"
         event_path.write_text(
@@ -1236,9 +1238,37 @@ class VerifyPullRequestComponentGateTests(unittest.TestCase):
                 mock.patch.object(noodles, "merge_base_changed_files", return_value=changed_files) as compare, \
                 mock.patch.object(noodles, "verify_repository", return_value=fake_repository), \
                 mock.patch.object(noodles, "git", side_effect=fake_git):
-            receipt = noodles.verify_pull_request(CANDIDATE_ROOT, event_path, base, receipt_path)
+            receipt = noodles.verify_pull_request(trusted_root or CANDIDATE_ROOT, event_path, base, receipt_path)
         self.assertEqual(compare.call_args, mock.call("ed3c/noodles", "main", HEAD_SHA))
         return receipt_path, receipt
+
+    def test_required_surface_uses_trusted_policy_even_when_candidate_declares_the_opposite(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            trusted = Path(temp)
+            shutil.copytree(CANDIDATE_ROOT / "policy", trusted / "policy")
+            path = noodles.issue_contract.REPO_CAPABILITIES_PATH
+            body = "<!-- noodles-required-surfaces: unit-test -->\n" + issue_body(state="awaiting_land")
+            for available in (False, True):
+                document = {
+                    "schema_version": 1, "repository": "ed3c/noodles",
+                    "verification_surfaces": {"unit-test": {"available": available, "carrier": "tests/run.sh"}},
+                }
+                (trusted / path).write_text(json.dumps(document))
+                document["verification_surfaces"]["unit-test"]["available"] = not available
+                candidate = {path: json.dumps(document)}
+                with mock.patch.object(noodles, "gh_api") as api:
+                    if available:
+                        _, receipt = self.run_verify(body, [path], candidate, trusted_root=trusted)
+                        self.assertIn("issue-contract", receipt["gates"])
+                    else:
+                        with self.assertRaisesRegex(noodles.GateError, "BLOCKED_EXTERNAL.*unit-test"):
+                            self.run_verify(body, [path], candidate, trusted_root=trusted)
+                api.assert_not_called()
+
+    def test_malformed_required_surfaces_cannot_bypass_trusted_verification(self) -> None:
+        body = "<!-- noodles-required-surfaces: python -->\n" + issue_body(state="awaiting_land")
+        with self.assertRaisesRegex(noodles.GateError, "unknown noodles-required-surfaces"):
+            self.run_verify(body, ["noodles.py"])
 
     def test_planted_negative_a_whole_repository_declaration_that_buys_nothing_fails_closed(self) -> None:
         """ed3c/noodles#278: the refusal runs at the same confluence the surface gate does, so a

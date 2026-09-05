@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "repository": "ed3c/noodles",
+  "verification_surfaces": {
+    "static-analysis": {"available": false, "carrier": null},
+    "unit-test": {"available": true, "carrier": "tests/run.sh"},
+    "structural": {"available": true, "carrier": "structural_contract.py:structural_readback"},
+    "security-advisory": {"available": false, "carrier": null},
+    "runtime-oracle": {"available": true, "carrier": "feature_contract.py:verify_feature"},
+    "worktree-execution": {"available": true, "carrier": "runtime_contract.py:worktree_exec; noodles.py:execute_provenance_admission"},
+    "github-actions-verification": {"available": true, "carrier": ".github/workflows/verify.yml"},
+    "exact-head-merge": {"available": true, "carrier": "noodles.py:land_pull_request"}
+  }
+}

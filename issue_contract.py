@@ -192,6 +192,70 @@ CAPABILITY_TABLE: dict[str, dict[str, tuple[str, ...]]] = {
 }
 CAPABILITY_MARKERS = ("executor", *sorted(CAPABILITY_TABLE))
 
+# constraint: ed3c/noodles#422 - these are repository verification surfaces, not executor lanes.
+REPO_CAPABILITIES_PATH = "policy/repo-capabilities.json"
+VERIFICATION_SURFACES = frozenset({
+    "static-analysis", "unit-test", "structural", "security-advisory", "runtime-oracle",
+    "worktree-execution", "github-actions-verification", "exact-head-merge",
+})
+
+
+def parse_required_surfaces(declarations: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if not declarations:
+        return (), ()
+    if len(declarations) != 1:
+        return (), ("duplicate noodles-required-surfaces marker",)
+    tokens = tuple(token.strip() for token in declarations[0].split(","))
+    if any(not re.fullmatch(r"[a-z]+(?:-[a-z]+)*", token) for token in tokens):
+        return (), ("malformed noodles-required-surfaces: expected comma-separated surface tokens",)
+    if len(set(tokens)) != len(tokens):
+        return (), ("duplicate surface in noodles-required-surfaces",)
+    unknown = sorted(set(tokens) - VERIFICATION_SURFACES)
+    if unknown:
+        return (), (f"unknown noodles-required-surfaces: {', '.join(unknown)}",)
+    return tokens, ()
+
+
+def repo_capability_errors(document: Any, repository: str) -> list[str]:
+    prefix = REPO_CAPABILITIES_PATH
+    if not isinstance(document, dict) or set(document) != {"schema_version", "repository", "verification_surfaces"}:
+        return [f"{prefix}: expected schema_version, repository and verification_surfaces"]
+    errors = []
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        errors.append(f"{prefix}: schema_version must be 1")
+    if document["repository"] != repository:
+        errors.append(f"{prefix}: repository {document['repository']!r} does not match {repository!r}")
+    surfaces = document["verification_surfaces"]
+    if not isinstance(surfaces, dict):
+        return errors + [f"{prefix}: verification_surfaces must be an object"]
+    for name, declaration in surfaces.items():
+        if name not in VERIFICATION_SURFACES:
+            errors.append(f"{prefix}: unknown verification surface {name!r}")
+        if not isinstance(declaration, dict) or set(declaration) != {"available", "carrier"}:
+            errors.append(f"{prefix}: {name} must declare available and carrier")
+            continue
+        if type(declaration["available"]) is not bool:
+            errors.append(f"{prefix}: {name}.available must be boolean")
+        carrier = declaration["carrier"]
+        if carrier is not None and (not isinstance(carrier, str) or not carrier.strip()):
+            errors.append(f"{prefix}: {name}.carrier must be a nonempty string or null")
+        if declaration["available"] is True and not (isinstance(carrier, str) and carrier.strip()):
+            errors.append(f"{prefix}: available surface {name} must name its gate/oracle carrier")
+    return errors
+
+
+def required_surface_reasons(required: Sequence[str], document: Any, repository: str) -> list[str]:
+    if not required:
+        return []
+    errors = repo_capability_errors(document, repository)
+    if errors:
+        return [f"BLOCKED_EXTERNAL: {error}" for error in errors]
+    return [
+        f"BLOCKED_EXTERNAL: repository {repository} does not supply required verification surface {name}"
+        for name in required
+        if not document["verification_surfaces"].get(name, {}).get("available", False)
+    ]
+
 
 def _one_token(marker: str, raw: str, admitted: tuple[str, ...], *, error_cls: type[Exception]) -> str:
     # constraint: ed3c/noodles#187 - malformed (not one bare token) and unknown (a
@@ -871,6 +935,7 @@ def derive_schedulability(
     known_requirements: Collection[str] = (),
     *,
     elders: Sequence[str] = (),
+    verification_reasons: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     # constraint: ed3c/noodles#120 - `known_requirements` defaults to empty and therefore fails
     # constraint: closed: a caller that cannot read the specification never admits a requirement id
@@ -880,6 +945,10 @@ def derive_schedulability(
     # constraint: backlog in hand and must not invent one; admission runs on the frontier callers
     # constraint: (schedule_snapshot, backlog_items), which read every open issue anyway.
     reasons: list[str] = []
+    reasons.extend(contract.get("required_surface_errors", ()))
+    reasons.extend(verification_reasons if verification_reasons is not None else required_surface_reasons(
+        contract.get("required_surfaces", ()), None, contract.get("target", "")
+    ))
     if provider_state != "open":
         reasons.append(f"issue provider state is {provider_state!r}, not open")
     if contract.get("state") != READY_STATE:

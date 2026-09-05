@@ -134,6 +134,21 @@ class RepositoryGateTests(unittest.TestCase):
         self.assertTrue(result["ok"], result["errors"])
         self.assertTrue(result["errors"] == [] and all(w.startswith("architecture warning ") for w in result["warnings"]), result)
 
+    def test_candidate_repo_capability_shape_is_validated_independently_of_trusted_availability(self) -> None:
+        temp, root = self.mutated_copy()
+        self.addCleanup(temp.cleanup)
+        path = root / noodles.issue_contract.REPO_CAPABILITIES_PATH
+        document = json.loads((CANDIDATE_ROOT / noodles.issue_contract.REPO_CAPABILITIES_PATH).read_text())
+        document["verification_surfaces"]["unit-test"] = {"available": True, "carrier": None}
+        path.write_text(json.dumps(document))
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertIn("available surface unit-test must name its gate/oracle carrier", " ".join(result["errors"]))
+        path.write_text("{")
+        result = self.verify(root)
+        self.assertFalse(result["ok"])
+        self.assertTrue(any("cannot read JSON" in error and "repo-capabilities.json" in error for error in result["errors"]))
+
     def test_untagged_comment_variants_fail_with_distinct_diagnostics(self) -> None:
         temp, root = self.mutated_copy()
         self.addCleanup(temp.cleanup)
