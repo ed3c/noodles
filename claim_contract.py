@@ -8,6 +8,7 @@ never from a process table.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 import time
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import github_protection
-from repair_contract import find_open_pr_for_subject, repair_review
+from repair_contract import repair_review
 from runtime_contract import noodle_project_root, read_session_events
 
 SESSION_LIVENESS_WINDOW_SECONDS = 3600
@@ -73,10 +74,97 @@ def salvage_branch(subject_value: str, head: str) -> str:
     return f"{SALVAGE_BRANCH_PREFIX}{engine.parse_subject(subject_value).number}-{head[:12]}"
 
 
-def dead_claim_snapshot(root: Path, repository: str, *, now: float | None = None) -> list[dict[str, Any]]:
+def _dirty_paths(engine: Any, worktree: Path) -> list[str]:
+    fields = engine.git(worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all").split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(fields) and fields[index]:
+        entry = fields[index]
+        paths.append(entry[3:])
+        renamed = any(code in "RC" for code in entry[:2])
+        if renamed and index + 1 < len(fields) and fields[index + 1]:
+            paths.append(fields[index + 1])
+        index += 2 if renamed else 1
+    return sorted(paths)
+
+
+def pre_pr_claim_record(
+    root: Path,
+    repository: str,
+    subject: str,
+    branch: str,
+    provider_head: str,
+    contract: dict[str, Any],
+    sessions: list[dict[str, Any]],
+    *,
+    now: float,
+) -> dict[str, Any]:
+    """Bind an unowned provider mutex to its one exact Git-registered worktree."""
+    engine = _engine()
+    live = [
+        item["session_id"] for item in sessions
+        if item["last_event_epoch"] is not None and now - item["last_event_epoch"] <= SESSION_LIVENESS_WINDOW_SECONDS
+    ]
+    identity = {
+        "repository": repository,
+        "subject": subject,
+        "body_sha256": contract["body_sha256"],
+        "branch": branch,
+        "provider_head": provider_head,
+        "open_pull_requests": [],
+        "live_session_ids": live,
+    }
+    if live:
+        return {**identity, "class": "held_live", "reason": f"claim {subject} remains bound to live session {live[0]}"}
+
+    project = noodle_project_root(root.resolve(), error_cls=engine.GateError)
+    common = Path(engine.git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    identity["git_common_dir"] = str(common)
+    if common.parent != project:
+        return {**identity, "class": "held", "reason": f"claim {subject} git common directory {common} is outside Noodle project {project}"}
+    registry = engine.registered_worktrees(root)
+    branch_ref = f"refs/heads/{branch}"
+    candidates = sorted(
+        (path, item) for path, item in registry.items()
+        if item.get("branch") == branch_ref and "prunable" not in item
+    )
+    if len(candidates) != 1:
+        observed = [f"{path}:{item.get('branch') or 'detached'}@{item.get('HEAD')}" for path, item in sorted(registry.items())]
+        return {
+            **identity,
+            "class": "held",
+            "reason": f"claim {subject} requires exactly one registered worktree on {branch_ref}; found {len(candidates)}; registered={observed}",
+        }
+    path, entry = candidates[0]
+    local_head = engine.git(path, "rev-parse", "HEAD")
+    local_branch = (entry.get("branch") or "").removeprefix("refs/heads/")
+    bound = {
+        **identity,
+        "worktree_path": str(path),
+        "local_branch": local_branch,
+        "local_head": local_head,
+        "dirty_paths": _dirty_paths(engine, path),
+    }
+    if entry.get("HEAD") != provider_head or local_head != provider_head:
+        return {
+            **bound,
+            "class": "held",
+            "reason": f"claim {subject} provider head {provider_head} != registered/local heads {entry.get('HEAD')}/{local_head} at {path}",
+        }
+    return {**bound, "class": "pre_pr_orphan"}
+
+
+def dead_claim_snapshot(
+    root: Path,
+    repository: str,
+    *,
+    now: float | None = None,
+    subjects: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Deterministically classify every active execute claim of one repository.
 
-    Classes: dead_claim (awaiting_land + one open PR + no live ledger session), released_residue
+    Classes: pre_pr_orphan (ready + zero PRs + no live session + one exact worktree), held_live,
+    held, dead_claim (awaiting_land + one open PR + no live ledger session), released_residue
     (a release crashed mid-flight: ready + open PR + no live session + salvage ref already at the
     claim head), live_session, not_awaiting_land, no_single_open_pr, head_drift, unreadable_issue.
     """
@@ -85,12 +173,16 @@ def dead_claim_snapshot(root: Path, repository: str, *, now: float | None = None
     refs = engine.matching_branch_refs(repository, repository.replace("/", "-") + "-")
     records: list[dict[str, Any]] = []
     for subject in sorted(engine.active_execute_claims(repository, refs), key=lambda value: engine.parse_subject(value).number):
+        if subjects is not None and subject not in subjects:
+            continue
         branch = engine.execute_branch(subject)
         head = refs[f"refs/heads/{branch}"]
         record: dict[str, Any] = {"subject": subject, "branch": branch, "head": head}
         try:
             issue = engine.issue_read(subject)
-            contract = engine.parse_issue_contract(issue.get("body") or "", expected_subject=subject)
+            body = str(issue.get("body") or "")
+            contract = engine.parse_issue_contract(body, expected_subject=subject)
+            contract["body_sha256"] = hashlib.sha256(body.encode()).hexdigest()
         except engine.GateError as exc:
             records.append({**record, "class": "unreadable_issue", "reason": str(exc)})
             continue
@@ -102,12 +194,18 @@ def dead_claim_snapshot(root: Path, repository: str, *, now: float | None = None
                 "reason": f"issue provider_state={issue.get('state')!r} state={state!r}",
             })
             continue
-        try:
-            pr = find_open_pr_for_subject(repository, subject)
-        except engine.GateError as exc:
-            records.append({**record, "class": "no_single_open_pr", "reason": str(exc)})
-            continue
         sessions = subject_sessions(root, subject)
+        prs = engine.matching_open_pull_requests(repository, subject)
+        if not prs:
+            if state != "ready":
+                records.append({**record, "class": "no_single_open_pr", "reason": f"claim {subject} has zero open pull requests in state {state}"})
+                continue
+            records.append(pre_pr_claim_record(root, repository, subject, branch, head, contract, sessions, now=moment))
+            continue
+        if len(prs) != 1:
+            records.append({**record, "class": "no_single_open_pr", "reason": f"claim {subject} has {len(prs)} open pull requests: {[item['number'] for item in prs]}"})
+            continue
+        pr = prs[0]
         live = [
             item["session_id"] for item in sessions
             if item["last_event_epoch"] is not None and moment - item["last_event_epoch"] <= SESSION_LIVENESS_WINDOW_SECONDS

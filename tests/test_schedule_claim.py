@@ -238,6 +238,37 @@ class SchedulePublishTests(unittest.TestCase):
     def published_orders(self) -> list[dict]:
         return json.loads((self.root / ".noodle/orders-next.json").read_text())["orders"]
 
+    def test_lower_overlapping_candidate_cannot_bypass_higher_orphan_reservation(self) -> None:
+        lower = issue(82, write_boundary="shared/path")
+        orphan_issue = issue(90, write_boundary="shared/path")
+        provider = FakeProvider([lower, orphan_issue])
+        orphan_branch = noodles.execute_branch(f"{REPOSITORY}#90")
+        provider.refs[f"refs/heads/{orphan_branch}"] = HEAD
+        orphan = {
+            "class": "pre_pr_orphan",
+            "repository": REPOSITORY,
+            "subject": f"{REPOSITORY}#90",
+            "body_sha256": hashlib.sha256(orphan_issue["body"].encode()).hexdigest(),
+            "branch": orphan_branch,
+            "provider_head": HEAD,
+            "git_common_dir": "/git/common",
+            "worktree_path": "/worktrees/orphan-90",
+            "local_branch": orphan_branch,
+            "local_head": HEAD,
+            "dirty_paths": ["preserved.txt"],
+            "open_pull_requests": [],
+            "live_session_ids": [],
+        }
+        candidate = self.write_candidate([f"{REPOSITORY}#82", f"{REPOSITORY}#90"])
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api), \
+             mock.patch.object(noodles, "schedule_claim_snapshot", return_value=[orphan]):
+            brief = noodles.schedule_publish(self.root, candidate)
+        claims = {item["subject"]: item for item in brief["claims"]}
+        self.assertEqual(claims[f"{REPOSITORY}#82"]["conflict_with"], f"{REPOSITORY}#90")
+        self.assertIn("adoption", claims[f"{REPOSITORY}#90"])
+        self.assertEqual(provider.posts, 0)
+        self.assertEqual([item["id"] for item in self.published_orders()], [f"{REPOSITORY}#90"])
+
     def test_independent_frontier_issues_both_claim_and_publish(self) -> None:
         provider = FakeProvider([issue(90), issue(82)])
         candidate = self.write_candidate([f"{REPOSITORY}#90", f"{REPOSITORY}#82"])

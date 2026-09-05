@@ -36,7 +36,7 @@ import verified_batch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from claim_contract import sweep_dead_claims
+from claim_contract import dead_claim_snapshot, sweep_dead_claims
 from disposition_contract import sweep_closure_dispositions
 from repair_contract import REPAIR_MAX_ATTEMPTS, find_open_pr_for_subject, repair_pending_reviews, repair_review
 from runtime_contract import (
@@ -64,6 +64,9 @@ from skill_contract import (
     validate_noodle_worktree_ignore,
     validate_policy_key_consumption,
 )
+# constraint: claim_contract owns lifecycle classification; scheduling consumes its typed result
+# constraint: through this boundary adapter without taking ownership of claim lifecycle internals.
+schedule_claim_snapshot = dead_claim_snapshot
 SCHEMA_VERSION = 1
 # constraint: ed3c/noodles#99 - the exact entrypoint an open-PR refusal routes to; repair owns an
 # constraint: existing PR (repair_contract.find_open_pr_for_subject), scheduling never re-attempts it.
@@ -5118,8 +5121,15 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         order_by_subject[subject_value] = order
 
     issues = tuple(issue for repository in repositories for issue in schedule_snapshot(repository))
+    claimed_open_subjects = {issue.subject for issue in issues if issue.claimed}
+    orphan_by_subject = {
+        record["subject"]: record
+        for repository in repositories
+        for record in schedule_claim_snapshot(root, repository, subjects=claimed_open_subjects)
+        if record["class"] == "pre_pr_orphan"
+    }
     decision = schedule_domain.schedule_decision(issues)
-    initial_winners = set(decision.winners)
+    initial_winners = set(decision.winners) | set(orphan_by_subject)
     # constraint: ed3c/noodles#98 - I3 disjoint admitted mutation boundaries: an
     # constraint: active lane's declared write surface is reserved so an overlapping
     # constraint: candidate cannot also be admitted; boundaries are repository-scoped
@@ -5147,7 +5157,7 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
             continue
         subject = parse_subject(subject_value)
         fresh = schedule_domain.schedule_decision(schedule_snapshot(subject.repo))
-        if subject_value not in fresh.winners:
+        if subject_value not in fresh.winners and subject_value not in orphan_by_subject:
             outcomes.append(schedule_claim_outcome(subject_value, "frontier_changed"))
             continue
         contract = issue_contract_readback(subject_value)
@@ -5173,7 +5183,10 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
         if candidate_boundary is None:
             outcomes.append(schedule_claim_outcome(subject_value, "boundary_undeclared"))
             continue
-        conflict = boundary_admission_conflict(candidate_boundary, reserved_boundaries.get(subject.repo, ()))
+        reservations = reserved_boundaries.get(subject.repo, ())
+        if subject_value in orphan_by_subject:
+            reservations = tuple(item for item in reservations if item[0] != subject_value)
+        conflict = boundary_admission_conflict(candidate_boundary, reservations)
         if conflict is not None:
             outcomes.append(schedule_claim_outcome(
                 subject_value, "boundary_conflict", conflict_with=conflict[0], prefix=conflict[1]
@@ -5195,8 +5208,43 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
                 subject_value, "open_pr_exists", pull_requests=open_prs, repair_owner=OPEN_PR_REPAIR_OWNER
             ))
             continue
+        orphan = orphan_by_subject.get(subject_value)
+        if orphan is not None:
+            # constraint: ed3c/noodles#420 - adoption re-reads every provider/local identity
+            # constraint: immediately before publication, so drift cannot reuse stale evidence.
+            refreshed = next(
+                (item for item in schedule_claim_snapshot(root, subject.repo, subjects={subject_value}) if item["subject"] == subject_value),
+                None,
+            )
+            if refreshed is None or refreshed["class"] != "pre_pr_orphan" or any(
+                refreshed.get(key) != orphan.get(key)
+                for key in ("body_sha256", "branch", "provider_head", "git_common_dir", "worktree_path", "local_branch", "local_head")
+            ) or refreshed.get("body_sha256") != contract["body_sha256"]:
+                reason = "claim adoption identity changed before publication" if refreshed is None else refreshed.get("reason", refreshed["class"])
+                outcomes.append(schedule_claim_outcome(subject_value, "claimed_elsewhere", adoption={"status": "held", "reason": reason}))
+                continue
+            destination_path = root / ".noodle" / "orders-next.json"
+            previous = load_json(destination_path) if destination_path.is_file() else {}
+            previous_orders = previous.get("orders", [])
+            matching_orders = [
+                item for item in previous_orders
+                if isinstance(item, dict) and item.get("id") == subject_value
+            ] if isinstance(previous_orders, list) else []
+            if len(matching_orders) > 1:
+                raise GateError(f"published schedule carries duplicate adoption orders for {subject_value}")
+            if matching_orders:
+                if matching_orders[0] != order_by_subject[subject_value]:
+                    raise GateError(f"published adoption order for {subject_value} differs from the proposed order")
+                outcomes.append(schedule_claim_outcome(subject_value, "claimed_elsewhere", adoption={**refreshed, "status": "already_published"}))
+                claimed_orders.append(matching_orders[0])
+                continue
+            head = refreshed["provider_head"]
+            claim = {"status": "claimed", "branch": refreshed["branch"], "head": head}
+        else:
+            claim = None
         default_ref = gh_api(f"repos/{subject.repo}/git/ref/heads/{default_branch}")
-        head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
+        default_head = default_ref.get("object", {}).get("sha") if isinstance(default_ref, dict) else None
+        head = head if orphan is not None else default_head
         if not isinstance(head, str) or not HEX40_RE.fullmatch(head):
             raise GateError(f"provider default branch head readback failed for {subject.repo}/{default_branch}")
         # constraint: ed3c/noodles#189 - the hosted agentic lane's target-local task identity is
@@ -5214,7 +5262,7 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
                 "evidence": contract["evidence"],
                 "write_boundary": list(candidate_boundary),
             })
-        claim = claim_execute_branch(subject.repo, execute_branch(subject_value), head)
+        claim = claim or claim_execute_branch(subject.repo, execute_branch(subject_value), head)
         if claim["status"] != "claimed":
             # constraint: ed3c/noodles#187 - a lost claim binds nothing: another
             # constraint: executor holds the ref, so this run's lane/checkout/base_sha
@@ -5238,9 +5286,12 @@ def schedule_publish(root: Path, candidate_path: Path) -> dict[str, Any]:
             binding["task"] = hosted_task
         if admission["lane"] == issue_contract.LOCAL_LANE:
             binding["handoff"] = emit_local_handoff(subject_value, contract, candidate_boundary)
+        if orphan is not None:
+            binding["adoption"] = {**orphan, "status": "adopted"}
         outcomes.append(schedule_claim_outcome(subject_value, **claim, **binding))
         claimed_orders.append(order_by_subject[subject_value])
-        reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))
+        if orphan is None:
+            reserved_boundaries.setdefault(subject.repo, []).append((subject_value, candidate_boundary))
 
     filtered = {key: value for key, value in proposed.items() if key != "orders"}
     filtered["orders"] = claimed_orders
