@@ -159,7 +159,8 @@ class CodexIsolationTests(unittest.TestCase):
         env["HOME"] = str(user_home)
         env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
         env["NOODLES_CODEX_TRACE_FILE"] = str(trace)
-        subprocess.run(
+        env["NOODLES_CODEX_REAL_BIN"] = str(fake_codex)
+        result = subprocess.run(
             [
                 str(root / codex_isolation.CODEX_WRAPPER),
                 "debug",
@@ -176,9 +177,14 @@ class CodexIsolationTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=True,
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads(trace.read_text(encoding="utf-8"))
         self.assertNotIn(codex_isolation.FORBIDDEN_FORWARD_ARG, receipt["forwarded_argv"])
-        self.assertEqual(receipt["forwarded_argv"][-len(PERMISSION_PROFILE_ARGS):], PERMISSION_PROFILE_ARGS)
+        expected = ["debug", "prompt-input", "use execute skill", *PERMISSION_PROFILE_ARGS]
+        self.assertIn(receipt["forwarded_argv"], (
+            expected,
+            [*expected, "--disable", "apps", "--disable", "plugins"],
+        ))
         self.assertEqual(receipt["incoming_argv"][0:3], ["debug", "prompt-input", "use execute skill"])
         self.assertEqual(Path(receipt["isolated_home"]).resolve(), (root / codex_isolation.ISOLATED_HOME).resolve())
         self.assertEqual(Path(receipt["isolated_codex_home"]).resolve(), (root / codex_isolation.ISOLATED_CODEX_HOME).resolve())
@@ -198,7 +204,10 @@ class CodexIsolationTests(unittest.TestCase):
         user_home = Path(temp.name) / "user-home"
         (user_home / ".codex").mkdir(parents=True)
         (user_home / ".codex" / "auth.json").write_text('{"token":"fixture"}\n', encoding="utf-8")
-        with mock.patch.dict(os.environ, {"HOME": str(user_home), "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}, clear=False):
+        with mock.patch.dict(os.environ, {
+            "HOME": str(user_home), "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+            "NOODLES_CODEX_REAL_BIN": str(fake_bin / "codex"),
+        }, clear=False):
             receipt = codex_isolation.codex_surface_canary(root, error_cls=RuntimeError)
             self.assertIn("schedule", receipt["schedule"]["skills"])
             planted = root / codex_isolation.ISOLATED_CODEX_HOME / "skills" / "user-only"
@@ -206,6 +215,31 @@ class CodexIsolationTests(unittest.TestCase):
             (planted / "SKILL.md").write_text("# user-only\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "isolated user-only skills"):
                 codex_isolation.codex_surface_canary(root, error_cls=RuntimeError)
+
+    def test_fake_plugin_list_accepts_only_exact_staging_shapes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="noodles-fake-plugin-list-", ignore_cleanup_errors=True) as temp_name:
+            fake_codex = Path(temp_name) / "codex"
+            write_fake_codex_stub(fake_codex)
+            for suffix in (
+                [], ["--disable", "apps", "--disable", "plugins"],
+                ["--disable", "apps"], ["--disable", "plugins"],
+                ["--disable", "apps", "--disable"],
+                ["--disable", "apps", "--disable", "unknown"],
+                ["--disable", "apps", "--disable", "plugins", "--unknown"],
+                ["--", "--disable", "apps", "--disable", "plugins"],
+            ):
+                with self.subTest(suffix=suffix):
+                    result = subprocess.run(
+                        [str(fake_codex), "plugin", "list", "--json", *suffix],
+                        cwd=temp_name, text=True, capture_output=True, check=False,
+                    )
+                    if suffix in ([], ["--disable", "apps", "--disable", "plugins"]):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(json.loads(result.stdout), {"installed": [], "available": []})
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("unexpected args", result.stderr)
+                        self.assertEqual(result.stdout, "")
 
 
 class NoodleResidueObserverTests(unittest.TestCase):
@@ -275,6 +309,7 @@ class NoodleResidueObserverTests(unittest.TestCase):
         env = os.environ.copy()
         env["HOME"] = str(root.parent / "user-home")
         env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+        env["NOODLES_CODEX_REAL_BIN"] = str(fake_bin / "codex")
         subprocess.run(
             [str(root / codex_isolation.CODEX_WRAPPER), "debug", "prompt-input", "probe"],
             cwd=elsewhere, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,

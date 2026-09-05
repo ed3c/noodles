@@ -1082,7 +1082,7 @@ def write_fake_codex_stub(path: Path) -> None:
         "    roots_block = '\\n'.join(f'- `{name}` = `{root}`' for name, root in roots)\n"
         "    text = '### Skill roots\\n' + roots_block + '\\n### Available skills\\n' + skills_block + '\\n</skills_instructions>'\n"
         "    print(json.dumps([{'role': 'developer', 'content': [{'type': 'input_text', 'text': text}]}]))\n"
-        "elif args == ['plugin', 'list', '--json']:\n"
+        "elif args in (['plugin', 'list', '--json'], ['plugin', 'list', '--json', '--disable', 'apps', '--disable', 'plugins']):\n"
         "    print(json.dumps({'installed': [], 'available': []}))\n"
         "else:\n"
         "    raise SystemExit(f'unexpected args: {args}')\n",
