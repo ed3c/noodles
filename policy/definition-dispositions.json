@@ -98,6 +98,7 @@
           "repo_module_target",
           "repo_root",
           "repository_metrics",
+          "repository_surface_reasons",
           "requirement_definition_source",
           "rotation_env",
           "run",

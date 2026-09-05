@@ -510,6 +510,90 @@ class BlockerMarkerTests(unittest.TestCase):
         api.assert_not_called()
 
 
+class RepoCapabilityTests(unittest.TestCase):
+    def policy(self, available: bool = True) -> dict:
+        return {
+            "schema_version": 1,
+            "repository": "ed3c/noodles",
+            "verification_surfaces": {"unit-test": {"available": available, "carrier": "tests/run.sh"}},
+        }
+
+    def body(self, required: str | None = "unit-test") -> str:
+        marker = "" if required is None else f"<!-- noodles-required-surfaces: {required} -->\n"
+        return marker + issue_body()
+
+    def test_parser_preserves_opt_in_set_and_does_not_reinterpret_executor_capabilities(self) -> None:
+        parsed = noodles.parse_issue_contract(self.body("unit-test, structural"))
+        self.assertEqual(set(parsed["required_surfaces"]), {"unit-test", "structural"})
+        self.assertEqual(parsed["required_surface_errors"], [])
+        self.assertEqual(noodles.parse_issue_contract(self.body(None))["required_surfaces"], [])
+
+    def test_malformed_duplicate_and_unknown_requirements_stay_named_and_unschedulable(self) -> None:
+        for declaration in ("", "unit-test,", "unit test", "unit-test, unit-test", "python"):
+            with self.subTest(declaration=declaration):
+                contract = noodles.parse_issue_contract(self.body(declaration))
+                derived = issue_contract.derive_schedulability(
+                    contract, "open", {}, issue_contract.sections(self.body()), noodles.system_requirement_ids(CANDIDATE_ROOT)
+                )
+                self.assertFalse(derived["schedulable"])
+                self.assertIn("noodles-required-surfaces", " ".join(derived["reasons"]))
+        duplicate = "<!-- noodles-required-surfaces: structural -->\n" + self.body()
+        self.assertIn("duplicate", " ".join(noodles.parse_issue_contract(duplicate)["required_surface_errors"]))
+
+    def test_policy_shape_and_carrier_controls(self) -> None:
+        self.assertEqual(issue_contract.repo_capability_errors(self.policy(), "ed3c/noodles"), [])
+        cases = [None, {}, {**self.policy(), "schema_version": True}, {**self.policy(), "verification_surfaces": []}]
+        for row in ({"available": True, "carrier": None}, {"available": True, "carrier": " "},
+                    {"available": "true", "carrier": "tests/run.sh"}, {"available": True}):
+            cases.append({**self.policy(), "verification_surfaces": {"unit-test": row}})
+        cases.append({**self.policy(), "verification_surfaces": {"python": {"available": True, "carrier": "tests/run.sh"}}})
+        for document in cases:
+            with self.subTest(document=document):
+                self.assertTrue(issue_contract.repo_capability_errors(document, "ed3c/noodles"))
+        self.assertIn("does not match", " ".join(issue_contract.repo_capability_errors(self.policy(), "ed3c/other")))
+
+    def test_inclusion_controls_available_false_missing_and_undeclared(self) -> None:
+        self.assertEqual(issue_contract.required_surface_reasons(("unit-test",), self.policy(), "ed3c/noodles"), [])
+        for required, policy in ((("unit-test",), self.policy(False)), (("structural",), self.policy())):
+            reasons = issue_contract.required_surface_reasons(required, policy, "ed3c/noodles")
+            self.assertIn("BLOCKED_EXTERNAL", " ".join(reasons))
+            self.assertIn(required[0], " ".join(reasons))
+        self.assertEqual(issue_contract.required_surface_reasons((), None, "ed3c/noodles"), [])
+
+    def test_direct_derivation_cannot_silently_omit_required_policy(self) -> None:
+        contract = noodles.parse_issue_contract(self.body())
+        result = issue_contract.derive_schedulability(
+            contract, "open", {}, issue_contract.sections(self.body()), noodles.system_requirement_ids(CANDIDATE_ROOT)
+        )
+        self.assertFalse(result["schedulable"])
+        self.assertIn("BLOCKED_EXTERNAL", " ".join(result["reasons"]))
+
+    def test_payload_reads_policy_and_refuses_without_provider_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
+            root = Path(temp)
+            path = root / issue_contract.REPO_CAPABILITIES_PATH
+            path.parent.mkdir()
+            for available in (True, False):
+                path.write_text(json.dumps(self.policy(available)))
+                with mock.patch.object(noodles, "ENGINE_ROOT", root), mock.patch.object(noodles, "gh_api") as api:
+                    result = noodles.issue_contract_payload(
+                        {"state": "open", "body": self.body()}, SUBJECT,
+                        known_requirements=noodles.system_requirement_ids(CANDIDATE_ROOT),
+                    )
+                self.assertEqual(result["schedulable"], available)
+                self.assertIn("unit-test", result["required_surfaces"])
+                api.assert_not_called()
+            for contents in ("{", json.dumps({**self.policy(), "repository": "ed3c/other"})):
+                path.write_text(contents)
+                reasons = noodles.repository_surface_reasons(noodles.parse_issue_contract(self.body()), root)
+                self.assertIn("BLOCKED_EXTERNAL", " ".join(reasons))
+            path.unlink()
+            self.assertTrue(noodles.repository_surface_reasons(noodles.parse_issue_contract(self.body()), root))
+            with mock.patch.object(noodles, "load_json") as loader:
+                self.assertEqual(noodles.repository_surface_reasons(noodles.parse_issue_contract(self.body(None)), root), [])
+            loader.assert_not_called()
+
+
 class SchedulabilityTests(unittest.TestCase):
     """Eligibility is derived from each predecessor's own provider readback, never from a mirrored marker."""
 

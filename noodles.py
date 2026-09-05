@@ -81,6 +81,7 @@ MARKER_PATTERNS = {
     "feature": re.compile(r"<!--\s*noodles-feature:\s*([^>]+?)\s*-->", re.I),
     "component": re.compile(r"<!--\s*noodles-component:\s*([^>]+?)\s*-->", re.I),
     "requirement": re.compile(r"<!--\s*noodles-requirement:\s*([^>]+?)\s*-->", re.I),
+    "required_surfaces": re.compile(r"<!--\s*noodles-required-surfaces:\s*([^>]*?)\s*-->", re.I),
     "depends_on": re.compile(r"<!--\s*noodles-depends-on:\s*([^>]+?)\s*-->", re.I),
     "write_boundary": re.compile(r"<!--\s*noodles-write-boundary:\s*([^>]+?)\s*-->", re.I),
     "executor": re.compile(r"<!--\s*noodles-executor:\s*([^>]+?)\s*-->", re.I),
@@ -347,6 +348,7 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
     # constraint: an unschedulable Issue with an exact reason, never as an Issue schedule_snapshot
     # constraint: silently drops.
     requirements, requirement_errors = issue_contract.parse_requirements(declared_markers(body, "requirement"))
+    required_surfaces, required_surface_errors = issue_contract.parse_required_surfaces(declared_markers(body, "required_surfaces"))
     return {
         "role": role,
         "target": target or "",
@@ -355,6 +357,8 @@ def parse_issue_contract(body: str, expected_subject: str | None = None) -> dict
         "feature": feature_value or "",
         "component": component_value or "",
         "requirements": list(requirements),
+        "required_surfaces": list(required_surfaces),
+        "required_surface_errors": list(required_surface_errors),
         "requirement_errors": list(requirement_errors),
         "dependencies": dependencies,
         "write_boundary": write_boundary,
@@ -787,6 +791,12 @@ def verify_repository(root: Path, policy_root: Path | None = None) -> dict[str, 
     policy_root = (policy_root or root).resolve()
     policy = load_json(policy_root / "policy/fitness.json")
     errors: list[str] = []
+    try:
+        errors.extend(issue_contract.repo_capability_errors(
+            load_json(root / issue_contract.REPO_CAPABILITIES_PATH), protection_policy(policy_root)["repository"]
+        ))
+    except GateError as exc:
+        errors.append(str(exc))
     expected_task_profiles = skill_contract.task_profiles(ENGINE_ROOT)
     required_task_profiles = policy.get("required_codex_task_profiles")
     if required_task_profiles != expected_task_profiles: errors.append(f"policy required_codex_task_profiles must be exactly {expected_task_profiles!r}")
@@ -1148,6 +1158,17 @@ def issue_contract_readback(subject_value: str, dependency_cache: dict[str, dict
     return issue_contract_payload(issue_read(subject_value), subject_value, dependency_cache)
 
 
+def repository_surface_reasons(contract: Mapping[str, Any], root: Path) -> list[str]:
+    required = contract.get("required_surfaces", ())
+    if not required:
+        return []
+    try:
+        document = load_json(root / issue_contract.REPO_CAPABILITIES_PATH)
+    except GateError as exc:
+        return [f"BLOCKED_EXTERNAL: {exc}"]
+    return issue_contract.required_surface_reasons(required, document, contract["target"])
+
+
 def issue_contract_payload(
     issue: dict[str, Any],
     subject_value: str | None,
@@ -1179,7 +1200,8 @@ def issue_contract_payload(
     # constraint: payload claims no collision rather than guessing one from a partial view.
     elders = issue_contract.fingerprint_elders(contract["subject"], fingerprints or {})
     derived = issue_contract.derive_schedulability(
-        contract, str(issue.get("state") or ""), observed, body_sections, resolved_requirements, elders=elders
+        contract, str(issue.get("state") or ""), observed, body_sections, resolved_requirements, elders=elders,
+        verification_reasons=repository_surface_reasons(contract, ENGINE_ROOT),
     )
     return {
         "subject": contract["subject"],
@@ -1190,6 +1212,7 @@ def issue_contract_payload(
         "url": issue.get("html_url"),
         "body_sha256": issue_contract.body_digest(body),
         "requirements": contract["requirements"],
+        "required_surfaces": contract["required_surfaces"],
         "dependencies": contract["dependencies"],
         "write_boundary": contract["write_boundary"],
         "executor": contract["executor"],
@@ -2476,6 +2499,10 @@ def verify_pull_request(root: Path, event_path: Path, candidate_root: Path, rece
     contract = parse_issue_contract(issue.get("body") or "")
     if issue.get("state") != "open" or contract["state"] != "awaiting_land":
         raise GateError("issue must be open and awaiting_land before PR verification")
+    # constraint: ed3c/noodles#422 - a candidate cannot authorize itself by widening its own policy.
+    surface_requirements = contract["required_surface_errors"] + repository_surface_reasons(contract, root)
+    if surface_requirements:
+        raise GateError("candidate issue-contract gate failed: " + "; ".join(surface_requirements))
     actual_head = git(candidate_root, "rev-parse", "HEAD")
     if actual_head != head_sha:
         raise GateError(f"candidate checkout {actual_head} != event head {head_sha}")
