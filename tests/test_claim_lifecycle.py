@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +23,7 @@ from tests.support import (
     ISSUE_REQUIREMENT_MARKER,
     cmd,
     complete_issue_sections,
+    copy_tracked,
     handoff_fixture,
 )
 
@@ -31,7 +36,7 @@ MAIN_HEAD = "b" * 40
 EXECUTE_MODEL = skill_contract.task_profiles(CANDIDATE_ROOT)["execute"]["model"]
 
 
-def issue_body(state: str) -> str:
+def issue_body(state: str, *, local: bool = False) -> str:
     return (
         "<!-- noodles-role: repository-mutating-atom -->\n"
         f"<!-- noodles-target: {REPOSITORY} -->\n"
@@ -40,8 +45,8 @@ def issue_body(state: str) -> str:
         f"{ISSUE_FEATURE_MARKER}\n"
         f"{ISSUE_DEPENDS_ON_MARKER}\n"
         "<!-- noodles-write-boundary: none -->\n"
-        "<!-- noodles-executor: gha-runtime -->\n"
-        "<!-- noodles-runtime: shell -->\n"
+        f"<!-- noodles-executor: {'local-noodle' if local else 'gha-runtime'} -->\n"
+        f"<!-- noodles-runtime: {'python' if local else 'shell'} -->\n"
         "<!-- noodles-evidence: github-only-v1 -->\n"
         f"{ISSUE_REQUIREMENT_MARKER}\n\n"
         + complete_issue_sections("One exact claimed atom.", "- Nothing adjacent.")
@@ -51,7 +56,7 @@ def issue_body(state: str) -> str:
 class ClaimProvider:
     """Stateful provider double for issue/PR/refs/workflow readbacks and claim mutations."""
 
-    def __init__(self, head: str, *, issue_state: str = "open", contract_state: str = "awaiting_land", failed: bool = True) -> None:
+    def __init__(self, head: str, *, issue_state: str = "open", contract_state: str = "awaiting_land", failed: bool = True, local: bool = False) -> None:
         self.head = head
         self.failed = failed
         self.pr_open = True
@@ -61,11 +66,12 @@ class ClaimProvider:
             "state": issue_state,
             "title": "[PARALLEL-P0] claimed atom 33",
             "html_url": f"https://github.test/{REPOSITORY}/issues/33",
-            "body": issue_body(contract_state),
+            "body": issue_body(contract_state, local=local),
         }
         self.ref_posts: list[str] = []
         self.ref_deletes: list[str] = []
         self.body_patches = 0
+        self.comments: list[dict] = []
 
     def pr(self) -> dict:
         return {
@@ -106,6 +112,12 @@ class ClaimProvider:
                 self.body_patches += 1
                 self.issue["body"] = str(payload["body"])
             return self.issue
+        if endpoint == f"repos/{REPOSITORY}/issues/33/comments?per_page=100":
+            return list(self.comments)
+        if endpoint == f"repos/{REPOSITORY}/issues/33/comments" and method == "POST":
+            assert isinstance(payload, dict)
+            self.comments.append({"id": len(self.comments) + 1, "body": payload["body"]})
+            return self.comments[-1]
         if endpoint.startswith(f"repos/{REPOSITORY}/issues?state=open"):
             return [self.issue] if self.issue["state"] == "open" else []
         if endpoint == f"repos/{REPOSITORY}/git/ref/heads/main":
@@ -230,6 +242,224 @@ class ClaimLifecycleTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["class"], "no_single_open_pr")
         self.assertEqual(outcomes[0]["action"], "skipped")
         self.assert_untouched(provider)
+
+    def test_pre_pr_orphan_binds_exact_registered_worktree_and_preserves_dirty_bytes(self) -> None:
+        self.drop_session()
+        dirty = self.root / "orphan-dirty.txt"
+        dirty.write_bytes(b"preserve this exact byte string\n")
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "pre_pr_orphan")
+        self.assertEqual(record["repository"], REPOSITORY)
+        self.assertEqual(record["subject"], SUBJECT)
+        self.assertEqual(record["provider_head"], self.head)
+        self.assertEqual(record["local_branch"], BRANCH)
+        self.assertEqual(record["local_head"], self.head)
+        self.assertEqual(record["worktree_path"], str(self.root.resolve()))
+        self.assertIn("orphan-dirty.txt", record["dirty_paths"])
+        self.assertEqual(dirty.read_bytes(), b"preserve this exact byte string\n")
+
+    def test_pre_pr_orphan_without_exact_registered_worktree_is_held(self) -> None:
+        self.drop_session()
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        with mock.patch.object(noodles, "registered_worktrees", return_value={}):
+            record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "held")
+        self.assertIn(f"exactly one registered worktree on refs/heads/{BRANCH}", record["reason"])
+        self.assertIn(SUBJECT, record["reason"])
+
+    def test_pre_pr_claim_with_live_session_is_held_live(self) -> None:
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        self.append_event(LIVE_TIMESTAMP)
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "held_live")
+        self.assertEqual(record["live_session_ids"], [self.session_id])
+        self.assertIn(self.session_id, record["reason"])
+
+    def test_pre_pr_quiet_worker_must_exit_before_adoption(self) -> None:
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            cwd=self.root, stdin=subprocess.PIPE,
+        )
+        process_path = self.events_path.with_name("process.json")
+        process_path.write_text(json.dumps({
+            "pid": worker.pid, "session_id": self.session_id,
+            "started_at": "2026-08-29T00:00:00Z",
+        }))
+        try:
+            self.assertIsNone(worker.poll())
+            record = self.snapshot(provider)[0]
+            self.assertEqual(record["class"], "held_live")
+            self.assertIn(str(worker.pid), record["reason"])
+            self.events_path.unlink()
+            self.assertEqual(self.snapshot(provider)[0]["class"], "held_live")
+        finally:
+            worker.stdin.close()
+            worker.wait(timeout=5)
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "pre_pr_orphan")
+        self.assertEqual(provider.ref_posts, [])
+        self.assertEqual(provider.ref_deletes, [])
+        self.assertEqual(provider.body_patches, 0)
+
+    def test_pre_pr_unknown_process_record_is_held(self) -> None:
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        process_path = self.events_path.with_name("process.json")
+        for payload in (None, "not json", {"pid": 0, "session_id": self.session_id},
+                        {"pid": os.getpid(), "session_id": "foreign-session"}):
+            with self.subTest(payload=payload):
+                if payload is not None:
+                    process_path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+                record = self.snapshot(provider)[0]
+                self.assertEqual(record["class"], "held")
+                self.assertIn("process", record["reason"])
+        self.assertEqual(provider.ref_posts, [])
+        self.assertEqual(provider.ref_deletes, [])
+
+    def test_pre_pr_provider_local_head_drift_is_held(self) -> None:
+        self.drop_session()
+        provider = ClaimProvider("c" * 40, contract_state="ready", local=True)
+        provider.pr_open = False
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "held")
+        self.assertEqual(record["provider_head"], "c" * 40)
+        self.assertEqual(record["local_head"], self.head)
+        self.assertIn("registered/local heads", record["reason"])
+
+    def test_pre_pr_ambiguous_registered_worktrees_are_held(self) -> None:
+        self.drop_session()
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        registry = noodles.registered_worktrees(self.root)
+        registry[(self.root.parent / "duplicate").resolve()] = dict(registry[self.root.resolve()])
+        with mock.patch.object(noodles, "registered_worktrees", return_value=registry):
+            record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "held")
+        self.assertIn("found 2", record["reason"])
+        self.assertIn("duplicate", record["reason"])
+
+    def test_pre_pr_unreadable_issue_is_held_before_worktree_adoption(self) -> None:
+        self.drop_session()
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        provider.issue["body"] = "not an issue contract"
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "unreadable_issue")
+        self.assertIn("missing noodles-role marker", record["reason"])
+
+    def test_schedule_reuses_pre_pr_provider_ref_worktree_and_dirty_bytes_once(self) -> None:
+        self.drop_session()
+        dirty = self.root / "orphan-dirty.txt"
+        dirty.write_bytes(b"never reset or clean me\n")
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        candidate = self.root / ".noodle" / "orders-next.candidate.json"
+        candidate.write_text(json.dumps({
+            "orders": [{
+                "id": SUBJECT,
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "resume exact orphan"}],
+            }]
+        }))
+        before_path = str(self.root.resolve())
+        with mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+            first = noodles.schedule_publish(self.root, candidate)
+            candidate.write_text(json.dumps({"orders": [{
+                "id": SUBJECT,
+                "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "resume exact orphan"}],
+            }]}))
+            second = noodles.schedule_publish(self.root, candidate)
+        self.assertEqual(first["claims"][0]["status"], "claimed")
+        self.assertEqual(first["claims"][0]["adoption"]["status"], "adopted")
+        self.assertEqual(first["claims"][0]["adoption"]["worktree_path"], before_path)
+        self.assertEqual(second["claims"][0]["status"], "claimed_elsewhere")
+        self.assertEqual(second["claims"][0]["adoption"]["status"], "already_published")
+        self.assertEqual(json.loads((self.root / ".noodle" / "orders-next.json").read_text())["orders"], [{
+            "id": SUBJECT,
+            "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "resume exact orphan"}],
+        }])
+        self.assertEqual(provider.ref_posts, [])
+        self.assertEqual(provider.ref_deletes, [])
+        self.assertEqual(dirty.read_bytes(), b"never reset or clean me\n")
+        self.assertEqual(len(provider.comments), 1)
+
+    @unittest.skipIf(
+        os.getenv("NOODLES_OFFLINE_TESTS") == "1" or os.getenv("GITHUB_ACTIONS") == "true",
+        "pinned Noodle runtime is intentionally unavailable in hosted/offline CI; live control runs before handoff",
+    )
+    def test_pinned_noodle_reuses_the_exact_dirty_pre_pr_worktree(self) -> None:
+        binary = noodles.resolve_locked_runtime_binary(CANDIDATE_ROOT, error_cls=AssertionError)
+        with tempfile.TemporaryDirectory(prefix="noodles-pre-pr-adoption-", ignore_cleanup_errors=True) as temp_name:
+            project = Path(temp_name) / "repo"
+            copy_tracked(CANDIDATE_ROOT, project)
+
+            worktree = project / ".worktrees" / BRANCH
+            worktree.parent.mkdir()
+            cmd(["git", "worktree", "add", "-q", "-b", BRANCH, str(worktree), "HEAD"], project)
+            dirty = worktree / "README.md"
+            dirty.write_bytes(dirty.read_bytes() + b"\npre-pr adoption must preserve this byte\n")
+            before = cmd(["git", "diff", "--binary"], worktree)
+
+            fake_bin = Path(temp_name) / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                f"#!{sys.executable}\n"
+                "import json\n"
+                "import sys\n"
+                "sys.stdin.read()\n"
+                "print(json.dumps({'type': 'thread.started', 'thread_id': 'fixture'}))\n"
+                "print(json.dumps({'type': 'turn.completed', 'usage': {}}))\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+            (project / ".noodle.toml").write_text(
+                "mode = \"supervised\"\n"
+                "[routing.defaults]\nprovider = \"codex\"\nmodel = \"fixture\"\n"
+                "[concurrency]\nmax_concurrency = 1\n"
+                "[runtime.process]\nmax_concurrent = 1\n"
+                "[server]\nenabled = false\n"
+                "[skills]\npaths = [\".agents/skills\"]\n"
+                f"[agents.codex]\npath = {json.dumps(str(fake_bin))}\nargs = []\n",
+                encoding="utf-8",
+            )
+            runtime = project / ".noodle"
+            runtime.mkdir(exist_ok=True)
+            provider = ClaimProvider(cmd(["git", "rev-parse", "HEAD"], worktree), contract_state="ready", local=True)
+            provider.pr_open = False
+            candidate = runtime / "orders-next.candidate.json"
+            candidate.write_text(json.dumps({
+                "orders": [{
+                    "id": SUBJECT,
+                    "stages": [{"do": "execute", "model": EXECUTE_MODEL, "prompt": "resume exact orphan"}],
+                }]
+            }))
+            with mock.patch.dict(os.environ, {"NOODLE_PROJECT_DIR": str(project)}), \
+                 mock.patch.object(noodles, "gh_api", side_effect=provider.api):
+                brief = noodles.schedule_publish(project, candidate)
+
+            result = subprocess.run(
+                [str(binary), "--project-dir", str(project), "start", "--once"],
+                cwd=project,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            sessions = sorted(runtime.glob(f"sessions/{BRANCH}-*"))
+            self.assertEqual(len(sessions), 1, result.stderr or result.stdout)
+            spawn = json.loads((sessions[0] / "spawn.json").read_text())
+            self.assertEqual(Path(spawn["worktree_path"]).resolve(), worktree.resolve())
+            self.assertEqual(cmd(["git", "diff", "--binary"], worktree), before)
+            self.assertEqual(brief["claims"][0]["adoption"]["status"], "adopted")
+            self.assertEqual(provider.ref_posts, [])
+            self.assertEqual(provider.ref_deletes, [])
 
     def test_pr_branch_head_drift_is_planted_negative_control(self) -> None:
         provider = ClaimProvider(self.head)
