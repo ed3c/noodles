@@ -552,7 +552,19 @@ def write_noodle_stub(path: Path, version: str, *, start_delay: float | None = N
             "                    if os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
             "                    else post_admission_response_suppressed\n"
             "                )\n"
-            "                if (\n"
+            "                complete_mode = (\n"
+            "                    os.environ.get('NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE') == '1'\n"
+            "                )\n"
+            "                if complete_mode:\n"
+            "                    with state_lock:\n"
+            "                        cycle_drained = snapshot_state['responses'] >= 3\n"
+            "                    if (\n"
+            "                        response_event.is_set()\n"
+            "                        and stop_release_response_completed.is_set()\n"
+            "                        and cycle_drained\n"
+            "                    ):\n"
+            "                        stop_path.write_text('stop\\n')\n"
+            "                elif (\n"
             "                    response_event.wait(timeout=30.0)\n"
             "                    and stop_release_response_completed.wait(timeout=30.0)\n"
             "                ):\n"
@@ -1206,8 +1218,8 @@ def start_entrypoint_expectations() -> dict[str, object]:
                 "listener_served": True,
                 "request_seen": True,
                 "release_written": True,
-                "snapshot_requests": 2,
-                "snapshot_responses": 2,
+                "snapshot_requests": 3,
+                "snapshot_responses": 3,
                 "post_admission_request_started": True,
                 "post_admission_response_completed": True,
                 "post_admission_response_suppressed": False,
@@ -1311,9 +1323,9 @@ def start_entrypoint_expectation_errors(expectations: dict[str, object]) -> list
     if not isinstance(premature_barrier, dict) or set(premature_barrier) != barrier_fields:
         errors.append("start-entrypoint premature-shutdown barrier has the wrong fields")
     elif isinstance(complete_barrier, dict) and set(complete_barrier) == barrier_fields:
-        if premature_barrier["snapshot_requests"] != complete_barrier["snapshot_requests"]:
+        if premature_barrier["snapshot_requests"] + 1 != complete_barrier["snapshot_requests"]:
             errors.append("start-entrypoint premature shutdown must occur on the first post-admission snapshot")
-        if premature_barrier["snapshot_responses"] != complete_barrier["snapshot_responses"] - 1:
+        if premature_barrier["snapshot_responses"] + 2 != complete_barrier["snapshot_responses"]:
             errors.append("start-entrypoint premature shutdown must withhold the post-admission response")
         if any(premature_barrier[field] is not True for field in prerequisite_flags):
             errors.append("start-entrypoint premature-shutdown barrier prerequisite flags must all be true")
