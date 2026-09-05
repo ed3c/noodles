@@ -47,6 +47,7 @@ from tests.support import (
     write_noodle_stub,
     write_skill_discovery_fixture,
 )
+from tests.test_supervised_ceremony import EDIT_SUBJECT, complete_edit_body
 TASK_PROFILES = skill_contract.task_profiles(ENGINE_ROOT)
 EXECUTE_MODEL = TASK_PROFILES["execute"]["model"]
 # constraint: ed3c/noodles#253 - two Agent-facing procedure facts, one owner each, decided on the
@@ -1203,6 +1204,281 @@ class RepositoryGateTests(unittest.TestCase):
         policy = json.loads((ENGINE_ROOT / "policy/fitness.json").read_text())
         self.assertTrue(all(isinstance(metrics.get(k), (int, float)) for k in skill_contract.REPORT_ONLY_FITNESS_LIMITS))
         self.assertTrue(all(not skill_contract.threshold_exceeded(metrics[k], d, policy[p]) for k, (d, p) in skill_contract.FAILING_FITNESS_LIMITS.items()))
+
+
+class AdapterAddTests(unittest.TestCase):
+    REPOSITORY = "ed3c/noodles"
+    NUMBER = 903304
+    SUBJECT = f"{REPOSITORY}#{NUMBER}"
+    ENDPOINT = f"repos/{REPOSITORY}/issues/{NUMBER}"
+
+    class FakeProvider:
+        def __init__(self, owner: "AdapterAddTests", fault: tuple[str, str] | None = None) -> None:
+            self.owner = owner
+            self.fault = fault
+            self.title = ""
+            self.body = ""
+            self.calls: list[tuple[str, str, object | None]] = []
+            self.responses: list[tuple[str, str]] = []
+            self.add_patch_count = 0
+            self.get_count = 0
+            self.observing = False
+            self.observed: list[dict[str, object]] = []
+            self.observe_provisional = False
+
+        def response(self, phase: str, body: str) -> dict[str, object]:
+            response: dict[str, object] = {
+                "number": self.owner.NUMBER,
+                "title": self.title,
+                "body": body,
+            }
+            if self.fault == (phase, "identity"):
+                response["number"] = 0 if phase == "POST" else self.owner.NUMBER + 1
+            elif self.fault == (phase, "body"):
+                response["body"] = body + "\nprovider drift\n"
+            elif self.fault == (phase, "subject"):
+                response["body"] = noodles.replace_marker(
+                    body, "subject", f"{self.owner.REPOSITORY}#{self.owner.NUMBER + 1}"
+                )
+            self.responses.append((phase, str(response.get("body") or "")))
+            return response
+
+        def observe(self) -> None:
+            self.observing = True
+            output = io.StringIO()
+            try:
+                with backlog_project(), \
+                     mock.patch.dict(
+                         os.environ,
+                         {"NOODLES_REPOSITORIES": self.owner.REPOSITORY},
+                         clear=False,
+                     ), \
+                     mock.patch("sys.stdout", output):
+                    self.owner.assertEqual(noodles.adapter_sync(), 0)
+            finally:
+                self.observing = False
+            self.observed = [json.loads(line) for line in output.getvalue().splitlines()]
+
+        def __call__(
+            self,
+            endpoint: str,
+            *,
+            method: str = "GET",
+            payload: object | None = None,
+            **_kwargs: object,
+        ) -> object:
+            self.calls.append((method, endpoint, payload))
+            if endpoint == "graphql":
+                return graphql_backlog_payload([
+                    {
+                        "number": self.owner.NUMBER,
+                        "state": "open",
+                        "title": self.title,
+                        "body": self.body,
+                        "html_url": f"https://example.invalid/{self.owner.NUMBER}",
+                    }
+                ])
+            if endpoint == f"repos/{self.owner.REPOSITORY}/issues" and method == "POST":
+                request = payload if isinstance(payload, dict) else {}
+                self.title = str(request.get("title") or "")
+                self.body = str(request.get("body") or "")
+                posted_body = self.body
+                if self.observe_provisional:
+                    self.observe()
+                if self.fault == ("POST", "exception"):
+                    raise noodles.GateError("transport response lost")
+                return self.response("POST", posted_body)
+            if endpoint != self.owner.ENDPOINT:
+                raise AssertionError(f"unexpected endpoint {endpoint}")
+            if method == "PATCH":
+                request = payload if isinstance(payload, dict) else {}
+                self.body = str(request.get("body") or "")
+                if self.observing:
+                    return self.response("sync PATCH", self.body)
+                self.add_patch_count += 1
+                phase = "blocked PATCH" if self.add_patch_count == 1 else "ready PATCH"
+                return self.response(phase, self.body)
+            if method == "GET":
+                self.get_count += 1
+                phase = "blocked GET" if self.get_count == 1 else "ready GET"
+                return self.response(phase, self.body)
+            raise AssertionError(f"unexpected provider call {method} {endpoint}")
+
+    def candidate_body(self) -> str:
+        return complete_edit_body(subject=EDIT_SUBJECT).replace(
+            f"<!-- noodles-subject: {EDIT_SUBJECT} -->\n", ""
+        )
+
+    def candidate_json(self, **changes: object) -> str:
+        candidate: dict[str, object] = {
+            "title": "Complete adapter candidate",
+            "body": self.candidate_body(),
+            "expected_target": self.REPOSITORY,
+        }
+        candidate.update(changes)
+        return json.dumps(candidate)
+
+    def invoke(self, stdin: str, provider: "AdapterAddTests.FakeProvider", argv: list[str] | None = None) -> tuple[int, str]:
+        output = io.StringIO()
+        with mock.patch.dict(
+            os.environ,
+            {"NOODLES_TARGET_REPOSITORY": self.REPOSITORY},
+            clear=False,
+        ), mock.patch.object(noodles, "gh_api", side_effect=provider), \
+             mock.patch("sys.stdin", io.StringIO(stdin)), \
+             mock.patch("sys.stdout", output):
+            result = noodles.adapter_main(argv or ["add"])
+        return result, output.getvalue()
+
+    def test_complete_stdin_candidate_stages_blocked_then_reads_back_ready(self) -> None:
+        provider = self.FakeProvider(self)
+
+        result, output = self.invoke(self.candidate_json(), provider)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output, self.SUBJECT + "\n")
+        self.assertEqual(
+            [(method, endpoint) for method, endpoint, _payload in provider.calls],
+            [
+                ("POST", f"repos/{self.REPOSITORY}/issues"),
+                ("PATCH", self.ENDPOINT),
+                ("GET", self.ENDPOINT),
+                ("PATCH", self.ENDPOINT),
+                ("GET", self.ENDPOINT),
+            ],
+        )
+        posted = provider.calls[0][2]
+        self.assertIsInstance(posted, dict)
+        provisional_body = str(posted["body"])
+        self.assertIsNone(noodles.one_marker(provisional_body, "subject", required=False))
+        self.assertEqual(noodles.one_marker(provisional_body, "state"), "blocked")
+        self.assertIsNotNone(noodles.one_marker(provisional_body, "blocker"))
+        blocked_body = str(provider.calls[1][2]["body"])
+        ready_body = str(provider.calls[3][2]["body"])
+        self.assertEqual(noodles.validate_complete_issue_body(blocked_body, self.SUBJECT)["state"], "blocked")
+        self.assertEqual(noodles.validate_complete_issue_body(ready_body, self.SUBJECT)["state"], "ready")
+        self.assertEqual(provider.body, ready_body)
+        self.assertEqual(
+            [
+                noodles.issue_contract.body_digest(body)
+                for phase, body in provider.responses
+                if phase in {"blocked PATCH", "blocked GET", "ready PATCH", "ready GET"}
+            ],
+            [
+                noodles.issue_contract.body_digest(blocked_body),
+                noodles.issue_contract.body_digest(blocked_body),
+                noodles.issue_contract.body_digest(ready_body),
+                noodles.issue_contract.body_digest(ready_body),
+            ],
+        )
+
+    def test_title_only_and_help_shaped_argv_fail_before_provider_write(self) -> None:
+        for argv in (["add", "title only"], ["add", "--help"]):
+            with self.subTest(argv=argv):
+                provider = self.FakeProvider(self)
+                with self.assertRaises(noodles.GateError):
+                    self.invoke(self.candidate_json(), provider, argv)
+                self.assertEqual(provider.calls, [])
+
+    def test_malformed_or_invalid_candidates_fail_before_provider_write(self) -> None:
+        body = self.candidate_body()
+        invalid = {
+            "malformed JSON": "{",
+            "non-object JSON": "[]",
+            "missing field": json.dumps({"title": "x", "body": body}),
+            "extra field": self.candidate_json(extra="x"),
+            "wrong title type": self.candidate_json(title=3),
+            "wrong body type": self.candidate_json(body=[]),
+            "wrong target type": self.candidate_json(expected_target=False),
+            "blank title": self.candidate_json(title="   "),
+            "blank body": self.candidate_json(body="\n"),
+            "incomplete body": self.candidate_json(body="<!-- noodles-target: ed3c/noodles -->\n"),
+            "missing claim section": self.candidate_json(body=body.replace("## Claim", "## Unclaimed")),
+            "missing non-claims section": self.candidate_json(body=body.replace("## Non-claims", "## Other")),
+            "existing subject": self.candidate_json(
+                body=body.replace(
+                    "<!-- noodles-target: ed3c/noodles -->",
+                    "<!-- noodles-target: ed3c/noodles -->\n<!-- noodles-subject: ed3c/noodles#8 -->",
+                )
+            ),
+            "body target mismatch": self.candidate_json(
+                body=body.replace("ed3c/noodles", "other/repository")
+            ),
+            "expected target mismatch": self.candidate_json(expected_target="other/repository"),
+            "blocked candidate": self.candidate_json(
+                body=body.replace("noodles-state: ready", "noodles-state: blocked")
+            ),
+            "duplicate state": self.candidate_json(
+                body=body + "\n<!-- noodles-state: ready -->\n"
+            ),
+        }
+        for name in ("component", "depends-on", "write-boundary", "requirement", "observer", "capability-probe"):
+            marker = next(line for line in body.splitlines(keepends=True) if line.startswith(f"<!-- noodles-{name}:"))
+            invalid[f"missing {name}"] = self.candidate_json(body=body.replace(marker, "", 1))
+        for label, stdin in invalid.items():
+            with self.subTest(label=label):
+                provider = self.FakeProvider(self)
+                with self.assertRaises(noodles.GateError):
+                    self.invoke(stdin, provider)
+                self.assertEqual(provider.calls, [])
+
+    def test_adapter_sync_cannot_schedule_the_posted_provisional_body(self) -> None:
+        provider = self.FakeProvider(self)
+        provider.observe_provisional = True
+
+        result, output = self.invoke(self.candidate_json(), provider)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output, self.SUBJECT + "\n")
+        issues = [item for item in provider.observed if item.get("kind") != "finding"]
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["status"], "blocked")
+        self.assertFalse(issues[0]["schedulable"])
+        normalized = [body for phase, body in provider.responses if phase == "sync PATCH"]
+        self.assertTrue(normalized)
+        self.assertEqual(noodles.one_marker(normalized[0], "subject"), self.SUBJECT)
+        with mock.patch.object(noodles, "gh_api", side_effect=provider):
+            provider.observe()
+        ready = [item for item in provider.observed if item.get("kind") != "finding"]
+        self.assertEqual([item["id"] for item in ready], [self.SUBJECT])
+        self.assertEqual(ready[0]["status"], "ready")
+        self.assertTrue(ready[0]["schedulable"])
+
+    def test_wrong_provider_responses_fail_without_success_stdout(self) -> None:
+        faults = (
+            ("POST", "exception"),
+            ("POST", "identity"),
+            ("POST", "body"),
+            ("blocked PATCH", "identity"),
+            ("blocked PATCH", "body"),
+            ("blocked PATCH", "subject"),
+            ("blocked GET", "identity"),
+            ("blocked GET", "body"),
+            ("blocked GET", "subject"),
+            ("ready PATCH", "body"),
+            ("ready GET", "body"),
+            ("ready GET", "subject"),
+        )
+        for fault in faults:
+            with self.subTest(fault=fault):
+                provider = self.FakeProvider(self, fault)
+                output = io.StringIO()
+                with mock.patch.dict(
+                    os.environ,
+                    {"NOODLES_TARGET_REPOSITORY": self.REPOSITORY},
+                    clear=False,
+                ), mock.patch.object(noodles, "gh_api", side_effect=provider), \
+                     mock.patch("sys.stdin", io.StringIO(self.candidate_json())), \
+                     mock.patch("sys.stdout", output):
+                    with self.assertRaises(noodles.GateError) as raised:
+                        noodles.adapter_main(["add"])
+                self.assertEqual(output.getvalue(), "")
+                self.assertIn("external residue is unresolved", str(raised.exception))
+                if fault == ("POST", "exception"):
+                    self.assertEqual(len(provider.calls), 1)
+                    self.assertIn("do not retry", str(raised.exception))
+                if fault[0] != "POST":
+                    self.assertIn(self.SUBJECT, str(raised.exception))
 
 
 class FixtureTeardownTests(unittest.TestCase):

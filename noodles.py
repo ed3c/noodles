@@ -3772,22 +3772,185 @@ def adapter_sync() -> int:
     return 0
 
 
-def adapter_add(title: str) -> int:
+def validate_complete_issue_body(body: str, subject_value: str) -> dict[str, Any]:
+    contract = parse_issue_contract(body, expected_subject=subject_value)
+    body_sections = issue_contract.sections(body)
+    reasons = issue_contract.required_section_reasons(body_sections)
+    reasons.extend(
+        issue_contract.completeness_reasons(
+            contract, body_sections, system_requirement_ids()
+        )
+    )
+    reasons.extend(contract["admission"]["reasons"])
+    reasons.extend(component_surface_errors(contract["component"], component_map(ENGINE_ROOT), ()))
+    if contract["dependencies"] is None:
+        reasons.append(
+            f"issue declares no noodles-depends-on marker; use {issue_contract.NO_DEPENDENCIES!r} for no dependencies"
+        )
+    if contract["write_boundary"] is None:
+        reasons.append("issue declares no noodles-write-boundary marker")
+    if reasons:
+        raise GateError(f"invalid complete issue body for {subject_value}: " + "; ".join(reasons))
+    return contract
+
+
+def adapter_add(candidate_json: str) -> int:
     root = repo_root()
     repository = os.getenv("NOODLES_TARGET_REPOSITORY") or runtime_gh_repo_from_git(root, error_cls=GateError)
-    provisional = {
-        "title": title,
-        "body": "<!-- noodles-role: repository-mutating-atom -->\n"
-        f"<!-- noodles-target: {repository} -->\n"
-        "<!-- noodles-subject: pending -->\n"
-        "<!-- noodles-state: ready -->\n",
-    }
-    created = gh_api(f"repos/{repository}/issues", method="POST", payload=provisional)
-    number = int(created["number"])
-    body = issue_template(repository, number, title)
-    gh_api(f"repos/{repository}/issues/{number}", method="PATCH", payload={"body": body})
-    readback = issue_read(f"{repository}#{number}")
-    print(json.dumps({"id": f"{repository}#{number}", "title": readback["title"], "status": "ready"}, separators=(",", ":")))
+    try:
+        candidate = json.loads(candidate_json)
+    except json.JSONDecodeError as exc:
+        raise GateError(f"adapter add stdin is not valid JSON: {exc.msg}") from exc
+    if not isinstance(candidate, dict):
+        raise GateError("adapter add stdin must be one JSON object")
+    expected_keys = {"title", "body", "expected_target"}
+    if set(candidate) != expected_keys:
+        raise GateError(
+            "adapter add stdin must contain exactly title, body, and expected_target"
+        )
+    if any(not isinstance(candidate[key], str) for key in expected_keys):
+        raise GateError("adapter add title, body, and expected_target must all be strings")
+    title = candidate["title"]
+    body = candidate["body"]
+    expected_target = candidate["expected_target"]
+    if not title.strip():
+        raise GateError("adapter add title must not be blank")
+    if not body.strip():
+        raise GateError("adapter add body must not be blank")
+    if expected_target != repository:
+        raise GateError(
+            f"adapter add expected target {expected_target!r} does not match configured repository {repository!r}"
+        )
+    if one_marker(body, "subject", required=False) is not None:
+        raise GateError("adapter add candidate body must omit the provider-owned noodles-subject marker")
+    if one_marker(body, "target") != expected_target:
+        raise GateError("adapter add candidate body target does not match expected_target")
+
+    synthetic_number = 1
+    while f"{repository}#{synthetic_number}" in body:
+        synthetic_number += 1
+    synthetic_subject = f"{repository}#{synthetic_number}"
+    target_match = MARKER_PATTERNS["target"].search(body)
+    if target_match is None:
+        raise GateError("adapter add candidate body has no noodles-target marker")
+    synthetic_ready = (
+        body[: target_match.end()]
+        + f"\n<!-- noodles-subject: {synthetic_subject} -->"
+        + body[target_match.end() :]
+    )
+    try:
+        ready_contract = validate_complete_issue_body(synthetic_ready, synthetic_subject)
+    except GateError as exc:
+        raise GateError(f"adapter add refused candidate before provider contact: {exc}") from exc
+    if ready_contract["state"] != "ready":
+        raise GateError("adapter add candidate body must declare noodles-state: ready")
+
+    blocker = "adapter-add: provider subject binding pending"
+    provisional_body = replace_marker(body, "state", "blocked")
+    provisional_body = replace_marker(provisional_body, "blocker", blocker)
+    try:
+        created = gh_api(
+            f"repos/{repository}/issues",
+            method="POST",
+            payload={"title": title, "body": provisional_body},
+        )
+    except GateError as exc:
+        raise GateError(
+            f"adapter add POST outcome is uncertain; do not retry: {exc}; external residue is unresolved"
+        ) from exc
+    if not isinstance(created, dict) or "pull_request" in created:
+        raise GateError("adapter add POST returned no issue identity; external residue is unresolved")
+    number = created.get("number")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        raise GateError("adapter add POST returned an invalid issue number; external residue is unresolved")
+    subject_value = f"{repository}#{number}"
+    if created.get("body") != provisional_body or created.get("title") != title:
+        raise GateError(
+            f"adapter add POST readback failed for {subject_value}; external residue is unresolved"
+        )
+
+    actual_ready = replace_marker(synthetic_ready, "subject", subject_value)
+    actual_blocked = replace_marker(actual_ready, "state", "blocked")
+    actual_blocked = replace_marker(actual_blocked, "blocker", blocker)
+    try:
+        validate_complete_issue_body(actual_blocked, subject_value)
+    except GateError as exc:
+        raise GateError(
+            f"adapter add actual-subject validation failed for {subject_value}: {exc}; "
+            "external residue is unresolved"
+        ) from exc
+    endpoint = f"repos/{repository}/issues/{number}"
+
+    def response_body(response: Any, phase: str, intended: str) -> str:
+        observed_number = response.get("number") if isinstance(response, dict) else None
+        if (
+            not isinstance(response, dict)
+            or "pull_request" in response
+            or isinstance(observed_number, bool)
+            or not isinstance(observed_number, int)
+            or observed_number != number
+        ):
+            raise GateError(
+                f"adapter add {phase} returned the wrong identity for {subject_value}; "
+                "external residue is unresolved"
+            )
+        observed = response.get("body")
+        observed_digest = issue_contract.body_digest(observed if isinstance(observed, str) else "")
+        intended_digest = issue_contract.body_digest(intended)
+        if not isinstance(observed, str) or observed_digest != intended_digest or observed != intended:
+            raise GateError(
+                f"adapter add {phase} body readback failed for {subject_value}: "
+                f"live body sha256 {observed_digest} != intended {intended_digest}; "
+                "external residue is unresolved"
+            )
+        return observed
+
+    try:
+        patched = gh_api(endpoint, method="PATCH", payload={"body": actual_blocked})
+    except GateError as exc:
+        raise GateError(
+            f"adapter add blocked PATCH failed for {subject_value}: {exc}; external residue is unresolved"
+        ) from exc
+    response_body(patched, "blocked PATCH", actual_blocked)
+    try:
+        blocked_readback = gh_api(endpoint)
+    except GateError as exc:
+        raise GateError(
+            f"adapter add blocked GET failed for {subject_value}: {exc}; external residue is unresolved"
+        ) from exc
+    blocked_body = response_body(blocked_readback, "blocked GET", actual_blocked)
+    try:
+        validate_complete_issue_body(blocked_body, subject_value)
+    except GateError as exc:
+        raise GateError(
+            f"adapter add blocked GET validation failed for {subject_value}: {exc}; "
+            "external residue is unresolved"
+        ) from exc
+
+    try:
+        patched = gh_api(endpoint, method="PATCH", payload={"body": actual_ready})
+    except GateError as exc:
+        raise GateError(
+            f"adapter add ready PATCH failed for {subject_value}: {exc}; external residue is unresolved"
+        ) from exc
+    response_body(patched, "ready PATCH", actual_ready)
+    try:
+        ready_readback = gh_api(endpoint)
+    except GateError as exc:
+        raise GateError(
+            f"adapter add ready GET failed for {subject_value}: {exc}; external residue is unresolved"
+        ) from exc
+    ready_body = response_body(ready_readback, "ready GET", actual_ready)
+    try:
+        final_contract = validate_complete_issue_body(ready_body, subject_value)
+    except GateError as exc:
+        raise GateError(
+            f"adapter add ready GET validation failed for {subject_value}: {exc}; "
+            "external residue is unresolved"
+        ) from exc
+    if final_contract["state"] != "ready":
+        raise GateError(f"adapter add final body is not ready for {subject_value}")
+    print(subject_value)
     return 0
 
 
@@ -3808,8 +3971,8 @@ def adapter_main(argv: Sequence[str] | None = None) -> int:
     action = args[0]
     if action == "sync" and len(args) == 1:
         return adapter_sync()
-    if action == "add" and len(args) == 2:
-        return adapter_add(args[1])
+    if action == "add" and len(args) == 1:
+        return adapter_add(sys.stdin.read())
     if action == "edit" and len(args) == 3:
         return adapter_edit(args[1], args[2])
     if action == "done" and len(args) == 2:
@@ -4440,27 +4603,12 @@ def ceremony_edit_body(
         raise GateError(
             f"ceremony edit-body requires the full 64-hex expected-before sha256, got {expected_before!r}"
         )
-    contract = parse_issue_contract(body, expected_subject=subject.value)
-    body_sections = issue_contract.sections(body)
-    reasons = issue_contract.required_section_reasons(body_sections)
-    reasons.extend(
-        issue_contract.completeness_reasons(
-            contract, body_sections, system_requirement_ids()
-        )
-    )
-    reasons.extend(contract["admission"]["reasons"])
-    reasons.extend(component_surface_errors(contract["component"], component_map(ENGINE_ROOT), ()))
-    if contract["dependencies"] is None:
-        reasons.append(
-            f"issue declares no noodles-depends-on marker; use {issue_contract.NO_DEPENDENCIES!r} for no dependencies"
-        )
-    if contract["write_boundary"] is None:
-        reasons.append("issue declares no noodles-write-boundary marker")
-    if reasons:
+    try:
+        validate_complete_issue_body(body, subject.value)
+    except GateError as exc:
         raise GateError(
-            f"ceremony edit-body refused invalid intended body for {subject.value}: "
-            + "; ".join(reasons)
-        )
+            f"ceremony edit-body refused invalid intended body for {subject.value}: {exc}"
+        ) from exc
     endpoint = f"repos/{subject.repo}/issues/{subject.number}"
     live = gh_api_fn(endpoint)
     if not isinstance(live, dict) or "pull_request" in live:
