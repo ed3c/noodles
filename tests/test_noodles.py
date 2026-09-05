@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -1590,6 +1591,76 @@ class StartUnattendedTests(unittest.TestCase):
         self.assertEqual(premature.get("returncode"), 1)
         self.assertIn("RemoteDisconnected", str(premature.get("stderr")))
         self.assertIn("Traceback", str(premature.get("stderr")))
+
+    def test_fixture_accept_loop_drains_held_third_response_before_accepting_again(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            stub = root / "noodle"
+            write_noodle_stub(stub, "v9.9.9", start_delay=0)
+            tree = ast.parse(stub.read_text())
+            loops = [node for node in ast.walk(tree) if isinstance(node, ast.While)
+                     and ast.unparse(node.test) == "not stop_path.exists()"]
+            self.assertEqual(len(loops), 1)
+            code = compile(ast.Module(body=loops, type_ignores=[]), str(stub), "exec")
+            held = threading.Event()
+            release = threading.Event()
+            failures: list[BaseException] = []
+            snapshot = {"requests": 2, "responses": 2}
+
+            class ThirdResponse:
+                def wait(self, timeout: float) -> bool:
+                    held.set()
+                    if not release.wait(timeout):
+                        return False
+                    snapshot["responses"] += 1
+                    return True
+
+            server = mock.Mock()
+
+            def accept_third() -> None:
+                if server.handle_request.call_count != 1:
+                    raise AssertionError("accepted again before draining the third response")
+                snapshot["requests"] += 1
+
+            server.handle_request.side_effect = accept_third
+            completed = threading.Event()
+            completed.set()
+            stop_request = root / "stop-request"
+            stop_request.touch()
+            stop = root / "stop"
+            namespace = {
+                "server": server, "stop_path": stop, "stop_request_path": stop_request,
+                "os": type("Environment", (), {"environ": {
+                    "NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE": "1"}}),
+                "state_lock": threading.Lock(), "snapshot_state": snapshot,
+                "post_admission_response_completed": completed,
+                "stop_release_response_completed": completed,
+                "third_response_completed": ThirdResponse(),
+            }
+
+            def run_loop() -> None:
+                try:
+                    exec(code, namespace)
+                except BaseException as exc:
+                    failures.append(exc)
+                    held.set()
+
+            worker = threading.Thread(target=run_loop)
+            worker.start()
+            try:
+                self.assertTrue(held.wait(5), "loop never reached the third-response barrier")
+                self.assertEqual(failures, [])
+                self.assertEqual(snapshot, {"requests": 3, "responses": 2})
+                self.assertEqual(server.handle_request.call_count, 1)
+                self.assertFalse(stop.exists())
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(failures, [])
+            self.assertEqual(snapshot, {"requests": 3, "responses": 3})
+            self.assertEqual(server.handle_request.call_count, 1)
+            self.assertEqual(stop.read_text(), "stop\n")
 
     def test_start_entrypoint_final_read_replays_durable_events_without_rewriting_termination(self) -> None:
         expected = start_entrypoint_expectations()
