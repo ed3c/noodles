@@ -1677,6 +1677,154 @@ class StartUnattendedTests(unittest.TestCase):
             self.assertEqual(server.handle_request.call_count, 1)
             self.assertEqual(stop.read_text(), "stop\n")
 
+    def test_fixture_publishes_stop_before_suppressed_response_can_close(self) -> None:
+        import http.client
+        import urllib.request
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            root = Path(directory)
+            stub = root / "noodle"
+            write_noodle_stub(stub, "v9.9.9", start_delay=0)
+            tree = ast.parse(stub.read_text())
+            branch = tree.body[-1]
+            while isinstance(branch, ast.If) and ast.unparse(branch.test) != "args == ['start']":
+                self.assertEqual(len(branch.orelse), 1)
+                branch = branch.orelse[0]
+            self.assertIsInstance(branch, ast.If)
+            assert isinstance(branch, ast.If)
+            code = compile(ast.Module(body=branch.body, type_ignores=[]), str(stub), "exec")
+
+            project = root / "project"
+            ready = root / "ready.json"
+            request = root / "request"
+            release = root / "release"
+            snapshot_state = root / "snapshot-state.json"
+            stop_request = root / "stop-request"
+            stop = root / "stop"
+            publication_opened = threading.Event()
+            release_publication = threading.Event()
+            suppression_wait_entered = threading.Event()
+            server_failures: list[BaseException] = []
+            second_result: dict[str, object] = {}
+            real_event = threading.Event
+            real_write_text = Path.write_text
+            fixture_event_count = 0
+
+            def fixture_event() -> threading.Event:
+                nonlocal fixture_event_count
+                event = real_event()
+                fixture_event_count += 1
+                if fixture_event_count == 3:
+                    real_wait = event.wait
+
+                    def traced_wait(timeout: float | None = None) -> bool:
+                        suppression_wait_entered.set()
+                        return real_wait(timeout)
+
+                    event.wait = traced_wait
+                return event
+
+            def held_write_text(path: Path, data: str, *args: object, **kwargs: object) -> int:
+                if path == stop and data == "stop\n":
+                    with path.open("w", encoding="utf-8") as sink:
+                        publication_opened.set()
+                        if not release_publication.wait(5):
+                            raise AssertionError("fixture stop publication was not released")
+                        return sink.write(data)
+                return real_write_text(path, data, *args, **kwargs)
+
+            env = {
+                "NOODLES_TEST_START_PROJECT": str(project),
+                "NOODLES_TEST_START_READY_PATH": str(ready),
+                "NOODLES_TEST_START_REQUEST_PATH": str(request),
+                "NOODLES_TEST_START_RELEASE_PATH": str(release),
+                "NOODLES_TEST_START_STOP_PATH": str(stop),
+                "NOODLES_TEST_START_SNAPSHOT_STATE_PATH": str(snapshot_state),
+                "NOODLES_TEST_START_STOP_REQUEST_PATH": str(stop_request),
+                "NOODLES_TEST_START_SERVE": "1",
+                "NOODLES_TEST_START_PORT": "0",
+                "NOODLES_TEST_START_COMPLETE_SHUTDOWN_HANDSHAKE": "0",
+            }
+
+            def run_server() -> None:
+                try:
+                    exec(code, {"os": os, "time": time})
+                except BaseException as exc:
+                    server_failures.append(exc)
+                    publication_opened.set()
+
+            control_url: list[str] = []
+
+            def request_second_snapshot() -> None:
+                try:
+                    with urllib.request.urlopen(f"{control_url[0]}/api/snapshot", timeout=10.0) as response:
+                        second_result["body"] = response.read()
+                except BaseException as exc:
+                    second_result["error"] = exc
+
+            server_worker = threading.Thread(target=run_server)
+            second_worker = threading.Thread(target=request_second_snapshot)
+            with (
+                mock.patch.dict(os.environ, env, clear=False),
+                mock.patch.object(threading, "Event", side_effect=fixture_event),
+                mock.patch.object(Path, "write_text", new=held_write_text),
+            ):
+                server_worker.start()
+                try:
+                    deadline = time.monotonic() + 5.0
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists(), server_failures)
+                    readiness = json.loads(ready.read_text())
+                    control_url.append(f"http://{readiness['host']}:{readiness['port']}")
+                    release.write_text("release\n")
+                    with urllib.request.urlopen(f"{control_url[0]}/api/snapshot", timeout=5.0) as response:
+                        self.assertEqual(response.status, 200)
+                        response.read()
+
+                    second_worker.start()
+                    with urllib.request.urlopen(
+                        f"{control_url[0]}/fixture/post-admission-request-started", timeout=5.0
+                    ) as response:
+                        self.assertEqual(response.status, 204)
+                    stop_request.write_text("stop_requested\n")
+                    with urllib.request.urlopen(
+                        f"{control_url[0]}/fixture/release-stop-request", timeout=5.0
+                    ) as response:
+                        self.assertEqual(response.status, 204)
+
+                    self.assertTrue(publication_opened.wait(5), server_failures)
+                    self.assertEqual(stop.read_text(), "")
+                    self.assertTrue(
+                        suppression_wait_entered.wait(5),
+                        "accept loop did not drain the suppressed-response event",
+                    )
+                    self.assertTrue(second_worker.is_alive(), "suppressed response reached EOF before stop publication")
+                    self.assertTrue(server_worker.is_alive(), "accept loop exited before stop publication")
+                finally:
+                    release_publication.set()
+                    second_worker.join(5)
+                    server_worker.join(5)
+
+            self.assertFalse(second_worker.is_alive())
+            self.assertFalse(server_worker.is_alive())
+            self.assertEqual(server_failures, [])
+            self.assertIsInstance(second_result.get("error"), http.client.RemoteDisconnected)
+            self.assertNotIn("body", second_result)
+            self.assertEqual(stop.read_text(), "stop\n")
+            self.assertEqual(
+                json.loads(snapshot_state.read_text()),
+                {
+                    "post_admission_request_started": True,
+                    "post_admission_response_completed": False,
+                    "post_admission_response_suppressed": True,
+                    "requests": 2,
+                    "responses": 1,
+                    "stop_release_response_completed": True,
+                    "stop_requested_before_post_admission_response": True,
+                },
+            )
+
     def test_start_entrypoint_final_read_replays_durable_events_without_rewriting_termination(self) -> None:
         expected = start_entrypoint_expectations()
         result = start_entrypoint_with_delayed_listener(admission_observation="final_read")
