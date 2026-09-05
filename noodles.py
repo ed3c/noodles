@@ -1106,12 +1106,38 @@ def issue_set_state(subject_value: str, new_state: str) -> dict[str, Any]:
 
 def dependency_readback(subject_value: str) -> dict[str, Any]:
     """Read one predecessor's own provider truth; a failed read never reads as satisfied."""
+    subject = parse_subject(subject_value)
+    # constraint: ed3c/noodles#421 - provider unavailability and a readable malformed contract are
+    # constraint: different facts. Only the former may become EXTERNAL_UNVERIFIED at schedulability.
     try:
-        issue = issue_read(subject_value)
+        issue = gh_api(f"repos/{subject.repo}/issues/{subject.number}")
+    except GateError as exc:
+        return {
+            "subject": subject_value,
+            "provider_state": None,
+            "state": None,
+            "error": str(exc),
+            "provider_read_failed": True,
+        }
+    try:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            raise GateError(f"subject does not resolve to an issue: {subject_value}")
         contract = parse_issue_contract(issue.get("body") or "", expected_subject=subject_value)
     except GateError as exc:
-        return {"subject": subject_value, "provider_state": None, "state": None, "error": str(exc)}
-    return {"subject": subject_value, "provider_state": issue.get("state"), "state": contract["state"], "error": None}
+        return {
+            "subject": subject_value,
+            "provider_state": issue.get("state") if isinstance(issue, dict) else None,
+            "state": None,
+            "error": str(exc),
+            "provider_read_failed": False,
+        }
+    return {
+        "subject": subject_value,
+        "provider_state": issue.get("state"),
+        "state": contract["state"],
+        "error": None,
+        "provider_read_failed": False,
+    }
 
 
 def issue_contract_readback(subject_value: str, dependency_cache: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:

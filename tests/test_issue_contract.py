@@ -26,6 +26,7 @@ from tests.support import (
 
 SUBJECT = "ed3c/noodles#82"
 PREDECESSOR = "ed3c/noodles#81"
+EXTERNAL_PREDECESSOR = "ed3c/skill-concerns#186"
 
 
 # constraint: ed3c/noodles#120 - one stable requirement heading that really exists in
@@ -244,9 +245,12 @@ class DependencyMarkerTests(unittest.TestCase):
         with self.assertRaisesRegex(noodles.GateError, "own subject"):
             noodles.parse_issue_contract(issue_body(depends_on=SUBJECT), SUBJECT)
 
-    def test_wrong_repository_dependency_fails_closed(self) -> None:
-        with self.assertRaisesRegex(noodles.GateError, "outside the issue repository"):
-            noodles.parse_issue_contract(issue_body(depends_on="ed3c/other#81"), SUBJECT)
+    def test_external_dependency_parses_without_weakening_exact_subject_grammar(self) -> None:
+        contract = noodles.parse_issue_contract(issue_body(depends_on=EXTERNAL_PREDECESSOR), SUBJECT)
+        self.assertEqual(contract["dependencies"], [EXTERNAL_PREDECESSOR])
+
+        with self.assertRaisesRegex(noodles.GateError, "one exact owner/repo#N subject"):
+            noodles.parse_issue_contract(issue_body(depends_on="ed3c/skill-concerns"), SUBJECT)
 
     def test_ambiguous_dependency_prose_fails_closed(self) -> None:
         for raw in ("after ed3c/noodles#81 lands", "#81", "", "none, ed3c/noodles#81", "None", "ed3c/noodles#81 and #61"):
@@ -1039,6 +1043,82 @@ class ContractReadbackTests(unittest.TestCase):
         self.assertFalse(contract["schedulable"])
         self.assertIn(PREDECESSOR, contract["dependency_states"])
         self.assertIn("provider read failed", " ".join(contract["reasons"]))
+        self.assertNotIn("EXTERNAL_UNVERIFIED", " ".join(contract["reasons"]))
+
+    def test_readable_external_dependency_uses_its_real_open_and_landed_states(self) -> None:
+        dependent = issue_body(depends_on=EXTERNAL_PREDECESSOR)
+        for marker_state, expected_schedulable in (("ready", False), ("landed", True)):
+            with self.subTest(marker_state=marker_state):
+                bodies = {
+                    SUBJECT: dependent,
+                    EXTERNAL_PREDECESSOR: issue_body(subject=EXTERNAL_PREDECESSOR, state=marker_state).replace(
+                        "<!-- noodles-target: ed3c/noodles -->",
+                        "<!-- noodles-target: ed3c/skill-concerns -->",
+                    ),
+                }
+                with mock.patch.object(noodles, "gh_api", side_effect=self.gh(bodies)):
+                    contract = noodles.issue_contract_readback(SUBJECT)
+                self.assertEqual(contract["schedulable"], expected_schedulable)
+                self.assertNotIn("EXTERNAL_UNVERIFIED", " ".join(contract["reasons"]))
+
+    def test_external_unverified_is_reserved_for_an_actual_provider_read_failure(self) -> None:
+        with mock.patch.object(
+            noodles, "gh_api", side_effect=self.gh({SUBJECT: issue_body(depends_on=EXTERNAL_PREDECESSOR)})
+        ):
+            contract = noodles.issue_contract_readback(SUBJECT)
+        self.assertFalse(contract["schedulable"])
+        self.assertIn("EXTERNAL_UNVERIFIED", " ".join(contract["reasons"]))
+        self.assertTrue(contract["dependency_states"][EXTERNAL_PREDECESSOR]["provider_read_failed"])
+
+    def test_readable_but_malformed_external_contract_is_not_called_unverified(self) -> None:
+        malformed = issue_body(subject=EXTERNAL_PREDECESSOR) + "<!-- noodles-state: ready -->\n"
+        bodies = {SUBJECT: issue_body(depends_on=EXTERNAL_PREDECESSOR), EXTERNAL_PREDECESSOR: malformed}
+        with mock.patch.object(noodles, "gh_api", side_effect=self.gh(bodies)):
+            contract = noodles.issue_contract_readback(SUBJECT)
+        reasons = " ".join(contract["reasons"])
+        self.assertFalse(contract["schedulable"])
+        self.assertIn("provider read failed", reasons)
+        self.assertNotIn("EXTERNAL_UNVERIFIED", reasons)
+        self.assertFalse(contract["dependency_states"][EXTERNAL_PREDECESSOR]["provider_read_failed"])
+
+    def test_external_dependency_contract_does_not_poison_its_dependents_readback(self) -> None:
+        poison = "ed3c/noodles#81"
+        bodies = {
+            SUBJECT: issue_body(depends_on=poison),
+            poison: issue_body(subject=poison, depends_on=EXTERNAL_PREDECESSOR),
+        }
+        with mock.patch.object(noodles, "gh_api", side_effect=self.gh(bodies)):
+            poisoned = noodles.issue_contract_readback(poison)
+            dependent = noodles.issue_contract_readback(SUBJECT)
+        self.assertFalse(poisoned["schedulable"])
+        self.assertEqual(poisoned["dependencies"], [EXTERNAL_PREDECESSOR])
+        self.assertIn("EXTERNAL_UNVERIFIED", " ".join(poisoned["reasons"]))
+        self.assertFalse(dependent["schedulable"])
+        self.assertEqual(dependent["dependencies"], [poison])
+        self.assertIn("not closed and landed", " ".join(dependent["reasons"]))
+
+    def test_external_dependency_failure_remains_visible_on_the_schedule_frontier(self) -> None:
+        repository = "ed3c/skill-concerns"
+        body = issue_body(subject=EXTERNAL_PREDECESSOR, depends_on="ed3c/noodles#14").replace(
+            "<!-- noodles-target: ed3c/noodles -->",
+            "<!-- noodles-target: ed3c/skill-concerns -->",
+        )
+        provider_issue = {"number": 186, "state": "open", "title": "external dependency", "body": body}
+        with mock.patch.object(noodles, "open_issues", return_value=(provider_issue,)), \
+             mock.patch.object(noodles, "matching_branch_refs", return_value=()), \
+             mock.patch.object(noodles, "active_execute_claims", return_value=set()), \
+             mock.patch.object(noodles, "gh_api", side_effect=noodles.GateError("repository unavailable")):
+            snapshot = noodles.schedule_snapshot(repository)
+        self.assertEqual([item.subject for item in snapshot], [EXTERNAL_PREDECESSOR])
+        self.assertFalse(snapshot[0].schedulable)
+        self.assertEqual(snapshot[0].dependencies, ("ed3c/noodles#14",))
+
+    def test_pinned_historical_external_dependency_grammar_parses(self) -> None:
+        fixture = json.loads(
+            (CANDIDATE_ROOT / "tests/fixtures/issue-contract-external-dependency.json").read_text(encoding="utf-8")
+        )
+        contract = noodles.parse_issue_contract(fixture["body"], fixture["subject"])
+        self.assertEqual(contract["dependencies"], [fixture["dependency"]])
 
     def test_cli_prints_the_typed_contract(self) -> None:
         bodies = {SUBJECT: issue_body(depends_on=PREDECESSOR), PREDECESSOR: predecessor_body()}

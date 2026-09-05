@@ -464,7 +464,6 @@ def parse_dependencies(raw: str | None, subject: str, *, error_cls: type[Excepti
         return ()
     if not value:
         raise error_cls(f"noodles-depends-on must be exactly {NO_DEPENDENCIES!r} or comma-separated owner/repo#N subjects")
-    repo = subject.partition("#")[0]
     dependencies: list[str] = []
     for token in (item.strip() for item in value.split(",")):
         match = SUBJECT_RE.fullmatch(token)
@@ -473,8 +472,6 @@ def parse_dependencies(raw: str | None, subject: str, *, error_cls: type[Excepti
                 f"noodles-depends-on entry {token!r} is not one exact owner/repo#N subject; "
                 f"use {NO_DEPENDENCIES!r} for no dependencies"
             )
-        if match.group("repo") != repo:
-            raise error_cls(f"noodles-depends-on entry {token} is outside the issue repository {repo}")
         if token == subject:
             raise error_cls(f"noodles-depends-on entry {token} is the issue's own subject")
         if token in dependencies:
@@ -900,7 +897,13 @@ def derive_schedulability(
         if observed is None:
             reasons.append(f"dependency {dependency} was never read back from the provider")
         elif observed.get("error"):
-            reasons.append(f"dependency {dependency} provider read failed: {observed['error']}")
+            external = dependency.partition("#")[0] != contract.get("subject", "").partition("#")[0]
+            if external and observed.get("provider_read_failed"):
+                reasons.append(
+                    f"dependency {dependency} EXTERNAL_UNVERIFIED: provider read failed: {observed['error']}"
+                )
+            else:
+                reasons.append(f"dependency {dependency} provider read failed: {observed['error']}")
         elif observed.get("provider_state") != "closed" or observed.get("state") != "landed":
             reasons.append(
                 f"dependency {dependency} is provider_state={observed.get('provider_state')!r} "

@@ -1,0 +1,6 @@
+{
+  "source": "Provider grammar observed on ed3c/skill-concerns#186 on 2026-09-04; pinned because the live body is mutable.",
+  "subject": "ed3c/skill-concerns#186",
+  "dependency": "ed3c/noodles#14",
+  "body": "<!-- noodles-role: repository-mutating-atom -->\n<!-- noodles-target: ed3c/skill-concerns -->\n<!-- noodles-subject: ed3c/skill-concerns#186 -->\n<!-- noodles-state: ready -->\n<!-- noodles-depends-on: ed3c/noodles#14 -->\n\n## Goal\n\nRepresent the historical external dependency grammar.\n\n## Physical acceptance\n\n- Positive control parses.\n- Planted-negative control rejects the old grammar.\n- Direct readback and zero residue are checked.\n\n## Non-claims\n\n- This fixture is not provider authority.\n"
+}
