@@ -279,6 +279,49 @@ class ClaimLifecycleTests(unittest.TestCase):
         self.assertEqual(record["live_session_ids"], [self.session_id])
         self.assertIn(self.session_id, record["reason"])
 
+    def test_pre_pr_quiet_worker_must_exit_before_adoption(self) -> None:
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            cwd=self.root, stdin=subprocess.PIPE,
+        )
+        process_path = self.events_path.with_name("process.json")
+        process_path.write_text(json.dumps({
+            "pid": worker.pid, "session_id": self.session_id,
+            "started_at": "2026-08-29T00:00:00Z",
+        }))
+        try:
+            self.assertIsNone(worker.poll())
+            record = self.snapshot(provider)[0]
+            self.assertEqual(record["class"], "held_live")
+            self.assertIn(str(worker.pid), record["reason"])
+            self.events_path.unlink()
+            self.assertEqual(self.snapshot(provider)[0]["class"], "held_live")
+        finally:
+            worker.stdin.close()
+            worker.wait(timeout=5)
+        record = self.snapshot(provider)[0]
+        self.assertEqual(record["class"], "pre_pr_orphan")
+        self.assertEqual(provider.ref_posts, [])
+        self.assertEqual(provider.ref_deletes, [])
+        self.assertEqual(provider.body_patches, 0)
+
+    def test_pre_pr_unknown_process_record_is_held(self) -> None:
+        provider = ClaimProvider(self.head, contract_state="ready", local=True)
+        provider.pr_open = False
+        process_path = self.events_path.with_name("process.json")
+        for payload in (None, "not json", {"pid": 0, "session_id": self.session_id},
+                        {"pid": os.getpid(), "session_id": "foreign-session"}):
+            with self.subTest(payload=payload):
+                if payload is not None:
+                    process_path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+                record = self.snapshot(provider)[0]
+                self.assertEqual(record["class"], "held")
+                self.assertIn("process", record["reason"])
+        self.assertEqual(provider.ref_posts, [])
+        self.assertEqual(provider.ref_deletes, [])
+
     def test_pre_pr_provider_local_head_drift_is_held(self) -> None:
         self.drop_session()
         provider = ClaimProvider("c" * 40, contract_state="ready", local=True)

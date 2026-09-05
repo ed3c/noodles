@@ -3,8 +3,8 @@
 A claim is the provider branch ref created by `claim_execute_branch` (ed3c/noodles#138). When the
 claiming cook dies after handoff, the subject wedges: issue awaiting_land, PR open (often red), and
 the branch-existence claim check blocks re-admission forever. This module gives that state a
-mechanical owner. Session liveness is derived only from the `.noodle/sessions` ledger event ages,
-never from a process table.
+mechanical owner. Post-PR liveness keeps its ledger-age rule. Pre-PR adoption additionally refuses
+a recorded live process or unknown process metadata; a quiet worker is not an orphan.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import github_protection
+from daemon_lease import process_alive
 from repair_contract import repair_review
 from runtime_contract import noodle_project_root, read_session_events
 
@@ -118,6 +119,28 @@ def pre_pr_claim_record(
         return {**identity, "class": "held_live", "reason": f"claim {subject} remains bound to live session {live[0]}"}
 
     project = noodle_project_root(root.resolve(), error_cls=engine.GateError)
+    sessions_root = project / ".noodle" / "sessions"
+    process_sessions = {sessions_root / item["session_id"] for item in sessions}
+    # constraint: a process can start before its first order event; Noodle's exact execute-session
+    # constraint: namespace still binds that process record to this claim, without a second worker registry.
+    process_sessions.update(path for path in sessions_root.glob(f"{branch}-*") if path.is_dir())
+    for session_path in sorted(process_sessions):
+        process_path = session_path / "process.json"
+        try:
+            process = engine.load_json(process_path)
+            if not isinstance(process, dict) or process.get("session_id") != session_path.name:
+                raise ValueError("process session identity mismatch")
+            pid = process.get("pid")
+            if type(pid) is not int or pid <= 0:
+                raise ValueError("process pid must be a positive integer")
+            alive = process_alive(pid)
+        except (engine.GateError, OSError, ValueError, OverflowError) as exc:
+            return {**identity, "class": "held", "reason": f"claim {subject} process record {process_path} is unknown: {exc}"}
+        if alive:
+            return {
+                **identity, "class": "held_live", "live_session_ids": [session_path.name],
+                "reason": f"claim {subject} recorded process {pid} still exists for session {session_path.name}; refusing adoption",
+            }
     common = Path(engine.git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     identity["git_common_dir"] = str(common)
     if common.parent != project:
