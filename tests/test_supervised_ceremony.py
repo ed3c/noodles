@@ -710,7 +710,42 @@ class CeremonyPlantTests(ControlCheckoutFixture):
 
 EDIT_SUBJECT = "ed3c/noodles#903303"
 EDIT_ENDPOINT = "repos/ed3c/noodles/issues/903303"
-LIVE_BODY = "<!-- noodles-state: ready -->\n\n## Goal\n\nCarry the guard.\n"
+
+
+def complete_edit_body(*, state: str = "ready", subject: str = EDIT_SUBJECT) -> str:
+    blocker = (
+        "<!-- noodles-blocker: carrier: local ceremony repair required -->\n"
+        if state == "blocked"
+        else ""
+    )
+    return (
+        "<!-- noodles-role: repository-mutating-atom -->\n"
+        "<!-- noodles-target: ed3c/noodles -->\n"
+        f"<!-- noodles-subject: {subject} -->\n"
+        f"<!-- noodles-state: {state} -->\n"
+        "<!-- noodles-component: carrier -->\n"
+        "<!-- noodles-depends-on: none -->\n"
+        "<!-- noodles-requirement: AUTONOMY.CEREMONY_ENTRYPOINT.001 -->\n"
+        "<!-- noodles-executor: local-noodle -->\n"
+        "<!-- noodles-runtime: python -->\n"
+        "<!-- noodles-evidence: github-only-v1 -->\n"
+        "<!-- noodles-write-boundary: noodles.py -->\n"
+        "<!-- noodles-observer: none -->\n"
+        "<!-- noodles-capability-probe: none -->\n"
+        f"{blocker}\n"
+        "## Physical trigger\n\nA malformed intended body reached the ceremony.\n\n"
+        "## Goal\n\nCarry the guard.\n\n"
+        "## Claim\n\nThe local boundary refuses malformed intended bytes.\n\n"
+        "## Physical acceptance\n\n"
+        "- Positive and planted-negative controls pass.\n"
+        "- Direct source readback checks the boundary.\n"
+        "- Zero residue remains.\n\n"
+        "## Non-case\n\nnone\n\n"
+        "## Non-claims\n\n- No provider transaction is claimed.\n"
+    )
+
+
+LIVE_BODY = complete_edit_body()
 NEXT_BODY = LIVE_BODY.replace("Carry the guard", "Carry the guard, edited")
 
 
@@ -756,6 +791,49 @@ class CeremonyEditBodyTests(unittest.TestCase):
         self.assertEqual(receipt["after_sha256"], self.digest(NEXT_BODY))
         self.assertEqual(receipt["before_observation"], "pre-write-get")
         self.assertIsNone(receipt["overwritten_sha256"])
+
+    def test_complete_blocked_contract_can_be_written(self) -> None:
+        blocked = complete_edit_body(state="blocked")
+        provider = FakeIssueProvider(LIVE_BODY)
+        receipt = noodles.ceremony_edit_body(
+            provider, EDIT_SUBJECT, self.digest(LIVE_BODY), blocked, self.refused_path()
+        )
+        self.assertEqual(provider.body, blocked)
+        self.assertEqual(receipt["after_sha256"], self.digest(blocked))
+
+    def test_invalid_intended_bodies_fail_before_provider_contact(self) -> None:
+        invalid = {
+            "empty": "",
+            "wrong subject": NEXT_BODY.replace(EDIT_SUBJECT, "ed3c/noodles#903304"),
+            "missing section": NEXT_BODY.replace(
+                "## Non-claims\n\n- No provider transaction is claimed.\n", ""
+            ),
+            "invalid blocked": complete_edit_body(state="blocked").replace(
+                "<!-- noodles-blocker: carrier: local ceremony repair required -->\n", ""
+            ),
+        }
+        for name in (
+            "role", "target", "subject", "state", "component", "depends-on",
+            "executor", "runtime", "evidence", "write-boundary",
+        ):
+            marker = next(
+                line for line in NEXT_BODY.splitlines(keepends=True)
+                if line.startswith(f"<!-- noodles-{name}:")
+            )
+            invalid[f"missing {name}"] = NEXT_BODY.replace(marker, "")
+            invalid[f"duplicate {name}"] = NEXT_BODY + marker
+        for label, body in invalid.items():
+            with self.subTest(label=label):
+                provider = FakeIssueProvider(LIVE_BODY)
+                with self.assertRaises(noodles.GateError):
+                    noodles.ceremony_edit_body(
+                        provider,
+                        EDIT_SUBJECT,
+                        self.digest(LIVE_BODY),
+                        body,
+                        self.refused_path(),
+                    )
+                self.assertEqual(provider.calls, [])
 
     def test_third_writer_in_window_leaves_overwritten_digest_unknown(self) -> None:
         third_body = LIVE_BODY + "\nThird writer's change.\n"
